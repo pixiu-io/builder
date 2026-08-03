@@ -1,0 +1,17 @@
+# 构建产物
+/builder
+/dist/
+/work/
+
+# 下载产物
+*.tar.gz
+*.deb
+*.rpm
+*.iso
+
+# IDE
+.idea/
+.vscode/
+
+# 系统
+.DS_Store

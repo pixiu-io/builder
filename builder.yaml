@@ -1,0 +1,100 @@
+# builder 配置文件（位于仓库根目录 builder.yaml）
+# 单文件包含三节：OS 注册表（oses）、k8s 版本参考（versions）、附加组件镜像（addons）。
+# 生产默认路径 /etc/pixiu/builder.yaml；本地开发：--configFile ./builder.yaml 或 BUILDER_CONFIG_FILE=./builder.yaml
+
+# ========== OS 注册表 ==========
+# 定义各 OS 的可用版本、包管理器、构建镜像（容器内下载软件包用）、
+# 架构，以及软件源所需的版本代号（codename / codenames）与 rpm 发行版标识（rpm_distro）。
+# 提示：versions/build_images 为参考初始值；build 支持任意 OS/版本（未登记时构建镜像默认为 {name}:{version}）。
+# 包源说明：
+#   - k8s 组件（kubeadm/kubelet/kubectl）来自官方 pkgs.k8s.io，仓库由 k8s 版本自动推导（v1.27.3 → v1.27）
+#   - containerd.io 来自 docker 官方源 download.docker.com（原 packages.containerd.io 域名 NXDOMAIN 不可达）；
+#     apt 源需要 codename，dnf 源需要 rpm_distro（rocky→rhel9、openEuler→rhel7，代码内转换为 rhel/9、rhel/7）
+#   - containerd 源已实测可达；openEuler 对应 rhel/7 在 download.docker.com 为 404，存在兼容性风险
+oses:
+  - name: ubuntu
+    versions: ["20.04", "22.04", "24.04"]
+    pkg_manager: apt
+    build_images:
+      "20.04": ubuntu:20.04
+      "22.04": ubuntu:22.04
+      "24.04": ubuntu:24.04
+    codenames:
+      "20.04": focal
+      "22.04": jammy
+      "24.04": noble
+    archs: ["amd64", "arm64"]
+  - name: debian
+    versions: ["11", "12"]
+    pkg_manager: apt
+    build_images:
+      "11": debian:11
+      "12": debian:12
+    codenames:
+      "11": bullseye
+      "12": bookworm
+    archs: ["amd64", "arm64"]
+  - name: rocky
+    versions: ["9"]
+    pkg_manager: dnf
+    build_images:
+      "9": rockylinux:9
+    rpm_distro: rhel9
+    archs: ["amd64", "arm64"]
+  - name: openEuler
+    versions: ["22.03"]
+    pkg_manager: dnf
+    build_images:
+      "22.03": openeuler/openeuler:22.03-lts-sp3
+    rpm_distro: rhel7
+    archs: ["amd64", "arm64"]
+
+# ========== k8s 版本（可选参考）==========
+# k8s 版本参考清单（可选）。
+# build 支持任意合法 vX.Y.Z 版本（如 v1.29.5、v1.30.2），无需在此注册；
+# 本清单仅用于：
+#   1) list-k8s 展示常见参考版本；
+#   2) 已知版本的 crictl 回退版本覆盖（cri-tools 包缺失时使用清单中的 crictl 值）。
+# 包源仓库由 version 自动推导（v1.27.3 → pkgs.k8s.io v1.27），无需额外字段。
+# containerd / runc 以包管理器源内软件包为准（此处的版本字段仅供记录参考）；
+# 未注册版本的 crictl 回退版本自动推导为与 k8s 版本对齐（v1.29.5 → 1.29.5）。
+versions:
+  - version: v1.27.3
+    containerd: "1.7.13"
+    crictl: "1.27.1"
+    runc: "1.1.7"
+  - version: v1.28.2
+    containerd: "1.7.13"
+    crictl: "1.28.0"
+    runc: "1.1.7"
+  - version: v1.31.0
+    containerd: "1.7.13"
+    crictl: "1.31.0"
+    runc: "1.1.7"
+
+# ========== 附加组件镜像 ==========
+# 附加组件镜像清单：name → image:tag
+# name 用作镜像保存文件名（images/addons/{name}.tar）
+# 地址说明：flannel 与 dashboard 在 registry.k8s.io 无可用 tag（manifest not found），
+# 正确地址位于 docker.io；网络不支持 docker.io 时可用 build --skip-addons 跳过附加组件。
+addons:
+  - name: flannel
+    image: "docker.io/flannel/flannel"
+    tag: "v0.24.2"
+  - name: dashboard
+    image: "docker.io/kubernetesui/dashboard"
+    tag: "v2.7.0"
+  - name: metrics-server
+    image: "registry.k8s.io/metrics-server/metrics-server"
+    tag: "v0.6.4"
+
+# ========== S3 上传（可选）==========
+# build --upload 或 upload 子命令时使用。凭证走环境变量：
+#   AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY（可选 AWS_SESSION_TOKEN）
+# MinIO 等兼容存储设置 endpoint（自定义 endpoint 时自动启用 path-style）。
+s3:
+  bucket: ""                  # 必填（或通过 --s3-bucket 覆盖）
+  region: us-east-1
+  endpoint: ""                # 如 http://minio.example.com:9000；空则走 AWS
+  prefix: pixiu-offline/      # 对象键前缀，最终 key = {prefix}{文件名}
+  force_path_style: false     # 公有云一般 false；自定义 endpoint 时忽略并自动 path-style
