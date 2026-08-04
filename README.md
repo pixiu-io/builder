@@ -48,6 +48,7 @@ go build -o builder ./cmd/builder
 |------|------|
 | `build` | 构建离线安装包。`--kubernetes-version` 必填（任意 vX.Y.Z）。`--os` / `--os-version` 在 `--mode all` 或 `packages` 时必填（**任意**取值，不必在 list-os 中；未登记时构建镜像默认为 `{os}:{os-version}`）；`--mode images` 时可省略。可选：`--arch`（amd64/arm64，默认 amd64）、`--mirror`、`--mode`、`--workdir`、`--out`、`--skip-images`、`--skip-addons`、`--dry-run`、`--upload`、`--s3-bucket` 等 |
 | `upload` | 将已有产物 tar.gz 上传到 S3/MinIO。`--file` 可重复；bucket/prefix/endpoint/region 可覆盖配置文件 `s3` 节 |
+| `serve` | 加载离线产物，提供本地 OCI registry（`docker pull` 短名）与 yum/dnf/apt HTTP 软件源（纯 Go，无外部工具依赖） |
 | `list-os` | 列出参考 OS / 版本（builder.yaml；实际 build 不限于此列表） |
 | `list-k8s` | 列出支持的 k8s 版本（含记录用运行时版本） |
 | `list-images` | 列出附加组件镜像清单。纯 flag 指定：`--os`（必填）、`--kubernetes-version`（必填）、`--arch`（默认 amd64） |
@@ -138,6 +139,40 @@ export AWS_SECRET_ACCESS_KEY=yyy
 ```
 
 对象键为 `{prefix}{文件名}`，例如 `pixiu-offline/pixiu-offline-ubuntu-22.04-amd64-v1.27.3-packages.tar.gz`。
+
+## 离线源服务（`serve`）
+
+将 builder 产物加载为常驻服务：镜像走本地 registry（短名），软件包走 HTTP yum/dnf/apt 源。不依赖 `createrepo` / `apt-ftparchive`。
+
+```bash
+# packages + images 两个 tar 一起加载
+./builder serve \
+  --bundle ./dist/pixiu-offline-centos-8-amd64-v1.27.3-packages.tar.gz \
+  --bundle ./dist/pixiu-offline-centos-8-amd64-v1.27.3-images.tar.gz \
+  --advertise-host 192.168.1.10
+
+# 已解压目录
+./builder serve --bundle ./work/pixiu-offline-ubuntu-22.04-amd64-v1.27.3
+```
+
+默认端口：
+- registry：`0.0.0.0:5000` → `docker pull <host>:5000/kube-apiserver:v1.27.3`
+- 软件源：`0.0.0.0:8080` → `http://<host>:8080/rpm`（dnf）或 `/deb`（apt）
+
+客户端示例：
+
+```bash
+# 镜像（需将 host:5000 加入 Docker insecure-registries）
+docker pull 192.168.1.10:5000/kube-apiserver:v1.27.3
+kubeadm init --image-repository 192.168.1.10:5000 ...
+
+# dnf / yum
+dnf install --repofrompath=pixiu,http://192.168.1.10:8080/rpm kubeadm
+
+# apt
+echo 'deb [trusted=yes] http://192.168.1.10:8080/deb ./' > /etc/apt/sources.list.d/pixiu-offline.list
+apt-get update && apt-get install kubeadm
+```
 
 ## 软件源与包下载
 
