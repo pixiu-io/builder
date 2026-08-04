@@ -15,6 +15,7 @@ import (
 	"builder/internal/config"
 	"builder/internal/mirror"
 	"builder/internal/s3upload"
+	"builder/internal/serve"
 )
 
 // 全局 flag
@@ -52,6 +53,17 @@ var (
 // verify 子命令 flags
 var verifyBundle string
 
+// serve 子命令 flags
+var (
+	serveBundles       []string
+	serveDataDir       string
+	serveRegistryAddr  string
+	serveRepoAddr      string
+	serveAdvertiseHost string
+	serveSkipImages    bool
+	serveSkipPackages  bool
+)
+
 func main() {
 	if err := newRootCmd().Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, "错误:", err)
@@ -73,6 +85,10 @@ func newRootCmd() *cobra.Command {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+			switch cmd.Name() {
+			case "serve", "version", "help":
+				return nil
+			}
 			// 校验配置文件可读
 			if _, err := os.Stat(configFile); err != nil {
 				return fmt.Errorf("配置文件不可用: %s（可设置 --configFile 或 BUILDER_CONFIG_FILE）", configFile)
@@ -85,6 +101,7 @@ func newRootCmd() *cobra.Command {
 
 	root.AddCommand(newBuildCmd())
 	root.AddCommand(newUploadCmd())
+	root.AddCommand(newServeCmd())
 	root.AddCommand(newListOSCmd())
 	root.AddCommand(newListK8sCmd())
 	root.AddCommand(newListImagesCmd())
@@ -253,6 +270,46 @@ func newUploadCmd() *cobra.Command {
 	cmd.Flags().StringVar(&uploadS3Prefix, "s3-prefix", "", "S3 对象键前缀（覆盖配置文件 s3.prefix）")
 	cmd.Flags().StringVar(&uploadS3Endpoint, "s3-endpoint", "", "S3 兼容 endpoint（覆盖配置文件 s3.endpoint）")
 	cmd.Flags().StringVar(&uploadS3Region, "s3-region", "", "S3 region（覆盖配置文件 s3.region）")
+	return cmd
+}
+
+func newServeCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "serve",
+		Short: "加载离线产物，提供 docker pull（短名）与 yum/dnf/apt 软件源",
+		Long: `将 builder 产物（目录或 tar.gz）加载后常驻服务：
+  - OCI registry：docker pull <host>:5000/<短名>:<tag>
+  - HTTP 软件源：dnf/yum 使用 /rpm，apt 使用 /deb
+
+纯 Go 实现，不依赖 createrepo / apt-ftparchive 等外部工具。`,
+		Example: `  builder serve --bundle ./dist/pixiu-offline-centos-8-amd64-v1.27.3-packages.tar.gz \
+                --bundle ./dist/pixiu-offline-centos-8-amd64-v1.27.3-images.tar.gz
+  builder serve --bundle ./work/pixiu-offline-ubuntu-22.04-amd64-v1.27.3 --advertise-host 192.168.1.10`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if len(serveBundles) == 0 {
+				return fmt.Errorf("请通过 --bundle 指定至少一个离线包目录或 tar.gz")
+			}
+			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+			defer stop()
+			_, err := serve.Run(ctx, serve.Options{
+				Bundles:       serveBundles,
+				DataDir:       serveDataDir,
+				RegistryAddr:  serveRegistryAddr,
+				RepoAddr:      serveRepoAddr,
+				AdvertiseHost: serveAdvertiseHost,
+				SkipImages:    serveSkipImages,
+				SkipPackages:  serveSkipPackages,
+			})
+			return err
+		},
+	}
+	cmd.Flags().StringArrayVar(&serveBundles, "bundle", nil, "离线包目录或 tar.gz（可重复，例如 packages + images）")
+	cmd.Flags().StringVar(&serveDataDir, "data-dir", "./serve-data", "工作目录（解压、repodata、registry blob）")
+	cmd.Flags().StringVar(&serveRegistryAddr, "registry-addr", "0.0.0.0:5000", "OCI registry 监听地址")
+	cmd.Flags().StringVar(&serveRepoAddr, "repo-addr", "0.0.0.0:8080", "软件源 HTTP 监听地址")
+	cmd.Flags().StringVar(&serveAdvertiseHost, "advertise-host", "127.0.0.1", "打印给客户端的主机名/IP（不含端口）")
+	cmd.Flags().BoolVar(&serveSkipImages, "skip-images", false, "不提供镜像 registry")
+	cmd.Flags().BoolVar(&serveSkipPackages, "skip-packages", false, "不提供软件源")
 	return cmd
 }
 
