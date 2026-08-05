@@ -12,26 +12,59 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// Config 聚合清单配置（oses / versions / addons）与可选 s3 上传配置。
-// OSRegistry / K8sVersions / Addons 以 inline 展开，使单文件顶层键直接映射。
+// Config 聚合清单配置（oses / versions / addon_images / addon_packages）、
+// 可选 s3 上传配置与 build 默认参数。
+// OSRegistry / K8sVersions / AddonImages 以 inline 展开，使单文件顶层键直接映射。
 type Config struct {
 	OSRegistry  OSRegistry  `yaml:",inline"`
 	K8sVersions K8sVersions `yaml:",inline"`
-	Addons      Addons      `yaml:",inline"`
-	S3          S3Config    `yaml:"s3"`
+	AddonImages AddonImages `yaml:",inline"`
+	// AddonPackages 附加安装包列表（与 addon_images 平级的顶层节）。
+	// mode ∈ {packages, all} 且未 --skip-addons 时并入软件包下载清单；--only-addons 时为其软件包主体。
+	// 每项为 {name, version} 对象；version 为空 = 不锁版本（透传纯包名），
+	// version 非空按目标包管理器语法转译（apt: name=version；dnf: name-version）。
+	AddonPackages []AddonPackage `yaml:"addon_packages"`
+	S3            S3Config `yaml:"s3"`
+	// Build build 子命令默认参数（优先级：命令行 > 配置 > 内置默认值）。
+	Build BuildOptions `yaml:"build"`
 
 	// 配置加载来源路径（仅用于日志/调试）
 	SourceFile string `yaml:"-"`
 }
 
+// BuildOptions build 子命令可配置的默认参数。
+// 命令行显式传参优先；未传时回落到本配置节；配置值为空时再回落到 flag 内置默认值。
+// 核心软件包/镜像始终使用默认清单（BuildPackageList / kubeadm 生成）；
+// 自定义能力由顶层 addon_packages / addon_images（与 --mode / --only-addons / --skip-addons 联动）提供。
+type BuildOptions struct {
+	OS                string `yaml:"os"`
+	OSVersion         string `yaml:"os_version"`
+	KubernetesVersion string `yaml:"kubernetes_version"`
+	Arch              string `yaml:"arch"`
+	Mirror            string `yaml:"mirror"`
+	WorkDir           string `yaml:"workdir"`
+	OutDir            string `yaml:"out"`
+	Mode              string `yaml:"mode"`
+	SkipAddons        bool   `yaml:"skip_addons"`
+	OnlyAddons        bool   `yaml:"only_addons"`
+	DryRun            bool   `yaml:"dry_run"`
+}
+
 // S3Config 产物上传到 S3 / MinIO 的默认参数。
-// 凭证不写进配置文件，使用 AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY（或 IAM role）。
+// 凭证优先级：配置文件显式 access_key/secret_key（可选 session_token）> AWS 环境变量 / 默认凭证链；
+// 均留空时使用 AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY（或 IAM role）。
+// 注意：AK/SK 明文写入配置文件有泄露风险，建议将配置文件权限设为 600，或改用环境变量。
 type S3Config struct {
 	Bucket         string `yaml:"bucket"`
 	Region         string `yaml:"region"`
 	Endpoint       string `yaml:"endpoint"`
 	Prefix         string `yaml:"prefix"`
 	ForcePathStyle bool   `yaml:"force_path_style"`
+	// AccessKey / SecretKey 可选显式凭证（S3 / MinIO）；皆空时走默认 AWS 凭证链。
+	AccessKey string `yaml:"access_key"`
+	SecretKey string `yaml:"secret_key"`
+	// SessionToken 可选临时凭证。
+	SessionToken string `yaml:"session_token"`
 }
 
 // OSRegistry 操作系统注册表。
@@ -52,8 +85,16 @@ type OS struct {
 	Codename string `yaml:"codename"`
 	// Codenames apt 系版本 → 版本代号映射（ubuntu 20.04→focal、22.04→jammy…）。
 	Codenames map[string]string `yaml:"codenames"`
-	// RPMDistro dnf 系发行版标识，用于 containerd 官方 rpm 源（rocky→rhel9、openEuler→rhel7）。
+	// RPMDistro dnf/yum 系发行版标识，用于 containerd 官方 rpm 源（rocky→rhel9、openEuler→rhel7）。
 	RPMDistro string `yaml:"rpm_distro"`
+	// ContainerdPkg containerd 软件包包名；留空时按发行版推断（ResolveOS）：
+	// openEuler 等从系统源安装的发行版推断为 "containerd"，其余默认 "containerd.io"（docker 源包名）。
+	// 显式配置（如 openEuler 系统源包名 "containerd"）优先于推断。
+	ContainerdPkg string `yaml:"containerd_pkg"`
+	// ContainerdRepo containerd 源类型：docker=download.docker.com 官方源（默认）；
+	// none=不配置 docker 源，containerd 由系统源（everything 等）提供。
+	// 留空时按发行版推断（ResolveOS）：openEuler 推断为 none，其余默认 docker。
+	ContainerdRepo string `yaml:"containerd_repo"`
 }
 
 // ImageFor 返回指定 OS 版本的构建容器镜像（build_images 映射，用于容器内下载软件包）。
@@ -93,9 +134,9 @@ type K8sVersion struct {
 	Runc       string `yaml:"runc"`
 }
 
-// Addons 附加组件镜像清单。
-type Addons struct {
-	Addons []Addon `yaml:"addons"`
+// AddonImages 附加组件镜像清单（顶层 addon_images 节）。
+type AddonImages struct {
+	Addons []Addon `yaml:"addon_images"`
 }
 
 // Addon 单个附加组件镜像。
@@ -103,6 +144,24 @@ type Addon struct {
 	Name  string `yaml:"name"`
 	Image string `yaml:"image"`
 	Tag   string `yaml:"tag"`
+}
+
+// AddonPackage 单个附加安装包（name + 可选 version）。
+// Version 为空（或省略）表示不锁版本，透传纯包名给容器内包管理器；
+// Version 非空按目标包管理器语法转译：apt 系 name=version；dnf/yum 系 name-version。
+type AddonPackage struct {
+	Name    string `yaml:"name"`
+	Version string `yaml:"version"`
+}
+
+// FindAddon 按 name 查找 addon，返回引用（nil, false 表示不存在）。
+func (c *Config) FindAddon(name string) (*Addon, bool) {
+	for i := range c.AddonImages.Addons {
+		if c.AddonImages.Addons[i].Name == name {
+			return &c.AddonImages.Addons[i], true
+		}
+	}
+	return nil, false
 }
 
 // 配置文件名常量。
@@ -131,7 +190,7 @@ func Load(path string) (*Config, error) {
 		return nil, err
 	}
 
-	// 空清单校验：OS 注册表与 k8s 版本清单为空视为配置错误，addons 允许为空。
+	// 空清单校验：OS 注册表与 k8s 版本清单为空视为配置错误，addon_images 允许为空。
 	if len(cfg.OSRegistry.OSes) == 0 {
 		return nil, fmt.Errorf("OS 注册表（oses）配置为空: %s", path)
 	}
@@ -214,6 +273,10 @@ type ResolvedOS struct {
 	BuildImage string
 	Codename   string
 	RPMDistro  string
+	// ContainerdPkg containerd 软件包包名（未配置时按发行版推断：openEuler→containerd；其他→containerd.io）。
+	ContainerdPkg string
+	// ContainerdRepo containerd 源（未配置时按发行版推断：openEuler→none；其他→docker）。
+	ContainerdRepo string
 	// FromRegistry 是否命中 builder.yaml oses 节（仅版本未登记时仍可能为 true）。
 	FromRegistry bool
 }
@@ -227,12 +290,17 @@ func (c *Config) ResolveOS(name, version string) (*ResolvedOS, error) {
 		return nil, fmt.Errorf("OS/版本不能为空")
 	}
 
-	res := &ResolvedOS{Name: name, Version: version}
+	res := &ResolvedOS{
+		Name:           name,
+		Version:        version,
+		ContainerdPkg:  "containerd.io",
+		ContainerdRepo: "docker",
+	}
 	if osDef, ok := c.FindOS(name); ok {
 		res.FromRegistry = true
 		res.PkgManager = osDef.PkgManager
 		if res.PkgManager == "" {
-			res.PkgManager = InferPkgManager(name)
+			res.PkgManager = InferPkgManager(name, version)
 		}
 		img, err := osDef.ImageFor(version)
 		if err != nil {
@@ -244,13 +312,25 @@ func (c *Config) ResolveOS(name, version string) (*ResolvedOS, error) {
 		if res.RPMDistro == "" {
 			res.RPMDistro = InferRPMDistro(name, version)
 		}
+		if osDef.ContainerdPkg != "" {
+			res.ContainerdPkg = osDef.ContainerdPkg
+		} else {
+			res.ContainerdPkg = InferContainerdPkg(name)
+		}
+		if osDef.ContainerdRepo != "" {
+			res.ContainerdRepo = osDef.ContainerdRepo
+		} else {
+			res.ContainerdRepo = InferContainerdRepo(name)
+		}
 		return res, nil
 	}
 
-	res.PkgManager = InferPkgManager(name)
+	res.PkgManager = InferPkgManager(name, version)
 	res.BuildImage = DefaultBuildImage(name, version)
 	res.Codename = InferCodename(name, version)
 	res.RPMDistro = InferRPMDistro(name, version)
+	res.ContainerdPkg = InferContainerdPkg(name)
+	res.ContainerdRepo = InferContainerdRepo(name)
 	return res, nil
 }
 
@@ -264,10 +344,19 @@ func DefaultBuildImage(osName, version string) string {
 	}
 }
 
-// InferPkgManager 按发行版名称推断包管理器。
-func InferPkgManager(osName string) string {
+// InferPkgManager 按发行版名称与版本推断包管理器。
+// centos/rhel/almalinux 主版本为 7 时使用 yum（CentOS 7 无 dnf），
+// 8/9+ 使用 dnf；rocky/fedora/openeuler/amazonlinux 一律 dnf；其余（ubuntu/debian/未知）apt。
+func InferPkgManager(osName, version string) string {
 	switch strings.ToLower(osName) {
-	case "rocky", "centos", "rhel", "almalinux", "fedora", "openeuler", "amazonlinux":
+	case "centos", "rhel", "almalinux":
+		// 取主版本号：7 / 7.9 → 7 → yum；8 / 9 → dnf
+		major := strings.Split(version, ".")[0]
+		if major == "7" {
+			return "yum"
+		}
+		return "dnf"
+	case "rocky", "fedora", "openeuler", "amazonlinux":
 		return "dnf"
 	default:
 		// ubuntu / debian / 未知发行版默认 apt
@@ -323,6 +412,28 @@ func InferRPMDistro(osName, version string) string {
 	}
 }
 
+// InferContainerdPkg 按发行版推断 containerd 软件包包名：
+// openEuler 从系统源（everything 仓库）安装，包名为 "containerd"；
+// 其余发行版从 docker 官方源安装，包名为 "containerd.io"。
+// 仅当 builder.yaml 未显式配置 containerd_pkg 时生效（显式配置优先）。
+func InferContainerdPkg(osName string) string {
+	if strings.ToLower(osName) == "openeuler" {
+		return "containerd"
+	}
+	return "containerd.io"
+}
+
+// InferContainerdRepo 按发行版推断 containerd 源类型：
+// openEuler 对应 download.docker.com/linux/rhel/7/ 实测 404（docker 官方已停止发布 RHEL7 仓库），
+// 返回 "none"（不配置 docker 源，由系统源提供）；其余发行版返回 "docker"（官方源默认）。
+// 仅当 builder.yaml 未显式配置 containerd_repo 时生效（显式配置优先）。
+func InferContainerdRepo(osName string) string {
+	if strings.ToLower(osName) == "openeuler" {
+		return "none"
+	}
+	return "docker"
+}
+
 // k8sVersionRe 合法 k8s 版本格式：vX.Y.Z（如 v1.31.0、v1.29.5）。
 var k8sVersionRe = regexp.MustCompile(`^v\d+\.\d+\.\d+$`)
 
@@ -361,17 +472,18 @@ func (c *Config) K8sVersionsList() []string {
 }
 
 // SystemDepsForOS 返回指定 OS 的容器内依赖包清单。
-func (c *Config) SystemDepsForOS(osName string) []string {
+// osVersion 用于区分同族发行版的包管理器（如 centos 7 → yum、centos 8+ → dnf）。
+func (c *Config) SystemDepsForOS(osName, osVersion string) []string {
 	// 通用依赖：conntrack ipvsadm socat ebtables chrony
 	deps := []string{"conntrack", "ipvsadm", "socat", "ebtables", "chrony"}
-	pkgManager := InferPkgManager(osName)
+	pkgManager := InferPkgManager(osName, osVersion)
 	if osDef, ok := c.FindOS(osName); ok && osDef.PkgManager != "" {
 		pkgManager = osDef.PkgManager
 	}
 	switch pkgManager {
 	case "apt":
 		deps = append(deps, "nfs-common")
-	case "dnf":
+	case "dnf", "yum":
 		deps = append(deps, "nfs-utils")
 	}
 	return deps

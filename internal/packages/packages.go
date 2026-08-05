@@ -1,4 +1,4 @@
-// Package packages 在目标系统容器内通过包管理器（apt/dnf）递归下载
+// Package packages 在目标系统容器内通过包管理器（apt/dnf/yum）递归下载
 // k8s 组件、容器运行时与系统依赖包，并生成对应的软件源（pkgs.k8s.io / download.docker.com）。
 // 依赖闭包交由包管理器处理；docker 不可用时该步骤标记为 skipped。
 package packages
@@ -23,7 +23,7 @@ type Options struct {
 	OutDir string
 	// BuildImage 容器镜像（如 ubuntu:22.04）。
 	BuildImage string
-	// PkgManager 包管理器：apt 或 dnf。
+	// PkgManager 包管理器：apt、dnf 或 yum。
 	PkgManager string
 	// K8sMinor k8s 大版本（v1.27），用于 pkgs.k8s.io 源。
 	K8sMinor string
@@ -33,6 +33,12 @@ type Options struct {
 	RPMDistro string
 	// AptOS apt 发行版家族（ubuntu/debian），用于 containerd 源。
 	AptOS string
+	// ContainerdPkg containerd 软件包包名，默认 "containerd.io"（docker 源包名）；
+	// openEuler 等从系统源安装的发行版传 "containerd"。
+	ContainerdPkg string
+	// ContainerdRepo containerd 源类型：docker=download.docker.com 官方源（默认，空值同）；
+	// none=不配置 docker 源，containerd 由系统源（everything 等）提供。
+	ContainerdRepo string
 	// Pkgs 待下载软件包清单（k8s + 运行时 + 系统依赖）。
 	Pkgs []string
 	// DockerBin docker 命令路径，默认 "docker"。
@@ -45,6 +51,11 @@ type Options struct {
 	Arch string
 	// CrictlBaseURL 测试注入：crictl 回退下载基地址，默认 GitHub release。
 	CrictlBaseURL string
+	// SkipK8sContainerdRepos 跳过 k8s 组件源（pkgs.k8s.io）与 containerd 源
+	// （download.docker.com）的配置：仅保留系统源（--only-addons 只下载附加软件包，
+	// 全部来自系统源，配置 k8s/containerd 源徒增失效源导致 makecache 失败）。
+	// 默认 false 与既有行为一致：配置全部软件源。
+	SkipK8sContainerdRepos bool
 }
 
 // FileInfo 单个软件包文件信息。
@@ -105,6 +116,44 @@ type DownloadScriptOpts struct {
 	CheckCrictl bool
 }
 
+// centos7VaultFix CentOS 7 已于 2024-06 停止维护（EOL），官方 mirrorlist.centos.org
+// 域名 DNS 已不可解析（NXDOMAIN），centos:7 容器默认 base/extras/updates 源必然失败。
+// 该片段作为 yum 分支脚本开头的固定前置逻辑：检测 CentOS 7 时移走默认 CentOS-Base.repo
+// （其 [base]/[extras]/[updates] 块只配 mirrorlist 没有 baseurl，若仅注释 mirrorlist 行会
+// 留下无 baseurl 的 repo，与新增 vault 源重复导致 "Repository listed more than once"），
+// 并写入指向 vault.centos.org 归档源（7.9.2009）的 centos-vault.repo，保证后续
+// yum makecache / yum install 能拉取系统依赖包（vim/conntrack 等）。
+// 非 CentOS 7（检测不命中）原样通过，不影响其他系统。heredoc 用带引号分隔符防止
+// shell 展开 $basearch，repo 文件保留字面 $basearch 由 yum 在读取时替换。
+const centos7VaultFix = `if [ -f /etc/centos-release ] && grep -q 'release 7\.' /etc/centos-release 2>/dev/null; then
+  # CentOS 7 EOL：官方 mirrorlist.centos.org 已不可解析，切换到 vault.centos.org 归档源。
+  # 移走默认 CentOS-Base.repo，避免 [base]/[extras]/[updates] 与 vault 源重复且无 baseurl。
+  mv -f /etc/yum.repos.d/CentOS-Base.repo /etc/yum.repos.d/CentOS-Base.repo.disabled 2>/dev/null || true
+  cat > /etc/yum.repos.d/centos-vault.repo <<'EOF'
+[base]
+name=CentOS-7 - Base (vault)
+baseurl=https://vault.centos.org/7.9.2009/os/$basearch/
+enabled=1
+gpgcheck=1
+gpgkey=file:///etc/pki/rpm-gpg/RPM-GPG-KEY-CentOS-7
+
+[extras]
+name=CentOS-7 - Extras (vault)
+baseurl=https://vault.centos.org/7.9.2009/extras/$basearch/
+enabled=1
+gpgcheck=1
+gpgkey=file:///etc/pki/rpm-gpg/RPM-GPG-KEY-CentOS-7
+
+[updates]
+name=CentOS-7 - Updates (vault)
+baseurl=https://vault.centos.org/7.9.2009/updates/$basearch/
+enabled=1
+gpgcheck=1
+gpgkey=file:///etc/pki/rpm-gpg/RPM-GPG-KEY-CentOS-7
+EOF
+fi
+`
+
 // BuildDownloadScript 构造容器内完整下载脚本：
 // 配置源（k8s + containerd）→ 更新缓存 → 递归下载 → 依赖闭包验证 → cri-tools 检测。
 func BuildDownloadScript(opts DownloadScriptOpts) string {
@@ -126,6 +175,22 @@ func BuildDownloadScript(opts DownloadScriptOpts) string {
 		b.WriteString(fmt.Sprintf("dnf install --assumeno %s >/dev/null\n", pkgs))
 		if opts.CheckCrictl {
 			b.WriteString("if ! dnf list --available cri-tools >/dev/null 2>&1; then touch /out/cri-tools-missing; fi\n")
+		}
+	case "yum": // CentOS 7 等无 dnf，仅 yum。源配置与 dnf 相同（/etc/yum.repos.d/ + rpm --import）。
+		b.WriteString("set -e\n")
+		// CentOS 7 已 EOL，官方 mirrorlist 源不可解析，先切换到 vault 归档源（非 CentOS 7 该片段不生效）。
+		b.WriteString(centos7VaultFix)
+		b.WriteString(DnfSourceScript(opts.Repos))
+		b.WriteString("yum makecache\n")
+		b.WriteString("mkdir -p " + opts.ArchiveDir + "\n")
+		// downloadonly 插件（yum-plugin-downloadonly）提供 --downloadonly；安装失败回退 yum-utils（提供 yumdownloader）。
+		b.WriteString("if yum -y install yum-plugin-downloadonly 2>/dev/null; then :; else yum -y install yum-utils; fi\n")
+		// 下载：优先 --downloadonly；失败回退 yumdownloader --resolve。
+		b.WriteString(fmt.Sprintf("if yum install -y --downloadonly --downloaddir=%s %s 2>/dev/null; then :\n", opts.ArchiveDir, pkgs))
+		b.WriteString(fmt.Sprintf("else\n  yumdownloader --resolve --destdir=%s %s\nfi\n", opts.ArchiveDir, pkgs))
+		// 依赖闭包验证：yum 无 --assumeno，--downloadonly 成功即表示依赖可解析（失败走回退并受 set -e 约束）。
+		if opts.CheckCrictl {
+			b.WriteString("if ! yum list --available cri-tools >/dev/null 2>&1; then touch /out/cri-tools-missing; fi\n")
 		}
 	default: // apt
 		b.WriteString("set -e\nexport DEBIAN_FRONTEND=noninteractive\n")
@@ -168,7 +233,16 @@ func Fetch(ctx context.Context, opts Options) (*Result, error) {
 		return nil, fmt.Errorf("packages: 软件包清单为空")
 	}
 
-	repos := append(K8sRepos(opts.K8sMinor), ContainerdRepos(opts.AptOS, opts.Codename, opts.RPMDistro)...)
+	repos := []Repo{}
+	if !opts.SkipK8sContainerdRepos {
+		// containerd_repo=none（openEuler 系统源场景）：只配置 k8s 源，不配置 download.docker.com 源
+		// （docker 官方无 rhel/7 仓库，配置会导致 dnf makecache 失败）；否则按默认 append docker 源。
+		if opts.ContainerdRepo == "none" {
+			repos = K8sRepos(opts.K8sMinor)
+		} else {
+			repos = append(K8sRepos(opts.K8sMinor), ContainerdRepos(opts.AptOS, opts.Codename, opts.RPMDistro)...)
+		}
+	}
 	script := BuildDownloadScript(DownloadScriptOpts{
 		PkgManager:  opts.PkgManager,
 		Repos:       repos,

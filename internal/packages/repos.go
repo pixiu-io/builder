@@ -55,8 +55,7 @@ name=Kubernetes (stable %s)
 baseurl=https://pkgs.k8s.io/core:/stable:/%s/rpm/
 enabled=1
 gpgcheck=1
-gpgkey=https://pkgs.k8s.io/core:/stable:/%s/rpm/repodata/repomd.xml.key
-exclude=kubelet kubeadm kubectl`, k8sMinor, k8sMinor, keyMinor),
+gpgkey=https://pkgs.k8s.io/core:/stable:/%s/rpm/repodata/repomd.xml.key`, k8sMinor, k8sMinor, keyMinor),
 		DnfKeyURL: fmt.Sprintf("https://pkgs.k8s.io/core:/stable:/%s/rpm/repodata/repomd.xml.key", keyMinor),
 	}}
 }
@@ -122,8 +121,9 @@ func AptSourceScript(repos []Repo) string {
 	return b.String()
 }
 
-// DnfSourceScript 生成容器内配置 dnf 源的 shell 片段：
+// DnfSourceScript 生成容器内配置 dnf/yum 源的 shell 片段：
 // 写入 /etc/yum.repos.d/ 并 rpm --import 导入 GPG key。
+// CentOS 7 等使用 yum 的系统同样适用（yum 与 dnf 共用 /etc/yum.repos.d/ 与 rpm --import 语法）。
 func DnfSourceScript(repos []Repo) string {
 	var b strings.Builder
 	for _, r := range repos {
@@ -140,17 +140,21 @@ func DnfSourceScript(repos []Repo) string {
 }
 
 // BuildPackageList 按包管理器生成容器内下载的软件包清单：
-// k8s 三件套（kubeadm/kubelet/kubectl） + 运行时（containerd.io/cri-tools） + 系统依赖。
-// 注：runc 由 containerd.io 包内嵌提供，不单独安装，避免 download.docker.com 的
-// containerd.io 与独立 runc 包存在 Conflicts: runc 冲突导致 apt 无法同时解析。
-// pinK8s=true 时对 k8s 组件做精确版本约束（apt: pkg=<ver>；dnf: pkg-<ver>），
+// k8s 三件套（kubeadm/kubelet/kubectl） + 运行时（containerdPkg/cri-tools） + 系统依赖。
+// 注：runc 由 containerd 包（containerd.io 或系统源 containerd）内嵌提供，不单独安装，
+// 避免 download.docker.com 的 containerd.io 与独立 runc 包存在 Conflicts: runc 冲突导致 apt 无法同时解析。
+// pinK8s=true 时对 k8s 组件做精确版本约束（apt: pkg=<ver>；dnf/yum: pkg-<ver>），
 // 默认 false 使用源内 stable 最新版本。
-func BuildPackageList(pkgManager, k8sVersion string, deps []string, pinK8s bool) []string {
+// containerdPkg 为空时默认 "containerd.io"（docker 源包名）；openEuler 等系统源场景传 "containerd"。
+func BuildPackageList(pkgManager, k8sVersion string, deps []string, pinK8s bool, containerdPkg string) []string {
+	if containerdPkg == "" {
+		containerdPkg = "containerd.io"
+	}
 	ver := strings.TrimPrefix(k8sVersion, "v")
 	k8sPkgs := []string{"kubeadm", "kubelet", "kubectl"}
 	if pinK8s {
 		for i, p := range k8sPkgs {
-			if pkgManager == "dnf" {
+			if pkgManager == "dnf" || pkgManager == "yum" {
 				k8sPkgs[i] = p + "-" + ver
 			} else {
 				k8sPkgs[i] = p + "=" + ver
@@ -159,8 +163,8 @@ func BuildPackageList(pkgManager, k8sVersion string, deps []string, pinK8s bool)
 	}
 	out := make([]string, 0, len(k8sPkgs)+2+len(deps))
 	out = append(out, k8sPkgs...)
-	// runc 由 containerd.io 包内嵌提供，不单独安装（避免 Conflicts: runc 冲突）
-	out = append(out, "containerd.io", "cri-tools")
+	// runc 由 containerd 包内嵌提供，不单独安装（避免 Conflicts: runc 冲突）
+	out = append(out, containerdPkg, "cri-tools")
 	out = append(out, deps...)
 	return out
 }

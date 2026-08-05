@@ -48,10 +48,49 @@ versions:
     containerd: "1.7.13"
     crictl: "1.28.0"
     runc: "1.1.7"
-addons:
+addon_images:
   - name: flannel
     image: "docker.io/flannel/flannel"
     tag: "v0.24.2"
+`
+	if err := os.WriteFile(filepath.Join(dir, config.FileName), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(filepath.Join(dir, config.FileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return cfg
+}
+
+// loadOpenEulerConfig 构造含 openEuler（系统源 containerd）与 rocky（默认 docker 源）的样例配置。
+func loadOpenEulerConfig(t *testing.T) *config.Config {
+	t.Helper()
+	dir := t.TempDir()
+
+	content := `
+oses:
+  - name: openEuler
+    versions: ["22.03"]
+    pkg_manager: dnf
+    build_images:
+      "22.03": openeuler/openeuler:22.03-lts-sp3
+    rpm_distro: rhel7
+    containerd_pkg: "containerd"
+    containerd_repo: "none"
+    archs: ["amd64", "arm64"]
+  - name: rocky
+    versions: ["9"]
+    pkg_manager: dnf
+    build_images:
+      "9": rockylinux:9
+    rpm_distro: rhel9
+    archs: ["amd64", "arm64"]
+versions:
+  - version: v1.35.7
+    containerd: "1.7.13"
+    crictl: "1.35.0"
+    runc: "1.1.7"
 `
 	if err := os.WriteFile(filepath.Join(dir, config.FileName), []byte(content), 0o644); err != nil {
 		t.Fatal(err)
@@ -111,6 +150,8 @@ func TestValidateOptions(t *testing.T) {
 		{"仅镜像模式", func(o *Options) { o.Mode = "images" }, ""},
 		{"packages 缺 OS", func(o *Options) { o.Mode = "packages"; o.OS = ""; o.OSVersion = "" }, "缺少 OS/版本"},
 		{"images 缺 OS（Build 会补默认；validate 单独调用时也允许空）", func(o *Options) { o.Mode = "images"; o.OS = ""; o.OSVersion = "" }, ""},
+		{"仅附加组件模式", func(o *Options) { o.OnlyAddons = true }, ""},
+		{"仅附加组件 + 跳过附加组件互斥", func(o *Options) { o.OnlyAddons = true; o.SkipAddons = true }, "--only-addons 与 --skip-addons 不能同时使用"},
 	}
 	for _, c := range cases {
 		o := base
@@ -213,9 +254,9 @@ func TestBuildDryRunLogsToOut(t *testing.T) {
 	logs := buf.String()
 	for _, want := range []string{
 		"[builder] 步骤 1/5: 容器内软件包下载",
-		"[builder] 步骤 1/5: 完成（dry-run）",
+		"[builder] 步骤 1/5: 完成（dry-run（软件包: kubeadm, kubelet, kubectl, containerd.io, cri-tools",
 		"[builder] 步骤 2/5: 镜像清单与保存",
-		"[builder] 步骤 2/5: 完成（dry-run）",
+		"[builder] 步骤 2/5: 完成（dry-run（镜像: 核心(kubeadm默认) | 附加(flannel)）",
 		"[builder] 步骤 3/5: 渲染脚本",
 		"[builder] 步骤 3/5: 完成（install.sh + load-images.sh）",
 		"[builder] 步骤 4/5: 生成 manifest",
@@ -283,8 +324,257 @@ func TestBuildArbitraryOSDryRun(t *testing.T) {
 	}
 }
 
+func TestBuildDryRunCentos7UsesYum(t *testing.T) {
+	// centos 7 应推导为 yum 包管理器：系统依赖含 nfs-utils、不含 nfs-common，
+	// 且软件包 dry-run 清单不出现 dnf/apt 痕迹。
+	cfg := loadSampleConfig(t)
+	var buf bytes.Buffer
+	res, err := Build(context.Background(), Options{
+		Config: cfg, OS: "centos", OSVersion: "7", Arch: "amd64",
+		K8sVersion: "v1.32.9", Mirror: mirror.Official,
+		WorkDir: filepath.Join(t.TempDir(), "work"), OutDir: filepath.Join(t.TempDir(), "dist"),
+		DryRun: true, Out: &buf,
+	})
+	if err != nil {
+		t.Fatalf("centos 7（yum）dry-run 失败: %v", err)
+	}
+	logs := buf.String()
+	if !strings.Contains(logs, "nfs-utils") {
+		t.Errorf("centos 7（yum）系统依赖应含 nfs-utils:\n%s", logs)
+	}
+	if strings.Contains(logs, "nfs-common") {
+		t.Errorf("centos 7（yum）系统依赖不应含 nfs-common:\n%s", logs)
+	}
+	checkStep(t, res, "容器内软件包下载", "ok", "")
+}
+
+func TestBuildDryRunCentos9UsesDnf(t *testing.T) {
+	// centos 9 仍应推导为 dnf（回归：仅 7 系走 yum，8/9 系不受影响）。
+	cfg := loadSampleConfig(t)
+	var buf bytes.Buffer
+	res, err := Build(context.Background(), Options{
+		Config: cfg, OS: "centos", OSVersion: "9", Arch: "amd64",
+		K8sVersion: "v1.32.9", Mirror: mirror.Official,
+		WorkDir: filepath.Join(t.TempDir(), "work"), OutDir: filepath.Join(t.TempDir(), "dist"),
+		DryRun: true, Out: &buf,
+	})
+	if err != nil {
+		t.Fatalf("centos 9（dnf）dry-run 失败: %v", err)
+	}
+	logs := buf.String()
+	if !strings.Contains(logs, "nfs-utils") {
+		t.Errorf("centos 9（dnf）系统依赖应含 nfs-utils:\n%s", logs)
+	}
+	if strings.Contains(logs, "nfs-common") {
+		t.Errorf("centos 9（dnf）系统依赖不应含 nfs-common:\n%s", logs)
+	}
+	checkStep(t, res, "容器内软件包下载", "ok", "")
+}
+
+func TestBuildOpenEulerDryRunUsesSystemContainerd(t *testing.T) {
+	// openEuler（containerd_pkg=containerd + containerd_repo=none）：软件包清单应含
+	// containerd（系统源包名），而非 containerd.io（docker 源包名）。
+	cfg := loadOpenEulerConfig(t)
+	var buf bytes.Buffer
+	res, err := Build(context.Background(), Options{
+		Config: cfg, OS: "openEuler", OSVersion: "22.03", Arch: "amd64",
+		K8sVersion: "v1.35.7", Mirror: mirror.Official,
+		WorkDir: filepath.Join(t.TempDir(), "work"), OutDir: filepath.Join(t.TempDir(), "dist"),
+		DryRun: true, Out: &buf,
+	})
+	if err != nil {
+		t.Fatalf("openEuler dry-run 失败: %v", err)
+	}
+	logs := buf.String()
+	if !strings.Contains(logs, "kubeadm, kubelet, kubectl, containerd, cri-tools") {
+		t.Errorf("openEuler 软件包清单应含 containerd（非 containerd.io）:\n%s", logs)
+	}
+	if strings.Contains(logs, "containerd.io") {
+		t.Errorf("openEuler 软件包清单不应含 containerd.io:\n%s", logs)
+	}
+	checkStep(t, res, "容器内软件包下载", "ok", "")
+}
+
+func TestBuildOpenEulerPackagesNoDockerRepo(t *testing.T) {
+	// openEuler 非 dry-run（--mode packages，fake docker）：容器内脚本应配置 k8s 源，
+	// 但不配置 download.docker.com 源（rhel/7 仓库 404 会导致 dnf makecache 失败）。
+	cfg := loadOpenEulerConfig(t)
+	binDir := t.TempDir()
+	binPath := filepath.Join(binDir, "docker")
+	writeBuilderFakeDocker(t, binPath)
+
+	res, err := Build(context.Background(), Options{
+		Config: cfg, OS: "openEuler", OSVersion: "22.03", Arch: "amd64",
+		K8sVersion: "v1.35.7", Mirror: mirror.Official,
+		WorkDir: filepath.Join(t.TempDir(), "work"), OutDir: filepath.Join(t.TempDir(), "dist"),
+		DockerBin: binPath, Mode: "packages",
+	})
+	if err != nil {
+		t.Fatalf("openEuler packages 构建失败: %v", err)
+	}
+	checkStep(t, res, "容器内软件包下载", "ok", "")
+
+	data, err := os.ReadFile(filepath.Join(binDir, "args.log"))
+	if err != nil {
+		t.Fatalf("读取 fake docker args.log 失败: %v", err)
+	}
+	script := string(data)
+	// k8s 源 + containerd 包（系统源）保留
+	for _, want := range []string{
+		"pkgs.k8s.io",
+		"dnf makecache",
+		"kubectl containerd cri-tools",
+	} {
+		if !strings.Contains(script, want) {
+			t.Errorf("openEuler 脚本应含 %q:\n%s", want, script)
+		}
+	}
+	// 不应配置 docker containerd 源
+	for _, forbid := range []string{
+		"download.docker.com",
+		"[docker-ce-stable]",
+		"containerd.repo",
+		"rhel/7/$basearch/stable",
+	} {
+		if strings.Contains(script, forbid) {
+			t.Errorf("openEuler 脚本不应含 %q:\n%s", forbid, script)
+		}
+	}
+}
+
+// loadOpenEulerInferConfig 构造 openEuler 条目不含 containerd_pkg/containerd_repo 字段的样例配置，
+// 用于验证 ResolveOS 按发行版推断（openEuler → containerd + none）在构建管线端到端生效。
+func loadOpenEulerInferConfig(t *testing.T) *config.Config {
+	t.Helper()
+	dir := t.TempDir()
+
+	content := `
+oses:
+  - name: openEuler
+    versions: ["22.03"]
+    pkg_manager: dnf
+    build_images:
+      "22.03": openeuler/openeuler:22.03-lts-sp3
+    rpm_distro: rhel7
+    archs: ["amd64", "arm64"]
+  - name: rocky
+    versions: ["9"]
+    pkg_manager: dnf
+    build_images:
+      "9": rockylinux:9
+    rpm_distro: rhel9
+    archs: ["amd64", "arm64"]
+versions:
+  - version: v1.35.7
+    containerd: "1.7.13"
+    crictl: "1.35.0"
+    runc: "1.1.7"
+`
+	if err := os.WriteFile(filepath.Join(dir, config.FileName), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(filepath.Join(dir, config.FileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return cfg
+}
+
+func TestBuildOpenEulerInferPackagesNoDockerRepo(t *testing.T) {
+	// 回归：openEuler 条目未配置 containerd_pkg/containerd_repo（旧版 builder.yaml 兼容场景），
+	// ResolveOS 按发行版推断 containerd + none，容器内脚本应配置 k8s 源但不配置 download.docker.com 源。
+	cfg := loadOpenEulerInferConfig(t)
+	binDir := t.TempDir()
+	binPath := filepath.Join(binDir, "docker")
+	writeBuilderFakeDocker(t, binPath)
+
+	res, err := Build(context.Background(), Options{
+		Config: cfg, OS: "openEuler", OSVersion: "22.03", Arch: "amd64",
+		K8sVersion: "v1.35.7", Mirror: mirror.Official,
+		WorkDir: filepath.Join(t.TempDir(), "work"), OutDir: filepath.Join(t.TempDir(), "dist"),
+		DockerBin: binPath, Mode: "packages",
+	})
+	if err != nil {
+		t.Fatalf("openEuler（推断）packages 构建失败: %v", err)
+	}
+	checkStep(t, res, "容器内软件包下载", "ok", "")
+
+	data, err := os.ReadFile(filepath.Join(binDir, "args.log"))
+	if err != nil {
+		t.Fatalf("读取 fake docker args.log 失败: %v", err)
+	}
+	script := string(data)
+	// k8s 源 + 系统源 containerd 包保留
+	for _, want := range []string{
+		"pkgs.k8s.io",
+		"dnf makecache",
+		"kubectl containerd cri-tools",
+	} {
+		if !strings.Contains(script, want) {
+			t.Errorf("openEuler（推断）脚本应含 %q:\n%s", want, script)
+		}
+	}
+	// 不应配置 docker containerd 源
+	for _, forbid := range []string{
+		"download.docker.com",
+		"[docker-ce-stable]",
+		"containerd.repo",
+		"rhel/7/$basearch/stable",
+	} {
+		if strings.Contains(script, forbid) {
+			t.Errorf("openEuler（推断）脚本不应含 %q:\n%s", forbid, script)
+		}
+	}
+}
+
+func TestBuildOpenEulerInferDryRunUsesSystemContainerd(t *testing.T) {
+	// 回归：openEuler 未配置 containerd 字段时，dry-run 软件包清单应为 containerd（系统源包名）。
+	cfg := loadOpenEulerInferConfig(t)
+	var buf bytes.Buffer
+	res, err := Build(context.Background(), Options{
+		Config: cfg, OS: "openEuler", OSVersion: "22.03", Arch: "amd64",
+		K8sVersion: "v1.35.7", Mirror: mirror.Official,
+		WorkDir: filepath.Join(t.TempDir(), "work"), OutDir: filepath.Join(t.TempDir(), "dist"),
+		DryRun: true, Out: &buf,
+	})
+	if err != nil {
+		t.Fatalf("openEuler（推断）dry-run 失败: %v", err)
+	}
+	logs := buf.String()
+	if !strings.Contains(logs, "kubeadm, kubelet, kubectl, containerd, cri-tools") {
+		t.Errorf("openEuler（推断）软件包清单应含 containerd（非 containerd.io）:\n%s", logs)
+	}
+	if strings.Contains(logs, "containerd.io") {
+		t.Errorf("openEuler（推断）软件包清单不应含 containerd.io:\n%s", logs)
+	}
+	checkStep(t, res, "容器内软件包下载", "ok", "")
+}
+
+func TestBuildRockyDryRunDefaultContainerd(t *testing.T) {
+	// 回归：rocky 等默认（未配置 containerd_repo）软件包清单仍为 containerd.io（docker 源包名）。
+	cfg := loadOpenEulerConfig(t)
+	var buf bytes.Buffer
+	res, err := Build(context.Background(), Options{
+		Config: cfg, OS: "rocky", OSVersion: "9", Arch: "amd64",
+		K8sVersion: "v1.35.7", Mirror: mirror.Official,
+		WorkDir: filepath.Join(t.TempDir(), "work"), OutDir: filepath.Join(t.TempDir(), "dist"),
+		DryRun: true, Out: &buf,
+	})
+	if err != nil {
+		t.Fatalf("rocky dry-run 失败: %v", err)
+	}
+	logs := buf.String()
+	if !strings.Contains(logs, "containerd.io") {
+		t.Errorf("rocky 软件包清单应含 containerd.io（默认 docker 源）:\n%s", logs)
+	}
+	if strings.Contains(logs, "kubeadm, kubelet, kubectl, containerd, cri-tools") {
+		t.Errorf("rocky 软件包清单不应含系统源包名 containerd:\n%s", logs)
+	}
+	checkStep(t, res, "容器内软件包下载", "ok", "")
+}
+
 func TestBuildAbortsWhenDockerUnavailable(t *testing.T) {
-	// docker 不可用（未显式 --skip-images）→ 构建应在软件包步骤中断，不产出后续步骤与 tar.gz。
+	// docker 不可用（未显式跳过镜像阶段，如 --mode packages）→ 构建应在软件包步骤中断，不产出后续步骤与 tar.gz。
 	cfg := loadSampleConfig(t)
 	res, err := Build(context.Background(), Options{
 		Config:     cfg,
@@ -313,45 +603,6 @@ func TestBuildAbortsWhenDockerUnavailable(t *testing.T) {
 	// 中断时不应生成 tar.gz
 	if res.TarPath != "" {
 		t.Errorf("中断时不应生成 tar.gz: %s", res.TarPath)
-	}
-}
-
-func TestBuildSkipImagesWithFakeDocker(t *testing.T) {
-	// --skip-images 显式跳过镜像阶段：docker 可用时构建成功，镜像步骤为 skipped 而非中断。
-	cfg := loadSampleConfig(t)
-	binDir := t.TempDir()
-	binPath := filepath.Join(binDir, "docker")
-	writeBuilderFakeDocker(t, binPath)
-
-	res, err := Build(context.Background(), Options{
-		Config:     cfg,
-		OS:         "ubuntu",
-		OSVersion:  "22.04",
-		Arch:       "amd64",
-		K8sVersion: "v1.27.3",
-		Mirror:     mirror.Official,
-		WorkDir:    filepath.Join(t.TempDir(), "work"),
-		OutDir:     filepath.Join(t.TempDir(), "dist"),
-		DockerBin:  binPath,
-		SkipImages: true,
-	})
-	if err != nil {
-		t.Fatalf("--skip-images + docker 可用时应成功: %v", err)
-	}
-	if _, err := os.Stat(res.TarPath); err != nil {
-		t.Errorf("tar.gz 未生成: %v", err)
-	}
-	foundImg := false
-	for _, s := range res.Steps {
-		if s.Name == "镜像清单与保存" {
-			foundImg = true
-			if s.Status != "skipped" {
-				t.Errorf("--skip-images 时镜像步骤应为 skipped，实际 %s", s.Status)
-			}
-		}
-	}
-	if !foundImg {
-		t.Error("Steps 中缺少镜像清单与保存步骤")
 	}
 }
 
@@ -570,7 +821,7 @@ func TestBuildDefaultWorkDirUsesAbsoluteMountPath(t *testing.T) {
 		K8sVersion: "v1.27.3",
 		Mirror:     mirror.Official,
 		DockerBin:  binPath,
-		SkipImages: true,
+		Mode:       "packages",
 	})
 	if err != nil {
 		t.Fatalf("Build 失败: %v", err)
@@ -897,6 +1148,436 @@ exit 1
 `
 	if err := os.WriteFile(binPath, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// equalStrings 比较两个字符串切片相等。
+func equalStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func TestResolvePackageList(t *testing.T) {
+	cfg := loadSampleConfig(t)
+
+	// 默认：k8s 组件 + 运行时 + apt 系统依赖（loadSampleConfig 无 addon_packages）
+	def := resolvePackageList(Options{Config: cfg, OS: "ubuntu"}, cfg, "apt", "v1.27.3", "containerd.io")
+	wantDef := []string{"kubeadm", "kubelet", "kubectl", "containerd.io", "cri-tools",
+		"conntrack", "ipvsadm", "socat", "ebtables", "chrony", "nfs-common"}
+	if !equalStrings(def, wantDef) {
+		t.Errorf("默认清单 = %v", def)
+	}
+}
+
+// loadAddonConfig 基于样例配置构造含顶层 addon_packages 与多 addon_images 的配置：
+//
+//	addon_images: flannel, dashboard
+//	addon_packages: [conntrack, ipset]（conntrack 已在系统依赖中，用于验证去重）
+func loadAddonConfig(t *testing.T) *config.Config {
+	t.Helper()
+	cfg := loadSampleConfig(t)
+	cfg.AddonImages.Addons = append(cfg.AddonImages.Addons, config.Addon{
+		Name: "dashboard", Image: "docker.io/kubernetesui/dashboard", Tag: "v2.7.0",
+	})
+	cfg.AddonPackages = []config.AddonPackage{{Name: "conntrack"}, {Name: "ipset"}}
+	return cfg
+}
+
+func TestResolvePackageListAddonPackages(t *testing.T) {
+	cfg := loadAddonConfig(t)
+	defaultPkgs := []string{"kubeadm", "kubelet", "kubectl", "containerd.io", "cri-tools",
+		"conntrack", "ipvsadm", "socat", "ebtables", "chrony", "nfs-common"}
+
+	// 默认构建 → 默认清单 + 顶层 addon_packages 并入（conntrack 已在系统依赖中 → 去重，ipset 追加）
+	got := resolvePackageList(Options{Config: cfg, OS: "ubuntu"}, cfg, "apt", "v1.27.3", "containerd.io")
+	want := append(append([]string{}, defaultPkgs...), "ipset")
+	if !equalStrings(got, want) {
+		t.Errorf("默认并入 addon_packages 异常:\n got %v\nwant %v", got, want)
+	}
+
+	// --skip-addons：addon_packages 不并入
+	got = resolvePackageList(Options{Config: cfg, OS: "ubuntu", SkipAddons: true}, cfg, "apt", "v1.27.3", "containerd.io")
+	if !equalStrings(got, defaultPkgs) {
+		t.Errorf("skip-addons 应排除 addon_packages:\n got %v\nwant %v", got, defaultPkgs)
+	}
+}
+
+func TestResolvePackageListOnlyAddons(t *testing.T) {
+	cfg := loadAddonConfig(t)
+
+	// only-addons：核心全去，软件包 = addon_packages
+	got := resolvePackageList(Options{Config: cfg, OS: "ubuntu", OnlyAddons: true}, cfg, "apt", "v1.27.3", "containerd.io")
+	want := []string{"conntrack", "ipset"}
+	if !equalStrings(got, want) {
+		t.Errorf("only-addons 软件包应等于 addon_packages:\n got %v\nwant %v", got, want)
+	}
+
+	// only-addons 且未配置 addon_packages → 空软件包清单
+	emptyCfg := loadSampleConfig(t)
+	got = resolvePackageList(Options{Config: emptyCfg, OS: "ubuntu", OnlyAddons: true}, emptyCfg, "apt", "v1.27.3", "containerd.io")
+	if len(got) != 0 {
+		t.Errorf("only-addons 且无 addon_packages 应为空，实际 %v", got)
+	}
+}
+
+func TestPackageEntry(t *testing.T) {
+	cases := []struct {
+		name, version, pkgManager, want string
+	}{
+		{"vim", "", "apt", "vim"},
+		{"vim", "", "dnf", "vim"},
+		{"vim", "9.0", "apt", "vim=9.0"},
+		{"vim", "9.0", "dnf", "vim-9.0"},
+		{"vim", " 9.0 ", "apt", "vim=9.0"},   // version 空白修剪
+		{"vim", "9.0", "unknown", "vim=9.0"}, // 未知包管理器默认 apt 语法
+		{"vim", "9.0", "APT", "vim=9.0"},     // 大小写不敏感处理（走默认 apt 分支）
+	}
+	for _, c := range cases {
+		if got := packageEntry(c.name, c.version, c.pkgManager); got != c.want {
+			t.Errorf("packageEntry(%q, %q, %q) = %q, want %q", c.name, c.version, c.pkgManager, got, c.want)
+		}
+	}
+}
+
+func TestAddonPackageList(t *testing.T) {
+	addons := []config.AddonPackage{
+		{Name: "conntrack"},           // 无版本 → 透传纯名
+		{Name: "vim", Version: "9.0"}, // 带版本
+		{Name: "vim", Version: "9.1"}, // 同 name 去重（保留首次）
+		{Name: "  "},                  // 空白 name 忽略
+	}
+
+	aptWant := []string{"conntrack", "vim=9.0"}
+	if got := addonPackageList(addons, "apt"); !equalStrings(got, aptWant) {
+		t.Errorf("apt addonPackageList = %v, want %v", got, aptWant)
+	}
+	dnfWant := []string{"conntrack", "vim-9.0"}
+	if got := addonPackageList(addons, "dnf"); !equalStrings(got, dnfWant) {
+		t.Errorf("dnf addonPackageList = %v, want %v", got, dnfWant)
+	}
+}
+
+// ubuntuDefaultPkgs 返回 ubuntu（apt）核心软件包清单（k8s 组件 + 运行时 + 系统依赖）。
+func ubuntuDefaultPkgs() []string {
+	return []string{"kubeadm", "kubelet", "kubectl", "containerd.io", "cri-tools",
+		"conntrack", "ipvsadm", "socat", "ebtables", "chrony", "nfs-common"}
+}
+
+func TestResolvePackageListAddonVersions(t *testing.T) {
+	// apt：version 非空 → name=version；与核心系统依赖重名（conntrack）→ 核心优先，锁定版本被忽略
+	cfg := loadSampleConfig(t)
+	cfg.AddonPackages = []config.AddonPackage{
+		{Name: "conntrack", Version: "1:1.4"},
+		{Name: "vim", Version: "9.0"},
+		{Name: "htop"},
+	}
+	got := resolvePackageList(Options{Config: cfg, OS: "ubuntu"}, cfg, "apt", "v1.27.3", "containerd.io")
+	want := append(ubuntuDefaultPkgs(), "vim=9.0", "htop")
+	if !equalStrings(got, want) {
+		t.Errorf("apt 版本并入异常:\n got %v\nwant %v", got, want)
+	}
+
+	// dnf：version 非空 → name-version；conntrack 在 dnf 系统依赖中同样去重
+	cfgDnf := loadSampleConfig(t)
+	cfgDnf.AddonPackages = []config.AddonPackage{
+		{Name: "conntrack", Version: "1.4"},
+		{Name: "vim", Version: "9.0"},
+	}
+	gotDnf := resolvePackageList(Options{Config: cfgDnf, OS: "rocky"}, cfgDnf, "dnf", "v1.27.3", "containerd.io")
+	wantDnf := []string{"kubeadm", "kubelet", "kubectl", "containerd.io", "cri-tools",
+		"conntrack", "ipvsadm", "socat", "ebtables", "chrony", "nfs-utils", "vim-9.0"}
+	if !equalStrings(gotDnf, wantDnf) {
+		t.Errorf("dnf 版本并入异常:\n got %v\nwant %v", gotDnf, wantDnf)
+	}
+
+	// only-addons：软件包 = addon_packages（核心全去），含版本语法转译
+	gotOnly := resolvePackageList(Options{Config: cfg, OS: "ubuntu", OnlyAddons: true}, cfg, "apt", "v1.27.3", "containerd.io")
+	wantOnly := []string{"conntrack=1:1.4", "vim=9.0", "htop"}
+	if !equalStrings(gotOnly, wantOnly) {
+		t.Errorf("only-addons 版本转译异常:\n got %v\nwant %v", gotOnly, wantOnly)
+	}
+}
+
+func TestResolveImagesOnlyAddons(t *testing.T) {
+	cfg := loadAddonConfig(t) // addon_images: flannel, dashboard
+
+	// only-addons：核心镜像全去（空非 nil），镜像 = addon_images 全部
+	p, err := resolveImages(Options{Config: cfg, K8sVersion: "v1.27.3", OnlyAddons: true}, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.CoreImages == nil || len(p.CoreImages) != 0 {
+		t.Errorf("only-addons 核心镜像应为空非 nil，实际 %v", p.CoreImages)
+	}
+	if len(p.Addons) != 2 {
+		t.Errorf("only-addons 应包含全部 addon_images，实际 %+v", p.Addons)
+	}
+}
+
+func TestResolveImagesSkipAddons(t *testing.T) {
+	cfg := loadAddonConfig(t) // addon_images: flannel, dashboard
+
+	// --skip-addons：附加组件全去，仅核心（默认 CoreImages=nil 走 kubeadm）
+	p, err := resolveImages(Options{Config: cfg, K8sVersion: "v1.27.3", SkipAddons: true}, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.CoreImages != nil {
+		t.Errorf("skip-addons 默认核心仍应由 kubeadm 生成（nil），实际 %v", p.CoreImages)
+	}
+	if len(p.Addons) != 0 {
+		t.Errorf("skip-addons 应无附加组件，实际 %+v", p.Addons)
+	}
+}
+
+func TestBuildDryRunOnlyAddons(t *testing.T) {
+	// --only-addons：软件包=addon_packages、镜像=addon_images，无核心软件包/镜像。
+	cfg := loadAddonConfig(t) // addon_images: flannel, dashboard; addon_packages: [conntrack, ipset]
+	var buf bytes.Buffer
+	res, err := Build(context.Background(), Options{
+		Config: cfg, OS: "ubuntu", OSVersion: "22.04", Arch: "amd64",
+		K8sVersion: "v1.27.3", Mirror: mirror.Official,
+		WorkDir: filepath.Join(t.TempDir(), "work"), OutDir: filepath.Join(t.TempDir(), "dist"),
+		OnlyAddons: true, DryRun: true, Out: &buf,
+	})
+	if err != nil {
+		t.Fatalf("dry-run only-addons 失败: %v", err)
+	}
+	logs := buf.String()
+	// 软件包仅 addon_packages（不含 kubeadm 核心）
+	if !strings.Contains(logs, "dry-run（软件包: conntrack, ipset）") {
+		t.Errorf("only-addons 软件包清单异常:\n%s", logs)
+	}
+	if strings.Contains(logs, "软件包: kubeadm") {
+		t.Errorf("only-addons 不应含核心软件包 kubeadm:\n%s", logs)
+	}
+	// 镜像仅 addon_images（无核心）
+	if !strings.Contains(logs, "dry-run（镜像: 无核心镜像 | 附加(flannel,dashboard)）") {
+		t.Errorf("only-addons 镜像清单异常:\n%s", logs)
+	}
+	checkStep(t, res, "容器内软件包下载", "ok", "")
+	checkStep(t, res, "镜像清单与保存", "ok", "")
+}
+
+func TestBuildDryRunOnlyAddonsNoK8sVersion(t *testing.T) {
+	// --only-addons 且未指定 k8s 版本：build 不 panic、不报"非法 k8s 版本"，dry-run 正常产出。
+	cfg := loadAddonConfig(t)
+	res, err := Build(context.Background(), Options{
+		Config: cfg, OS: "ubuntu", OSVersion: "22.04", Arch: "amd64",
+		K8sVersion: "", Mirror: mirror.Official,
+		WorkDir: filepath.Join(t.TempDir(), "work"), OutDir: filepath.Join(t.TempDir(), "dist"),
+		OnlyAddons: true, DryRun: true,
+	})
+	if err != nil {
+		t.Fatalf("only-addons 缺 k8s 版本 dry-run 应成功: %v", err)
+	}
+	checkStep(t, res, "容器内软件包下载", "ok", "")
+	checkStep(t, res, "镜像清单与保存", "ok", "")
+	if _, err := os.Stat(res.TarPath); err != nil {
+		t.Errorf("tar.gz 未生成: %v", err)
+	}
+	// install.sh 不应出现空的 --kubernetes-version，且标注未指定 k8s 版本
+	installData, err := os.ReadFile(filepath.Join(res.BundleDir, "install", "install.sh"))
+	if err != nil {
+		t.Fatalf("读取 install.sh 失败: %v", err)
+	}
+	if strings.Contains(string(installData), "--kubernetes-version") {
+		t.Errorf("only-addons 缺 k8s 版本时 install.sh 不应含 --kubernetes-version:\n%s", installData)
+	}
+	if !strings.Contains(string(installData), "未指定 k8s 版本") {
+		t.Errorf("install.sh 应标注未指定 k8s 版本:\n%s", installData)
+	}
+}
+
+func TestBuildOnlyAddonsNoK8sVersionFakeDocker(t *testing.T) {
+	// --only-addons + 缺 k8s 版本（非 dry-run，--mode packages）：packages 阶段以空 k8sMinor
+	// 走 fake docker（K8sRepos 空值保底默认 v1.27），不 panic。
+	cfg := loadAddonConfig(t)
+	binDir := t.TempDir()
+	binPath := filepath.Join(binDir, "docker")
+	writeBuilderFakeDocker(t, binPath)
+
+	res, err := Build(context.Background(), Options{
+		Config: cfg, OS: "ubuntu", OSVersion: "22.04", Arch: "amd64",
+		K8sVersion: "", Mirror: mirror.Official,
+		WorkDir: filepath.Join(t.TempDir(), "work"), OutDir: filepath.Join(t.TempDir(), "dist"),
+		DockerBin: binPath, OnlyAddons: true, Mode: "packages",
+	})
+	if err != nil {
+		t.Fatalf("only-addons 缺 k8s 版本（fake docker）构建失败: %v", err)
+	}
+	checkStep(t, res, "容器内软件包下载", "ok", "")
+	checkStep(t, res, "镜像清单与保存", "skipped", "按 --mode packages 跳过镜像")
+	if _, err := os.Stat(res.TarPath); err != nil {
+		t.Errorf("tar.gz 未生成: %v", err)
+	}
+}
+
+func TestBuildOnlyAddonsPackagesSkipsK8sContainerdRepos(t *testing.T) {
+	// --only-addons（非 dry-run，--mode packages）：容器内脚本应只配置系统源，
+	// 不配置 k8s（pkgs.k8s.io）与 containerd（download.docker.com）源。
+	cfg := loadAddonConfig(t)
+	binDir := t.TempDir()
+	binPath := filepath.Join(binDir, "docker")
+	writeBuilderFakeDocker(t, binPath)
+
+	res, err := Build(context.Background(), Options{
+		Config: cfg, OS: "ubuntu", OSVersion: "22.04", Arch: "amd64",
+		K8sVersion: "v1.27.3", Mirror: mirror.Official,
+		WorkDir: filepath.Join(t.TempDir(), "work"), OutDir: filepath.Join(t.TempDir(), "dist"),
+		DockerBin: binPath, OnlyAddons: true, Mode: "packages",
+	})
+	if err != nil {
+		t.Fatalf("only-addons packages 构建失败: %v", err)
+	}
+	checkStep(t, res, "容器内软件包下载", "ok", "")
+
+	data, err := os.ReadFile(filepath.Join(binDir, "args.log"))
+	if err != nil {
+		t.Fatalf("读取 fake docker args.log 失败: %v", err)
+	}
+	script := string(data)
+	for _, forbid := range []string{
+		"kubernetes.repo", "containerd.repo",
+		"pkgs.k8s.io", "download.docker.com",
+		"[kubernetes]", "[docker-ce-stable]",
+	} {
+		if strings.Contains(script, forbid) {
+			t.Errorf("only-addons packages 脚本不应含 %q:\n%s", forbid, script)
+		}
+	}
+	for _, want := range []string{"apt-get update", "apt-get install -y --download-only"} {
+		if !strings.Contains(script, want) {
+			t.Errorf("only-addons packages 脚本应含 %q:\n%s", want, script)
+		}
+	}
+}
+
+func TestBuildDefaultPackagesIncludesK8sContainerdRepos(t *testing.T) {
+	// 回归：非 only-addons（默认）仍配置 k8s/containerd 源。
+	cfg := loadAddonConfig(t)
+	binDir := t.TempDir()
+	binPath := filepath.Join(binDir, "docker")
+	writeBuilderFakeDocker(t, binPath)
+
+	res, err := Build(context.Background(), Options{
+		Config: cfg, OS: "ubuntu", OSVersion: "22.04", Arch: "amd64",
+		K8sVersion: "v1.27.3", Mirror: mirror.Official,
+		WorkDir: filepath.Join(t.TempDir(), "work"), OutDir: filepath.Join(t.TempDir(), "dist"),
+		DockerBin: binPath, Mode: "packages",
+	})
+	if err != nil {
+		t.Fatalf("默认 packages 构建失败: %v", err)
+	}
+	checkStep(t, res, "容器内软件包下载", "ok", "")
+
+	data, err := os.ReadFile(filepath.Join(binDir, "args.log"))
+	if err != nil {
+		t.Fatalf("读取 fake docker args.log 失败: %v", err)
+	}
+	script := string(data)
+	for _, want := range []string{
+		"/etc/apt/keyrings/kubernetes-apt-keyring.gpg",
+		"/etc/apt/keyrings/containerd-apt-keyring.gpg",
+		"pkgs.k8s.io", "download.docker.com",
+	} {
+		if !strings.Contains(script, want) {
+			t.Errorf("默认 packages 脚本应含 %q:\n%s", want, script)
+		}
+	}
+}
+
+func TestBuildDryRunModeAddonPackages(t *testing.T) {
+	// mode 联动：packages → addon_packages 并入软件包、镜像跳过；
+	// images → 软件包跳过、addon_images 并入镜像；all → 两者均含附加。
+	cases := []struct {
+		name          string
+		mode          string
+		wantPkgStatus string
+		wantImgStatus string
+		wantPkgPart   string // 软件包 dry-run 消息中的关键子串（空=不校验）
+		wantImgPart   string // 镜像 dry-run 消息中的关键子串（空=不校验）
+	}{
+		{"all", "all", "ok", "ok",
+			"containerd.io, cri-tools", "核心(kubeadm默认) | 附加(flannel,dashboard)"},
+		{"packages", "packages", "ok", "skipped",
+			"containerd.io, cri-tools", ""},
+		{"images", "images", "skipped", "ok",
+			"", "核心(kubeadm默认) | 附加(flannel,dashboard)"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			cfg := loadAddonConfig(t)
+			var buf bytes.Buffer
+			res, err := Build(context.Background(), Options{
+				Config: cfg, OS: "ubuntu", OSVersion: "22.04", Arch: "amd64",
+				K8sVersion: "v1.27.3", Mirror: mirror.Official,
+				WorkDir: filepath.Join(t.TempDir(), "work"), OutDir: filepath.Join(t.TempDir(), "dist"),
+				Mode: c.mode, DryRun: true, Out: &buf,
+			})
+			if err != nil {
+				t.Fatalf("dry-run %s 失败: %v", c.mode, err)
+			}
+			checkStep(t, res, "容器内软件包下载", c.wantPkgStatus, "")
+			checkStep(t, res, "镜像清单与保存", c.wantImgStatus, "")
+			logs := buf.String()
+			if c.wantPkgPart != "" && !strings.Contains(logs, c.wantPkgPart) {
+				t.Errorf("软件包日志应含 %q:\n%s", c.wantPkgPart, logs)
+			}
+			if c.wantImgPart != "" && !strings.Contains(logs, c.wantImgPart) {
+				t.Errorf("镜像日志应含 %q:\n%s", c.wantImgPart, logs)
+			}
+		})
+	}
+}
+
+func TestBuildSkipAddonsExcludesAddonPackages(t *testing.T) {
+	// --skip-addons：addon_packages 不并入软件包，addon_images 不进镜像清单，仅核心。
+	cfg := loadAddonConfig(t) // addon_packages: [conntrack, ipset]; addon_images: flannel, dashboard
+	var buf bytes.Buffer
+	res, err := Build(context.Background(), Options{
+		Config: cfg, OS: "ubuntu", OSVersion: "22.04", Arch: "amd64",
+		K8sVersion: "v1.27.3", Mirror: mirror.Official,
+		WorkDir: filepath.Join(t.TempDir(), "work"), OutDir: filepath.Join(t.TempDir(), "dist"),
+		SkipAddons: true, DryRun: true, Out: &buf,
+	})
+	if err != nil {
+		t.Fatalf("dry-run skip-addons 失败: %v", err)
+	}
+	logs := buf.String()
+	if strings.Contains(logs, "ipset") {
+		t.Errorf("skip-addons 软件包不应含 addon_packages 的 ipset:\n%s", logs)
+	}
+	if !strings.Contains(logs, "核心(kubeadm默认)") {
+		t.Errorf("skip-addons 镜像应为仅核心:\n%s", logs)
+	}
+	if strings.Contains(logs, "附加(") {
+		t.Errorf("skip-addons 镜像不应含附加组件:\n%s", logs)
+	}
+	checkStep(t, res, "容器内软件包下载", "ok", "")
+	checkStep(t, res, "镜像清单与保存", "ok", "")
+}
+
+func TestResolveImages(t *testing.T) {
+	cfg := loadSampleConfig(t) // addons: flannel
+
+	// 默认：kubeadm 核心 + 全部 addons
+	p, err := resolveImages(Options{Config: cfg, K8sVersion: "v1.27.3"}, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.CoreImages != nil {
+		t.Errorf("默认 CoreImages 应为 nil，实际 %v", p.CoreImages)
+	}
+	if len(p.Addons) != 1 || p.Addons[0].Name != "flannel" {
+		t.Errorf("默认 addons = %+v", p.Addons)
 	}
 }
 

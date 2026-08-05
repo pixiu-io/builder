@@ -140,3 +140,25 @@ func TestDefaultGeneratedAt(t *testing.T) {
 		t.Error("应包含默认生成时间")
 	}
 }
+
+func TestRenderInstallNoK8sVersion(t *testing.T) {
+	// --only-addons 未指定 k8s 版本时：kubeadm init 提示不再输出 --kubernetes-version，
+	// 改为通用提示并标注"未指定 k8s 版本"。
+	files, err := Render(Data{K8sVersion: ""})
+	if err != nil {
+		t.Fatalf("Render 失败: %v", err)
+	}
+	install := files[0].Content
+	if strings.Contains(install, "--kubernetes-version") {
+		t.Errorf("空 k8s 版本 install.sh 不应含 --kubernetes-version:\n%s", install)
+	}
+	for _, want := range []string{
+		"kubeadm init",
+		"--image-repository registry.k8s.io",
+		"未指定 k8s 版本",
+	} {
+		if !strings.Contains(install, want) {
+			t.Errorf("空 k8s 版本 install.sh 应含 %q:\n%s", want, install)
+		}
+	}
+}

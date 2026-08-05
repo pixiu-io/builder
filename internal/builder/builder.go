@@ -38,10 +38,12 @@ type Options struct {
 	// Mode 构建模式：packages=仅软件包 / images=仅镜像 / all=两者都构建（默认）。
 	// CLI 默认填充 all；库调用方为空时按 all 处理。
 	Mode string
-	// SkipImages 跳过镜像阶段（等价 Mode=packages，兼容旧用法）。
-	SkipImages bool
-	// SkipAddons 跳过附加组件镜像（flannel/dashboard 等），仅核心镜像。
+	// SkipAddons 跳过附加组件：addon_images 不进镜像清单，addon_packages 不并入软件包清单（仅核心）。
 	SkipAddons bool
+	// OnlyAddons 只打包附加组件：核心软件包与核心镜像全去，
+	// 软件包=addon_packages、镜像=addon_images。
+	// 与 SkipAddons 互斥（同时设置报错）。
+	OnlyAddons bool
 	// DryRun 仅演练管线，不执行真实下载/拉取。
 	DryRun bool
 	// DockerBin docker 命令路径，默认 "docker"；测试注入用。
@@ -75,6 +77,142 @@ func logf(w io.Writer, format string, args ...interface{}) {
 	fmt.Fprintf(w, "[builder] "+format+"\n", args...)
 }
 
+// packageEntry 将包名 + 可选版本按目标包管理器语法编码为软件包清单条目：
+//   - version 为空 → name（不锁版本，透传纯包名）
+//   - version 非空 → apt 系（含未知包管理器默认）: name=version；dnf/yum 系: name-version
+//
+// 版本不在此处校验，透传给容器内包管理器解析；不匹配目标系统源时由用户调整。
+func packageEntry(name, version, pkgManager string) string {
+	version = strings.TrimSpace(version)
+	if version == "" {
+		return name
+	}
+	if pkgManager == "dnf" || pkgManager == "yum" {
+		return name + "-" + version
+	}
+	return name + "=" + version
+}
+
+// addonPackageList 将 addon_packages（name + 可选 version）按目标包管理器语法转为
+// 软件包清单条目，并按 name 去重（保留首次出现的条目）。
+func addonPackageList(addons []config.AddonPackage, pkgManager string) []string {
+	seen := make(map[string]bool, len(addons))
+	out := make([]string, 0, len(addons))
+	for _, ap := range addons {
+		name := strings.TrimSpace(ap.Name)
+		if name == "" || seen[name] {
+			continue
+		}
+		seen[name] = true
+		out = append(out, packageEntry(name, ap.Version, pkgManager))
+	}
+	return out
+}
+
+// mergeAddonPackages 将 addon_packages（含可选版本）并入核心软件包清单，按包名去重：
+// 核心优先（首次出现保留），addon 中与核心重名的条目（含锁定版本）被忽略，
+// 避免同一包重复安装；addon 中核心没有的包以转译后的条目追加。
+func mergeAddonPackages(core []string, addons []config.AddonPackage, pkgManager string) []string {
+	seen := make(map[string]bool, len(core)+len(addons))
+	out := make([]string, 0, len(core)+len(addons))
+	for _, s := range core {
+		if s = strings.TrimSpace(s); s == "" || seen[s] {
+			continue
+		}
+		seen[s] = true
+		out = append(out, s)
+	}
+	for _, ap := range addons {
+		name := strings.TrimSpace(ap.Name)
+		if name == "" || seen[name] {
+			continue
+		}
+		seen[name] = true
+		out = append(out, packageEntry(name, ap.Version, pkgManager))
+	}
+	return out
+}
+
+// resolvePackageList 计算最终软件包清单：
+//   - --only-addons：核心全去；软件包 = addon_packages（按 name 去重，含版本语法转译）
+//   - 非 only-addons：核心始终为默认清单（BuildPackageList：kubeadm/kubelet/kubectl +
+//     containerdPkg + cri-tools + 系统依赖）；mode ∈ {packages, all} 且未 --skip-addons 时
+//     并入顶层 addon_packages（按包名与核心去重，核心优先）
+func resolvePackageList(opts Options, cfg *config.Config, pkgManager, k8sVersion, containerdPkg string) []string {
+	if opts.OnlyAddons {
+		return addonPackageList(cfg.AddonPackages, pkgManager)
+	}
+
+	def := packages.BuildPackageList(pkgManager, k8sVersion, cfg.SystemDepsForOS(opts.OS, opts.OSVersion), false, containerdPkg)
+	// 顶层 addon_packages 额外并入（与核心清单按包名去重）。
+	if !opts.SkipAddons && len(cfg.AddonPackages) > 0 {
+		def = mergeAddonPackages(def, cfg.AddonPackages, pkgManager)
+	}
+	return def
+}
+
+// resolvedImages 镜像阶段最终要拉取的清单。
+// CoreImages 为 nil 表示走 kubeadm 生成默认核心清单；非 nil（可为空 slice）表示直接使用该清单。
+type resolvedImages struct {
+	CoreImages []string       // 核心镜像完整引用（nil=走 kubeadm；非 nil=直接使用）
+	Addons     []config.Addon // 最终附加组件清单（空=不拉附加组件）
+}
+
+// summary 生成人类可读的清单摘要（用于 dry-run 日志）。
+func (p resolvedImages) summary() string {
+	var parts []string
+	if p.CoreImages != nil {
+		if len(p.CoreImages) > 0 {
+			parts = append(parts, "核心("+strings.Join(p.CoreImages, ",")+")")
+		} else {
+			parts = append(parts, "无核心镜像")
+		}
+	} else {
+		parts = append(parts, "核心(kubeadm默认)")
+	}
+	if len(p.Addons) > 0 {
+		names := make([]string, 0, len(p.Addons))
+		for _, a := range p.Addons {
+			names = append(names, a.Name)
+		}
+		parts = append(parts, "附加("+strings.Join(names, ",")+")")
+	}
+	return strings.Join(parts, " | ")
+}
+
+// dedupAddons 按 Name 去重附加组件清单（保留首次出现）。
+func dedupAddons(in []config.Addon) []config.Addon {
+	seen := make(map[string]bool, len(in))
+	out := make([]config.Addon, 0, len(in))
+	for _, a := range in {
+		if a.Name == "" || seen[a.Name] {
+			continue
+		}
+		seen[a.Name] = true
+		out = append(out, a)
+	}
+	return out
+}
+
+// resolveImages 计算镜像阶段最终拉取清单：
+//   - --only-addons：核心镜像全去；镜像 = addon_images 全部（mode ∈ {images, all}）
+//   - 非 only-addons：核心由 kubeadm 默认生成；addon_images 全部并入（mode ∈ {images, all}）
+//   - --skip-addons 时附加组件全部排除（仅核心镜像）
+func resolveImages(opts Options, cfg *config.Config) (resolvedImages, error) {
+	if opts.OnlyAddons {
+		return resolvedImages{
+			CoreImages: []string{}, // 空非 nil：明确不拉核心镜像
+			Addons:     dedupAddons(cfg.AddonImages.Addons),
+		}, nil
+	}
+
+	addons := cfg.AddonImages.Addons
+	if opts.SkipAddons {
+		addons = nil
+	}
+	return resolvedImages{CoreImages: nil, Addons: addons}, nil
+}
+
 // Build 执行完整构建管线。
 func Build(ctx context.Context, opts Options) (*Result, error) {
 	if opts.Config == nil {
@@ -90,18 +228,9 @@ func Build(ctx context.Context, opts Options) (*Result, error) {
 		opts.Out = os.Stdout
 	}
 
-	// 构建模式归一化：
-	//   - 库调用方未填 Mode 时按 all 处理
-	//   - SkipImages=true 且 Mode 为 all（或空）→ 视为 packages（--skip-images 兼容）
-	//   - Mode 为 images 时强制清除 SkipImages（images 模式意愿为仅构建镜像，mode 优先）
+	// 构建模式归一化：库调用方未填 Mode 时按 all 处理。
 	if opts.Mode == "" {
 		opts.Mode = "all"
-	}
-	if opts.SkipImages && opts.Mode == "all" {
-		opts.Mode = "packages"
-	}
-	if opts.Mode == "images" {
-		opts.SkipImages = false
 	}
 
 	// --mode images 且未指定 OS 时：选用默认构建容器（仅用于容器内 kubeadm 拉清单），
@@ -152,9 +281,14 @@ func Build(ctx context.Context, opts Options) (*Result, error) {
 		return nil, err
 	}
 	buildImage := osDef.BuildImage
-	k8sMinor, err := config.K8sMinor(opts.K8sVersion)
-	if err != nil {
-		return nil, err
+	// k8s 大版本仅在指定了 k8s 版本时推导（pkgs.k8s.io 仓库路径）。
+	// --only-addons 且未指定 k8s 版本时不构建 k8s 核心，无需推导；下游 K8sRepos 对空值自带保底默认。
+	var k8sMinor string
+	if opts.K8sVersion != "" {
+		k8sMinor, err = config.K8sMinor(opts.K8sVersion)
+		if err != nil {
+			return nil, err
+		}
 	}
 	codename := osDef.Codename
 	aptOS := aptFamily(osDef.Name)
@@ -186,7 +320,7 @@ func Build(ctx context.Context, opts Options) (*Result, error) {
 
 	// ---------- Step 1/2: 软件包下载 + 镜像打包（mode=all 且两者均需真实执行时并行） ----------
 	runPkg := opts.Mode != "images"
-	runImg := opts.Mode != "packages" && !opts.SkipImages
+	runImg := opts.Mode != "packages"
 	parallel := runPkg && runImg && !opts.DryRun
 
 	type stepOut struct {
@@ -197,22 +331,25 @@ func Build(ctx context.Context, opts Options) (*Result, error) {
 		if !runPkg {
 			return stepOut{sr: StepResult{Name: "容器内软件包下载", Status: "skipped", Message: "按 --mode images 跳过软件包"}}
 		}
-		pkgList := packages.BuildPackageList(osDef.PkgManager, opts.K8sVersion, opts.Config.SystemDepsForOS(opts.OS), false)
+		pkgList := resolvePackageList(opts, opts.Config, osDef.PkgManager, opts.K8sVersion, osDef.ContainerdPkg)
 		if opts.DryRun {
-			return stepOut{sr: StepResult{Name: "容器内软件包下载", Status: "ok", Message: "dry-run"}}
+			return stepOut{sr: StepResult{Name: "容器内软件包下载", Status: "ok", Message: "dry-run（软件包: " + strings.Join(pkgList, ", ") + "）"}}
 		}
 		pkgRes, err := packages.Fetch(c, packages.Options{
-			OutDir:        filepath.Join(bundleDir, "packages"),
-			BuildImage:    buildImage,
-			PkgManager:    osDef.PkgManager,
-			K8sMinor:      k8sMinor,
-			Codename:      codename,
-			RPMDistro:     osDef.RPMDistro,
-			AptOS:         aptOS,
-			Pkgs:          pkgList,
-			CrictlVersion: opts.Config.CrictlVersionFor(opts.K8sVersion),
-			Arch:          opts.Arch,
-			DockerBin:     opts.DockerBin,
+			OutDir:                 filepath.Join(bundleDir, "packages"),
+			BuildImage:             buildImage,
+			PkgManager:             osDef.PkgManager,
+			K8sMinor:               k8sMinor,
+			Codename:               codename,
+			RPMDistro:              osDef.RPMDistro,
+			AptOS:                  aptOS,
+			ContainerdPkg:          osDef.ContainerdPkg,
+			ContainerdRepo:         osDef.ContainerdRepo,
+			Pkgs:                   pkgList,
+			SkipK8sContainerdRepos: opts.OnlyAddons, // only-addons 只下载系统源附加包，无需 k8s/containerd 源
+			CrictlVersion:          opts.Config.CrictlVersionFor(opts.K8sVersion),
+			Arch:                   opts.Arch,
+			DockerBin:              opts.DockerBin,
 		})
 		if err != nil {
 			return stepOut{err: fmt.Errorf("[容器内软件包下载] 失败: %w", err)}
@@ -230,11 +367,12 @@ func Build(ctx context.Context, opts Options) (*Result, error) {
 		if !runImg {
 			return stepOut{sr: StepResult{Name: "镜像清单与保存", Status: "skipped", Message: "按 --mode packages 跳过镜像"}}
 		}
-		if opts.DryRun {
-			return stepOut{sr: StepResult{Name: "镜像清单与保存", Status: "ok", Message: "dry-run"}}
+		imgPlan, err := resolveImages(opts, opts.Config)
+		if err != nil {
+			return stepOut{err: fmt.Errorf("[镜像清单解析] 失败: %w", err)}
 		}
-		if opts.SkipImages {
-			return stepOut{sr: StepResult{Name: "镜像清单与保存", Status: "skipped", Message: "按配置跳过"}}
+		if opts.DryRun {
+			return stepOut{sr: StepResult{Name: "镜像清单与保存", Status: "ok", Message: "dry-run（镜像: " + imgPlan.summary() + "）"}}
 		}
 		imgRes, err := images.Fetch(c, images.Options{
 			BuildImage:      buildImage,
@@ -247,7 +385,8 @@ func Build(ctx context.Context, opts Options) (*Result, error) {
 			ImageRepository: opts.Mirror.ImageRepository(),
 			Arch:            opts.Arch,
 			KubeadmBin:      opts.KubeadmBin,
-			Addons:          opts.Config.Addons.Addons,
+			CoreImages:      imgPlan.CoreImages,
+			Addons:          imgPlan.Addons,
 			SkipAddons:      opts.SkipAddons,
 			ImagesOutDir:    filepath.Join(bundleDir, "images"),
 			DockerBin:       opts.DockerBin,
@@ -530,6 +669,10 @@ func aptFamily(osName string) string {
 
 // validateOptions 校验 build 参数合法性。
 func validateOptions(opts Options) error {
+	// --only-addons 与 --skip-addons 互斥。
+	if opts.OnlyAddons && opts.SkipAddons {
+		return fmt.Errorf("--only-addons 与 --skip-addons 不能同时使用")
+	}
 	// Mode 为空视为默认 all（Build 已归一化；直接调用 validateOptions 时兜底）。
 	mode := opts.Mode
 	if mode == "" {
@@ -553,7 +696,9 @@ func validateOptions(opts Options) error {
 			return fmt.Errorf("不支持的架构 %s（可选 amd64/arm64）", opts.Arch)
 		}
 	}
-	if !opts.Config.ValidK8s(opts.K8sVersion) {
+	// k8s 版本格式校验：--only-addons 且未指定版本时跳过（不构建 k8s 核心，无需 k8s 版本）；
+	// 其余情况（含 only-addons 已指定版本）仍按任意 vX.Y.Z 格式校验。
+	if !(opts.OnlyAddons && opts.K8sVersion == "") && !opts.Config.ValidK8s(opts.K8sVersion) {
 		return fmt.Errorf("非法的 k8s 版本格式: %s（期望形如 v1.31.0，如 v1.29.5；支持任意 vX.Y.Z）", opts.K8sVersion)
 	}
 	if !opts.Mirror.IsSupported() {

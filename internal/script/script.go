@@ -127,11 +127,15 @@ kubeadm version 2>/dev/null || true
 cat <<'PROMPT'
 ========================================================
  安装完成，接下来请初始化集群（示例）:
-
+{{if .K8sVersion}}
    kubeadm init \\
      --kubernetes-version {{.K8sVersion}} \\
      --image-repository {{.ImageRepository}}
-
+{{else}}
+   kubeadm init \\
+     --image-repository {{.ImageRepository}}
+     （未指定 k8s 版本，请按实际集群版本初始化）
+{{end}}
  如需指定 Pod 网段，可追加:
      --pod-network-cidr=10.244.0.0/16
 ========================================================

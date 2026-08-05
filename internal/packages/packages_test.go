@@ -62,6 +62,55 @@ func TestBuildDownloadScriptDNF(t *testing.T) {
 			t.Errorf("dnf 下载脚本缺少 %q:\n%s", want, s)
 		}
 	}
+	// dnf 分支（rocky 9 等）不应出现 CentOS 7 专属的 vault 源修复片段；
+	// 也不应再把 exclude=kubelet kubeadm kubectl 配在 k8s 源自身（会过滤本源 k8s 包）。
+	for _, forbid := range []string{"centos-release", "vault.centos.org", "centos-vault.repo", "exclude=kubelet", "exclude=kubeadm", "exclude=kubectl"} {
+		if strings.Contains(s, forbid) {
+			t.Errorf("dnf 下载脚本不应含 %q:\n%s", forbid, s)
+		}
+	}
+}
+
+func TestBuildDownloadScriptYUM(t *testing.T) {
+	s := BuildDownloadScript(DownloadScriptOpts{
+		PkgManager:  "yum",
+		Repos:       append(K8sRepos("v1.32"), ContainerdRepos("", "", "rhel7")...),
+		Pkgs:        []string{"kubeadm", "containerd.io", "nfs-utils"},
+		ArchiveDir:  "/out",
+		CheckCrictl: true,
+	})
+	for _, want := range []string{
+		"set -e",
+		"yum makecache",
+		"yum -y install yum-plugin-downloadonly", // downloadonly 插件
+		"yum -y install yum-utils",               // 插件安装失败回退 yum-utils
+		"[kubernetes]", "[docker-ce-stable]",
+		"rpm --import",
+		"/etc/yum.repos.d/kubernetes.repo",
+		"https://pkgs.k8s.io/core:/stable:/v1.32/rpm/",
+		"https://download.docker.com/linux/rhel/7/$basearch/stable",
+		"yum install -y --downloadonly --downloaddir=/out",
+		"yumdownloader --resolve --destdir=/out",
+		"yum list --available cri-tools",
+		"cri-tools-missing",
+		// CentOS 7 EOL：官方 mirrorlist 源已不可解析，脚本应移走默认 CentOS-Base.repo 并切换 vault 归档源
+		"grep -q 'release 7\\.' /etc/centos-release",
+		"mv -f /etc/yum.repos.d/CentOS-Base.repo /etc/yum.repos.d/CentOS-Base.repo.disabled",
+		"cat > /etc/yum.repos.d/centos-vault.repo",
+		"https://vault.centos.org/7.9.2009/os/$basearch/",
+		"https://vault.centos.org/7.9.2009/extras/$basearch/",
+		"https://vault.centos.org/7.9.2009/updates/$basearch/",
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("yum 下载脚本缺少 %q:\n%s", want, s)
+		}
+	}
+	// yum 分支不应出现 dnf/apt 命令；也不应再出现注释 mirrorlist 的旧修复片段（已改为移走 CentOS-Base.repo）
+	for _, forbid := range []string{"dnf ", "apt-get", "dnf install --assumeno", "sed -i 's/^mirrorlist="} {
+		if strings.Contains(s, forbid) {
+			t.Errorf("yum 下载脚本不应含 %q:\n%s", forbid, s)
+		}
+	}
 }
 
 func TestFetchDockerUnavailable(t *testing.T) {
@@ -106,6 +155,177 @@ func TestFetchDryRun(t *testing.T) {
 	}
 	if !strings.Contains(res.Command, "-v ") || !strings.Contains(res.Command, ":/out") {
 		t.Errorf("命令应包含外挂挂载: %s", res.Command)
+	}
+}
+
+func TestFetchSkipK8sContainerdReposYUM(t *testing.T) {
+	// --only-addons（yum/CentOS 7）：只下载系统源附加包，跳过 k8s/containerd 源，
+	// 但 CentOS 7 vault 系统源修复必须保留（否则 yum makecache 仍失败）。
+	res, err := Fetch(context.Background(), Options{
+		OutDir:                 t.TempDir(),
+		BuildImage:             "centos:7",
+		PkgManager:             "yum",
+		K8sMinor:               "v1.32",
+		RPMDistro:              "rhel7",
+		Pkgs:                   []string{"conntrack", "ipset"},
+		DryRun:                 true,
+		SkipK8sContainerdRepos: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := res.Command // dry-run 下完整脚本内嵌在 docker run 命令串中
+	// 系统源修复（vault）与 yum makecache 保留
+	for _, want := range []string{
+		"yum makecache",
+		"mv -f /etc/yum.repos.d/CentOS-Base.repo",
+		"cat > /etc/yum.repos.d/centos-vault.repo",
+		"https://vault.centos.org/7.9.2009/os/$basearch/",
+	} {
+		if !strings.Contains(script, want) {
+			t.Errorf("only-addons yum 脚本应含 %q:\n%s", want, script)
+		}
+	}
+	// 不应配置 k8s / containerd 源
+	for _, forbid := range []string{
+		"/etc/yum.repos.d/kubernetes.repo",
+		"/etc/yum.repos.d/containerd.repo",
+		"[kubernetes]", "[docker-ce-stable]",
+		"pkgs.k8s.io", "download.docker.com",
+	} {
+		if strings.Contains(script, forbid) {
+			t.Errorf("only-addons yum 脚本不应含 %q:\n%s", forbid, script)
+		}
+	}
+}
+
+func TestFetchSkipK8sContainerdReposAPT(t *testing.T) {
+	// --only-addons（apt）：同样跳过 k8s/containerd 源，仅保留系统源配置逻辑。
+	res, err := Fetch(context.Background(), Options{
+		OutDir:                 t.TempDir(),
+		BuildImage:             "ubuntu:22.04",
+		PkgManager:             "apt",
+		K8sMinor:               "v1.27",
+		Codename:               "jammy",
+		AptOS:                  "ubuntu",
+		Pkgs:                   []string{"conntrack", "ipset"},
+		DryRun:                 true,
+		SkipK8sContainerdRepos: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := res.Command
+	for _, want := range []string{"apt-get update", "apt-get install -y --download-only"} {
+		if !strings.Contains(script, want) {
+			t.Errorf("only-addons apt 脚本应含 %q:\n%s", want, script)
+		}
+	}
+	for _, forbid := range []string{
+		"/etc/apt/keyrings/kubernetes-apt-keyring.gpg",
+		"/etc/apt/keyrings/containerd-apt-keyring.gpg",
+		"pkgs.k8s.io", "download.docker.com",
+	} {
+		if strings.Contains(script, forbid) {
+			t.Errorf("only-addons apt 脚本不应含 %q:\n%s", forbid, script)
+		}
+	}
+}
+
+func TestFetchDefaultIncludesK8sContainerdRepos(t *testing.T) {
+	// 回归：非 only-addons（SkipK8sContainerdRepos 默认 false）仍配置 k8s/containerd 源，
+	// 且 CentOS 7 vault 修复同样保留。
+	res, err := Fetch(context.Background(), Options{
+		OutDir:     t.TempDir(),
+		BuildImage: "centos:7",
+		PkgManager: "yum",
+		K8sMinor:   "v1.32",
+		RPMDistro:  "rhel7",
+		Pkgs:       []string{"kubeadm", "containerd.io"},
+		DryRun:     true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := res.Command
+	for _, want := range []string{
+		"/etc/yum.repos.d/kubernetes.repo",
+		"/etc/yum.repos.d/containerd.repo",
+		"pkgs.k8s.io",
+		"download.docker.com",
+		"https://vault.centos.org/7.9.2009/os/$basearch/",
+	} {
+		if !strings.Contains(script, want) {
+			t.Errorf("默认 yum 脚本应含 %q:\n%s", want, script)
+		}
+	}
+}
+
+func TestFetchContainerdRepoNoneDNF(t *testing.T) {
+	// openEuler（containerd_repo=none）：只配置 k8s 源，不配置 download.docker.com 源，
+	// 避免 rhel/7 仓库 404 导致 dnf makecache 失败。
+	res, err := Fetch(context.Background(), Options{
+		OutDir:         t.TempDir(),
+		BuildImage:     "openeuler/openeuler:22.03-lts-sp3",
+		PkgManager:     "dnf",
+		K8sMinor:       "v1.35",
+		RPMDistro:      "rhel7",
+		ContainerdRepo: "none",
+		Pkgs:           []string{"kubeadm", "containerd", "cri-tools", "nfs-utils"},
+		DryRun:         true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := res.Command
+	// k8s 源保留
+	for _, want := range []string{
+		"/etc/yum.repos.d/kubernetes.repo",
+		"pkgs.k8s.io",
+		"dnf makecache",
+	} {
+		if !strings.Contains(script, want) {
+			t.Errorf("containerd_repo=none 脚本应含 %q:\n%s", want, script)
+		}
+	}
+	// 不应配置 docker containerd 源
+	for _, forbid := range []string{
+		"/etc/yum.repos.d/containerd.repo",
+		"[docker-ce-stable]",
+		"download.docker.com",
+		"rhel/7/$basearch/stable",
+	} {
+		if strings.Contains(script, forbid) {
+			t.Errorf("containerd_repo=none 脚本不应含 %q:\n%s", forbid, script)
+		}
+	}
+}
+
+func TestFetchContainerdRepoDefaultDockerDNF(t *testing.T) {
+	// 回归：rocky 等默认（ContainerdRepo 为空/未配置）仍配置 docker containerd 源（rhel/9）。
+	res, err := Fetch(context.Background(), Options{
+		OutDir:         t.TempDir(),
+		BuildImage:     "rockylinux:9",
+		PkgManager:     "dnf",
+		K8sMinor:       "v1.35",
+		RPMDistro:      "rhel9",
+		ContainerdRepo: "", // 默认 docker
+		Pkgs:           []string{"kubeadm", "containerd.io", "cri-tools"},
+		DryRun:         true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := res.Command
+	for _, want := range []string{
+		"/etc/yum.repos.d/containerd.repo",
+		"[docker-ce-stable]",
+		"https://download.docker.com/linux/rhel/9/$basearch/stable",
+		"pkgs.k8s.io",
+	} {
+		if !strings.Contains(script, want) {
+			t.Errorf("默认 dnf 脚本应含 %q:\n%s", want, script)
+		}
 	}
 }
 

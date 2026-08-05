@@ -1,16 +1,40 @@
 # builder 配置文件（位于仓库根目录 builder.yaml）
-# 单文件包含三节：OS 注册表（oses）、k8s 版本参考（versions）、附加组件镜像（addons）。
+# 单文件包含五节：build 默认参数、OS 注册表（oses）、k8s 版本参考（versions）、
+# 附加组件镜像（addon_images）、附加安装包（addon_packages）。
 # 生产默认路径 /etc/pixiu/builder.yaml；本地开发：--configFile ./builder.yaml 或 BUILDER_CONFIG_FILE=./builder.yaml
+
+# ========== build 默认参数（优先级：命令行 > 配置文件 > 内置默认值）==========
+# 本节点即 build 子命令的「命令行配置」：每个 key 对应一个命令行 flag。
+#   命令行显式传参优先；未传时回落本配置节；配置值为空（或未配置）时使用 flag 内置默认值。
+# 字符串 key 留空 "" 表示不覆盖内置默认；布尔 key（skip_* / only_addons / dry_run）默认 false。
+# 核心软件包/镜像始终使用默认清单（BuildPackageList / kubeadm 生成），不再提供覆盖/追加参数；
+# 自定义能力完全由顶层 addon_packages / addon_images + --mode + --only-addons / --skip-addons 提供。
+build:
+  os: ""                    # 对应 --os：目标系统（如 ubuntu）
+  os_version: ""            # 对应 --os-version：系统版本（如 22.04）
+  kubernetes_version: ""    # 对应 --kubernetes-version：k8s 版本（如 v1.31.1）
+  arch: "amd64"             # 对应 --arch：目标架构（amd64/arm64）
+  mirror: "official"        # 对应 --mirror：镜像源（official/aliyun/tencent，仅 official 已实现）
+  workdir: "./work"         # 对应 --workdir：工作目录（bundle 构建于此）
+  out: "./dist"             # 对应 --out：产物输出目录（tar.gz 输出到此）
+  mode: "all"               # 对应 --mode：构建模式（all=两者 / packages=仅软件包 / images=仅镜像；镜像阶段由 --mode packages 跳过）
+  skip_addons: false        # 对应 --skip-addons：跳过附加组件（addon_images 与 addon_packages 均不并入）
+  only_addons: false        # 对应 --only-addons：只打包附加（核心软件包/镜像全去）
+  dry_run: false            # 对应 --dry-run：仅演练管线，不真实下载/拉取
+
 
 # ========== OS 注册表 ==========
 # 定义各 OS 的可用版本、包管理器、构建镜像（容器内下载软件包用）、
 # 架构，以及软件源所需的版本代号（codename / codenames）与 rpm 发行版标识（rpm_distro）。
+# pkg_manager 支持 apt / dnf / yum；留空时按 OS+版本自动推导（如 centos 7 → yum、centos 8/9 → dnf、ubuntu → apt）。
 # 提示：versions/build_images 为参考初始值；build 支持任意 OS/版本（未登记时构建镜像默认为 {name}:{version}）。
 # 包源说明：
 #   - k8s 组件（kubeadm/kubelet/kubectl）来自官方 pkgs.k8s.io，仓库由 k8s 版本自动推导（v1.27.3 → v1.27）
 #   - containerd.io 来自 docker 官方源 download.docker.com（原 packages.containerd.io 域名 NXDOMAIN 不可达）；
 #     apt 源需要 codename，dnf 源需要 rpm_distro（rocky→rhel9、openEuler→rhel7，代码内转换为 rhel/9、rhel/7）
-#   - containerd 源已实测可达；openEuler 对应 rhel/7 在 download.docker.com 为 404，存在兼容性风险
+#   - containerd 源已实测可达；openEuler 对应 rhel/7 在 download.docker.com 为 404（docker 官方已停止发布 RHEL7 仓库），
+#     因此 openEuler 配置 containerd_pkg: containerd + containerd_repo: none，从系统源（everything 仓库）安装 containerd，
+#     不再配置 download.docker.com 源；其他 dnf 系（rocky 等）默认 containerd.io + docker 源不变
 oses:
   - name: ubuntu
     versions: ["20.04", "22.04", "24.04"]
@@ -47,6 +71,12 @@ oses:
     build_images:
       "22.03": openeuler/openeuler:22.03-lts-sp3
     rpm_distro: rhel7
+    # openEuler 对应 download.docker.com/linux/rhel/7/ 为 404（docker 官方已停止发布 RHEL7 仓库），
+    # 因此 containerd 改为从系统源（everything 仓库，含 containerd-1.2.0-315.oe2203sp3）安装：
+    #   containerd_pkg: "containerd"（系统源包名，非 docker 源的 containerd.io）
+    #   containerd_repo: "none"（不配置 download.docker.com 源，避免 dnf makecache 失败）
+    containerd_pkg: "containerd"
+    containerd_repo: "none"
     archs: ["amd64", "arm64"]
 
 # ========== k8s 版本（可选参考）==========
@@ -73,11 +103,11 @@ versions:
     runc: "1.1.7"
 
 # ========== 附加组件镜像 ==========
-# 附加组件镜像清单：name → image:tag
-# name 用作镜像保存文件名（images/addons/{name}.tar）
+# 附加组件镜像清单：name → image:tag（仅镜像，不含软件包；附加安装包见下方 addon_packages 节）。
+# name 用作镜像保存文件名（images/addons/{name}.tar）。
 # 地址说明：flannel 与 dashboard 在 registry.k8s.io 无可用 tag（manifest not found），
 # 正确地址位于 docker.io；网络不支持 docker.io 时可用 build --skip-addons 跳过附加组件。
-addons:
+addon_images:
   - name: flannel
     image: "docker.io/flannel/flannel"
     tag: "v0.24.2"
@@ -88,9 +118,25 @@ addons:
     image: "registry.k8s.io/metrics-server/metrics-server"
     tag: "v0.6.4"
 
+# ========== 附加安装包 ==========
+# 附加安装包列表（与 addon_images 平级），mode ∈ {packages, all} 且未 --skip-addons 时
+# 并入软件包下载清单（与核心清单按包名去重合并）；--only-addons 时为其软件包主体。
+# 这些是部署附加组件（或其它宿主组件）需要的系统软件包（apt/dnf 通用名）。
+# 每项为 {name, version} 对象：
+#   - name：包名（须与目标系统源匹配）
+#   - version：可选锁定版本；为空（或省略）= 不锁版本，透传纯包名给容器内包管理器；
+#     非空按目标包管理器语法转译：apt 系 name=version（如 vim=9.0）、dnf/yum 系 name-version（如 vim-9.0）。
+#     版本需与目标系统源匹配，不匹配时由容器内包管理器报错，请自行调整。
+addon_packages:
+  - name: conntrack
+    version: ""
+  - name: vim
+    version: "9.0"
+
+
 # ========== S3 上传（可选）==========
-# build --upload 或 upload 子命令时使用。凭证走环境变量：
-#   AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY（可选 AWS_SESSION_TOKEN）
+# build --upload 或 upload 子命令时使用。凭证优先级：本节的 access_key/secret_key > 环境变量
+#   AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY（可选 AWS_SESSION_TOKEN）> 本机 ~/.aws/credentials / IAM role。
 # MinIO 等兼容存储设置 endpoint（自定义 endpoint 时自动启用 path-style）。
 s3:
   bucket: ""                  # 必填（或通过 --s3-bucket 覆盖）
@@ -98,3 +144,9 @@ s3:
   endpoint: ""                # 如 http://minio.example.com:9000；空则走 AWS
   prefix: pixiu-offline/      # 对象键前缀，最终 key = {prefix}{文件名}
   force_path_style: false     # 公有云一般 false；自定义 endpoint 时忽略并自动 path-style
+  # 以下三个 key 可选（显式凭证；留空则走环境变量 / 默认 AWS 凭证链）。
+  # ⚠️ 明文写在配置文件有泄露风险：建议将 builder.yaml 权限设为 600（chmod 600），
+  #    或优先使用环境变量 AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY。
+  access_key: ""              # 如 AWS_ACCESS_KEY_ID
+  secret_key: ""              # 如 AWS_SECRET_ACCESS_KEY
+  session_token: ""           # 可选临时凭证（如 AWS_SESSION_TOKEN）；无临时凭证留空

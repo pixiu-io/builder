@@ -358,3 +358,180 @@ func TestListCoreImagesUsesKubeadmBin(t *testing.T) {
 		t.Fatalf("期望 7 个镜像，实际 %d: %v", len(got), got)
 	}
 }
+
+func TestFilterCoreImages(t *testing.T) {
+	imgs := []string{
+		"registry.k8s.io/kube-apiserver:v1.27.3",
+		"registry.k8s.io/kube-controller-manager:v1.27.3",
+		"registry.k8s.io/pause:3.9",
+	}
+
+	// 短名过滤
+	got := filterCoreImages(imgs, []string{"kube-apiserver", "pause"})
+	if len(got) != 2 || got[0] != imgs[0] || got[1] != imgs[2] {
+		t.Errorf("短名过滤 = %v", got)
+	}
+	// 完整引用精确匹配
+	got = filterCoreImages(imgs, []string{"registry.k8s.io/pause:3.9"})
+	if len(got) != 1 || got[0] != imgs[2] {
+		t.Errorf("完整引用过滤 = %v", got)
+	}
+	// 空过滤 → 原样
+	got = filterCoreImages(imgs, nil)
+	if len(got) != 3 {
+		t.Errorf("空过滤应原样返回: %v", got)
+	}
+	// 无匹配 → 空
+	got = filterCoreImages(imgs, []string{"nonexistent"})
+	if len(got) != 0 {
+		t.Errorf("无匹配应为空: %v", got)
+	}
+}
+
+func TestFetchWithExternalCoreImages(t *testing.T) {
+	// CoreImages 非空：直接使用，不再走 kubeadm（不提供 KubeadmBin 也应成功）。
+	binDir := t.TempDir()
+	dockerPath := filepath.Join(binDir, "docker")
+	writeFakeDocker(t, dockerPath)
+
+	outDir := t.TempDir()
+	res, err := Fetch(context.Background(), Options{
+		DockerBin:       dockerPath,
+		BuildImage:      "ubuntu:22.04",
+		PackImage:       "docker:24-cli",
+		K8sVersion:      "v1.27.3",
+		ImageRepository: "registry.k8s.io",
+		Arch:            runtime.GOARCH,
+		CoreImages:      []string{"registry.k8s.io/kube-apiserver:v1.27.3"},
+		Addons:          []config.Addon{{Name: "flannel", Image: "docker.io/flannel/flannel", Tag: "v0.24.2"}},
+		ImagesOutDir:    outDir,
+	})
+	if err != nil {
+		t.Fatalf("Fetch(CoreImages) 失败: %v", err)
+	}
+	if res.Skipped {
+		t.Fatal("不应 skipped")
+	}
+	if len(res.Core) != 1 || res.Core[0].SourceImage != "registry.k8s.io/kube-apiserver:v1.27.3" {
+		t.Errorf("核心镜像 = %+v", res.Core)
+	}
+	if len(res.Addons) != 1 {
+		t.Errorf("addons = %+v", res.Addons)
+	}
+	if _, err := os.Stat(filepath.Join(outDir, "core", "kube-apiserver.tar")); err != nil {
+		t.Errorf("核心 tar 缺失: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(outDir, "addons", "flannel.tar")); err != nil {
+		t.Errorf("addon tar 缺失: %v", err)
+	}
+}
+
+func TestFetchWithEmptyCoreImagesNoKubeadm(t *testing.T) {
+	// CoreImages 空非 nil：不拉核心镜像，只拉 addons；不应调用 kubeadm（无 KubeadmBin 也应成功）。
+	// 这正是 --only-addons 场景下 builder 传给 images.Fetch 的形态（核心全去、仅附加镜像）。
+	binDir := t.TempDir()
+	dockerPath := filepath.Join(binDir, "docker")
+	writeFakeDocker(t, dockerPath)
+
+	outDir := t.TempDir()
+	res, err := Fetch(context.Background(), Options{
+		DockerBin:       dockerPath,
+		BuildImage:      "ubuntu:22.04",
+		PackImage:       "docker:24-cli",
+		K8sVersion:      "v1.27.3",
+		ImageRepository: "registry.k8s.io",
+		Arch:            runtime.GOARCH,
+		CoreImages:      []string{},
+		Addons:          []config.Addon{{Name: "flannel", Image: "docker.io/flannel/flannel", Tag: "v0.24.2"}},
+		ImagesOutDir:    outDir,
+	})
+	if err != nil {
+		t.Fatalf("Fetch(空 CoreImages) 失败: %v", err)
+	}
+	if len(res.Core) != 0 {
+		t.Errorf("空 CoreImages 不应拉核心镜像: %+v", res.Core)
+	}
+	if len(res.Addons) != 1 {
+		t.Errorf("addons = %+v", res.Addons)
+	}
+}
+
+// TestFetchOnlyAddons 显式覆盖 --only-addons 场景：核心镜像清单为空（置空非 nil），
+// 仅拉取 addon_images；不触发 kubeadm 核心清单生成。
+func TestFetchOnlyAddons(t *testing.T) {
+	binDir := t.TempDir()
+	dockerPath := filepath.Join(binDir, "docker")
+	writeFakeDocker(t, dockerPath)
+
+	outDir := t.TempDir()
+	res, err := Fetch(context.Background(), Options{
+		DockerBin:       dockerPath,
+		BuildImage:      "ubuntu:22.04",
+		PackImage:       "docker:24-cli",
+		K8sVersion:      "v1.27.3",
+		ImageRepository: "registry.k8s.io",
+		Arch:            runtime.GOARCH,
+		CoreImages:      []string{}, // only-addons：核心镜像置空，不拉核心
+		Addons: []config.Addon{
+			{Name: "flannel", Image: "docker.io/flannel/flannel", Tag: "v0.24.2"},
+			{Name: "metrics-server", Image: "registry.k8s.io/metrics-server/metrics-server", Tag: "v0.6.4"},
+		},
+		ImagesOutDir: outDir,
+	})
+	if err != nil {
+		t.Fatalf("Fetch(only-addons) 失败: %v", err)
+	}
+	if res.Skipped {
+		t.Fatal("不应 skipped")
+	}
+	if len(res.Core) != 0 {
+		t.Errorf("only-addons 不应拉核心镜像: %+v", res.Core)
+	}
+	if len(res.Addons) != 2 {
+		t.Errorf("only-addons 应拉取全部 addon_images，实际 %d: %+v", len(res.Addons), res.Addons)
+	}
+	if _, err := os.Stat(filepath.Join(outDir, "core", "kube-apiserver.tar")); err == nil {
+		t.Error("only-addons 不应生成核心镜像 tar")
+	}
+	if _, err := os.Stat(filepath.Join(outDir, "addons", "flannel.tar")); err != nil {
+		t.Errorf("only-addons 应生成 flannel.tar: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(outDir, "addons", "metrics-server.tar")); err != nil {
+		t.Errorf("only-addons 应生成 metrics-server.tar: %v", err)
+	}
+}
+
+func TestFetchWithCoreFilter(t *testing.T) {
+	// CoreFilter：走 kubeadm 生成后按短名过滤；Addons 空列表时不拉附加组件。
+	binDir := t.TempDir()
+	dockerPath := filepath.Join(binDir, "docker")
+	writeFakeDocker(t, dockerPath)
+	kubeadmPath := filepath.Join(binDir, "kubeadm")
+	writeFakeKubeadm(t, kubeadmPath)
+
+	outDir := t.TempDir()
+	res, err := Fetch(context.Background(), Options{
+		DockerBin:       dockerPath,
+		BuildImage:      "ubuntu:22.04",
+		PackImage:       "docker:24-cli",
+		K8sVersion:      "v1.27.3",
+		ImageRepository: "registry.k8s.io",
+		Arch:            runtime.GOARCH,
+		KubeadmBin:      kubeadmPath,
+		CoreFilter:      []string{"kube-apiserver"},
+		Addons:          []config.Addon{},
+		ImagesOutDir:    outDir,
+	})
+	if err != nil {
+		t.Fatalf("Fetch(CoreFilter) 失败: %v", err)
+	}
+	if len(res.Core) != 1 || res.Core[0].SourceImage != "registry.k8s.io/kube-apiserver:v1.27.3" {
+		t.Errorf("CoreFilter 结果 = %+v", res.Core)
+	}
+	if len(res.Addons) != 0 {
+		t.Errorf("空 addons 不应拉取: %+v", res.Addons)
+	}
+	if _, err := os.Stat(filepath.Join(outDir, "core", "kube-apiserver.tar")); err != nil {
+		t.Errorf("核心 tar 缺失: %v", err)
+	}
+}

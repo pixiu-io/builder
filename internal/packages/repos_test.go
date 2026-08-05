@@ -27,6 +27,18 @@ func TestK8sRepos(t *testing.T) {
 	if strings.Contains(r.AptKeyURL, "v1.27") {
 		t.Errorf("AptKeyURL 不应再使用过期的 v1.27 Release.key: %s", r.AptKeyURL)
 	}
+	// 回归：exclude=kubelet kubeadm kubectl 不应加在 k8s 源自身（会过滤掉本源的 k8s 包，
+	// 导致 dnf 报 "All matches were filtered out by exclude filtering"）。
+	// exclude 的本意是防止系统源提供旧版 k8s 包，应加在系统源而非 k8s 源。
+	for _, forbid := range []string{"exclude=kubelet", "exclude=kubeadm", "exclude=kubectl", "exclude="} {
+		if strings.Contains(r.DnfRepoBlock, forbid) {
+			t.Errorf("k8s dnf repo 不应含 %q:\n%s", forbid, r.DnfRepoBlock)
+		}
+	}
+	// [kubernetes] 块只保留 name/baseurl/enabled/gpgcheck/gpgkey，以 gpgkey 行收尾
+	if !strings.HasSuffix(strings.TrimSpace(r.DnfRepoBlock), "repomd.xml.key") {
+		t.Errorf("k8s dnf repo 应以 gpgkey 行收尾（不应有多余 exclude 行）:\n%s", r.DnfRepoBlock)
+	}
 }
 
 func TestContainerdRepos(t *testing.T) {
@@ -86,7 +98,7 @@ func TestDnfSourceScript(t *testing.T) {
 
 func TestBuildPackageList(t *testing.T) {
 	deps := []string{"conntrack", "nfs-common"}
-	got := BuildPackageList("apt", "v1.27.3", deps, false)
+	got := BuildPackageList("apt", "v1.27.3", deps, false, "containerd.io")
 	want := []string{"kubeadm", "kubelet", "kubectl", "containerd.io", "cri-tools", "conntrack", "nfs-common"}
 	if len(got) != len(want) {
 		t.Fatalf("期望 %d 个包，实际 %d: %v", len(want), len(got), got)
@@ -98,16 +110,46 @@ func TestBuildPackageList(t *testing.T) {
 	}
 }
 
+func TestBuildPackageListCustomContainerdPkg(t *testing.T) {
+	// openEuler 等系统源场景：containerd 包名为 "containerd"（非 docker 源 containerd.io）。
+	got := BuildPackageList("dnf", "v1.35.7", []string{"conntrack"}, false, "containerd")
+	want := []string{"kubeadm", "kubelet", "kubectl", "containerd", "cri-tools", "conntrack"}
+	if len(got) != len(want) {
+		t.Fatalf("期望 %d 个包，实际 %d: %v", len(want), len(got), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("位置 %d 期望 %q 实际 %q", i, want[i], got[i])
+		}
+	}
+	// 空值保底默认 containerd.io
+	def := BuildPackageList("dnf", "v1.35.7", nil, false, "")
+	for _, p := range def {
+		if p == "containerd" {
+			t.Errorf("空 containerdPkg 不应出现 containerd: %v", def)
+		}
+	}
+	hasIO := false
+	for _, p := range def {
+		if p == "containerd.io" {
+			hasIO = true
+		}
+	}
+	if !hasIO {
+		t.Errorf("空 containerdPkg 应默认 containerd.io: %v", def)
+	}
+}
+
 func TestBuildPackageListPin(t *testing.T) {
-	apt := BuildPackageList("apt", "v1.27.3", nil, true)
+	apt := BuildPackageList("apt", "v1.27.3", nil, true, "")
 	if apt[0] != "kubeadm=1.27.3" {
 		t.Errorf("apt 版本约束异常: %v", apt[:3])
 	}
-	dnf := BuildPackageList("dnf", "v1.28.2", nil, true)
+	dnf := BuildPackageList("dnf", "v1.28.2", nil, true, "")
 	if dnf[0] != "kubeadm-1.28.2" {
 		t.Errorf("dnf 版本约束异常: %v", dnf[:3])
 	}
-	unpin := BuildPackageList("apt", "v1.27.3", nil, false)
+	unpin := BuildPackageList("apt", "v1.27.3", nil, false, "")
 	if unpin[0] != "kubeadm" {
 		t.Errorf("默认不 pin 版本: %v", unpin[:3])
 	}

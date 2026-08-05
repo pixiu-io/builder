@@ -68,7 +68,15 @@ type Options struct {
 	KubeadmBin string
 	// KubeadmBaseURL kubeadm 下载基址，默认 https://dl.k8s.io/release。
 	KubeadmBaseURL string
-	// Addons 附加组件镜像清单。
+	// CoreImages 外部传入的最终核心镜像完整引用清单（已解析）。
+	//   nil    → 未外部指定：内部走 kubeadm 生成默认核心清单（再用 CoreFilter 过滤）
+	//   非 nil → 直接使用该清单（可为空 slice，表示不拉取任何核心镜像），不再走 kubeadm
+	CoreImages []string
+	// CoreFilter 外部传入的核心镜像过滤项（短名或完整引用）。
+	// 仅当 CoreImages 为 nil（走 kubeadm 生成）时生效：对生成结果按过滤项匹配。
+	// 为空表示拉取全部核心镜像。
+	CoreFilter []string
+	// Addons 外部传入的最终附加组件镜像清单（可为空，表示不拉取附加组件）。
 	Addons []config.Addon
 	// SkipAddons 跳过附加组件镜像拉取（仅核心镜像）。
 	SkipAddons bool
@@ -175,10 +183,20 @@ func Fetch(ctx context.Context, opts Options) (*Result, error) {
 		return res, fmt.Errorf("创建 addons 目录失败: %w", err)
 	}
 
-	// 步骤 1：用官方 kubeadm 二进制生成核心镜像清单（宿主机或挂载进构建容器）
-	coreImages, err := listCoreImages(ctx, opts)
-	if err != nil {
-		return res, fmt.Errorf("生成核心镜像清单失败: %w", err)
+	// 步骤 1：核心镜像清单。
+	// 外部传入 CoreImages（非 nil）时直接使用（可能为空 = 不拉核心镜像），不再走 kubeadm；
+	// 否则用官方 kubeadm 二进制生成（Linux 直跑或挂载进构建容器），并按 CoreFilter 过滤。
+	var coreImages []string
+	if opts.CoreImages != nil {
+		coreImages = opts.CoreImages
+	} else {
+		coreImages, err = listCoreImages(ctx, opts)
+		if err != nil {
+			return res, fmt.Errorf("生成核心镜像清单失败: %w", err)
+		}
+		if len(opts.CoreFilter) > 0 {
+			coreImages = filterCoreImages(coreImages, opts.CoreFilter)
+		}
 	}
 	res.CoreImages = coreImages
 
@@ -376,6 +394,25 @@ func filterImageLines(out string) []string {
 		images = append(images, line)
 	}
 	return images
+}
+
+// filterCoreImages 按过滤项（短名或完整引用）筛选 kubeadm 生成的核心镜像清单。
+// 保留与任一过滤项匹配的镜像：短名匹配镜像末段名（ShortName），完整引用要求完全一致。
+// 过滤项为空时原样返回（拉取全部核心镜像）。
+func filterCoreImages(images []string, filters []string) []string {
+	if len(filters) == 0 {
+		return images
+	}
+	var out []string
+	for _, img := range images {
+		for _, f := range filters {
+			if img == f || ShortName(img) == f {
+				out = append(out, img)
+				break
+			}
+		}
+	}
+	return out
 }
 
 // isValidImageStart 判断镜像名首字符是否合法（字母/数字）。
