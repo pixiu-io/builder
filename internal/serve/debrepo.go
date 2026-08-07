@@ -9,6 +9,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/klauspost/compress/zstd"
+	"github.com/ulikunitz/xz"
 )
 
 // writeDebRepo 生成简易 apt 源：Packages + Packages.gz（deb [trusted=yes] http://host/deb ./）。
@@ -98,12 +101,16 @@ func readDebControl(path string) (string, error) {
 		case name == "control.tar.gz" || strings.HasPrefix(name, "control.tar.gz"):
 			return extractControlFromTarGz(data)
 		case name == "control.tar.xz" || strings.HasPrefix(name, "control.tar.xz"):
-			return "", fmt.Errorf("暂不支持 control.tar.xz，请使用 control.tar.gz 的 deb")
-		case name == "control.tar" || strings.HasPrefix(name, "control.tar"):
+			return extractControlFromTarXz(data)
+		case name == "control.tar.zst" || strings.HasPrefix(name, "control.tar.zst"):
+			return extractControlFromTarZst(data)
+		case name == "control.tar":
+			// 注意：必须精确匹配未压缩的 control.tar，否则会误匹配
+			// control.tar.zst / .xz / .gz 等压缩变体。
 			return extractControlFromTar(bytes.NewReader(data))
 		}
 	}
-	return "", fmt.Errorf("未找到 control.tar.gz")
+	return "", fmt.Errorf("未找到 control.tar.*（支持 gz / xz / zst / 未压缩）")
 }
 
 type arHeader struct {
@@ -142,6 +149,26 @@ func extractControlFromTarGz(data []byte) (string, error) {
 	}
 	defer gr.Close()
 	return extractControlFromTar(gr)
+}
+
+// extractControlFromTarXz 读取 control.tar.xz 内的 control 文件。
+func extractControlFromTarXz(data []byte) (string, error) {
+	xr, err := xz.NewReader(bytes.NewReader(data))
+	if err != nil {
+		return "", err
+	}
+	return extractControlFromTar(xr)
+}
+
+// extractControlFromTarZst 读取 control.tar.zst 内的 control 文件
+// （Ubuntu 23.10+ / Debian 12+ 新 dpkg 默认 zstd 压缩）。
+func extractControlFromTarZst(data []byte) (string, error) {
+	zr, err := zstd.NewReader(bytes.NewReader(data))
+	if err != nil {
+		return "", err
+	}
+	defer zr.Close()
+	return extractControlFromTar(zr)
 }
 
 func extractControlFromTar(r io.Reader) (string, error) {

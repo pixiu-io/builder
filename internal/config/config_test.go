@@ -691,6 +691,73 @@ s3:
 	}
 }
 
+// TestCosOptionsParse 验证 cos 节能被 yaml 解析。
+func TestCosOptionsParse(t *testing.T) {
+	content := `
+oses:
+  - name: ubuntu
+    versions: ["22.04"]
+    pkg_manager: apt
+    build_images:
+      "22.04": ubuntu:22.04
+    archs: ["amd64"]
+versions:
+  - version: v1.27.3
+cos:
+  bucket: mybucket-1250000000
+  region: ap-guangzhou
+  secret_id: AKIDEXAMPLE
+  secret_key: SECRETKEYEXAMPLE
+  prefix: releases/
+`
+	cfg, err := Load(writeSample(t, content))
+	if err != nil {
+		t.Fatalf("Load 失败: %v", err)
+	}
+	want := CosConfig{
+		Bucket:    "mybucket-1250000000",
+		Region:    "ap-guangzhou",
+		SecretID:  "AKIDEXAMPLE",
+		SecretKey: "SECRETKEYEXAMPLE",
+		Prefix:    "releases/",
+	}
+	if cfg.Cos != want {
+		t.Errorf("CosConfig 解析异常:\n got %+v\nwant %+v", cfg.Cos, want)
+	}
+}
+
+// TestBuildKeepFilesParse 验证 build 节 keep_files 能被 yaml 解析（默认 false，配置 true 生效）。
+func TestBuildKeepFilesParse(t *testing.T) {
+	content := `
+oses:
+  - name: ubuntu
+    versions: ["22.04"]
+    pkg_manager: apt
+    build_images:
+      "22.04": ubuntu:22.04
+    archs: ["amd64"]
+versions:
+  - version: v1.27.3
+build:
+  keep_files: true
+`
+	cfg, err := Load(writeSample(t, content))
+	if err != nil {
+		t.Fatalf("Load 失败: %v", err)
+	}
+	if !cfg.Build.KeepFiles {
+		t.Error("keep_files 应为 true")
+	}
+	// 未配置时默认 false
+	cfg2, err := Load(sampleFile(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg2.Build.KeepFiles {
+		t.Error("未配置 keep_files 应为 false")
+	}
+}
+
 func TestS3OptionsCredentialsZeroValue(t *testing.T) {
 	// 未配置 s3 凭证字段时保持零值，保证留空走默认 AWS 凭证链行为不变。
 	cfg, err := Load(sampleFile(t)) // sampleContent 无 s3 节

@@ -6,15 +6,21 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"sort"
 	"strings"
 	"syscall"
 
 	"github.com/spf13/cobra"
 
+	"github.com/google/go-containerregistry/pkg/crane"
+
 	"builder/internal/builder"
 	"builder/internal/config"
+	"builder/internal/cosupload"
 	"builder/internal/mirror"
 	"builder/internal/s3upload"
+	"builder/internal/serve"
 )
 
 // 全局 flag
@@ -22,27 +28,30 @@ var configFile string
 
 // build 子命令 flags
 var (
-	buildOS           string
-	buildOSVersion    string
-	buildK8sVersion   string // --kubernetes-version
-	buildArch         string
-	buildMirror       string
-	buildWorkDir      string
-	buildOutDir       string
-	buildMode         string
-	buildSkipAddons   bool
-	buildOnlyAddons   bool
-	buildDryRun       bool
-	buildUpload       bool
-	buildS3Bucket     string
-	buildS3Prefix     string
-	buildS3Endpoint   string
-	buildS3Region     string
+	buildOS         string
+	buildOSVersion  string
+	buildK8sVersion string // --kubernetes-version
+	buildArch       string
+	buildMirror     string
+	buildWorkDir    string
+	buildOutDir     string
+	buildMode       string
+	buildSkipAddons bool
+	buildOnlyAddons bool
+	buildDryRun     bool
+	buildKeepFiles  bool
+	buildUpload     bool
+	buildS3Bucket   string
+	buildS3Prefix   string
+	buildS3Endpoint string
+	buildS3Region   string
 )
 
 // upload 子命令 flags
 var (
 	uploadFiles      []string
+	uploadDir        string
+	uploadSkips      []string
 	uploadS3Bucket   string
 	uploadS3Prefix   string
 	uploadS3Endpoint string
@@ -51,6 +60,27 @@ var (
 
 // verify 子命令 flags
 var verifyBundle string
+
+// serve 子命令 flags
+var (
+	serveBundles       []string
+	serveDir           string
+	serveDataDir       string
+	serveRegistryAddr  string
+	serveRepoAddr      string
+	serveAdvertiseHost string
+	serveSkipImages    bool
+	serveSkipPackages  bool
+)
+
+// cos 上传 flags（build --upload 与 upload 子命令共用）
+var (
+	cosBucket    string
+	cosRegion    string
+	cosSecretID  string
+	cosSecretKey string
+	cosPrefix    string
+)
 
 func main() {
 	if err := newRootCmd().Execute(); err != nil {
@@ -73,6 +103,10 @@ func newRootCmd() *cobra.Command {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+			switch cmd.Name() {
+			case "serve", "version", "help":
+				return nil
+			}
 			// 校验配置文件可读
 			if _, err := os.Stat(configFile); err != nil {
 				return fmt.Errorf("配置文件不可用: %s（可设置 --configFile 或 BUILDER_CONFIG_FILE）", configFile)
@@ -85,9 +119,11 @@ func newRootCmd() *cobra.Command {
 
 	root.AddCommand(newBuildCmd())
 	root.AddCommand(newUploadCmd())
+	root.AddCommand(newServeCmd())
 	root.AddCommand(newListOSCmd())
 	root.AddCommand(newListK8sCmd())
 	root.AddCommand(newListImagesCmd())
+	root.AddCommand(newListServeImagesCmd())
 	root.AddCommand(newVerifyCmd())
 	root.AddCommand(newVersionCmd())
 
@@ -116,11 +152,18 @@ func newBuildCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&buildSkipAddons, "skip-addons", false, "跳过附加组件（addon_images 与 addon_packages 均不并入），仅核心软件包/镜像")
 	cmd.Flags().BoolVar(&buildOnlyAddons, "only-addons", false, "只打包附加组件（addon_images/addon_packages），核心软件包与镜像全去；与 --skip-addons 互斥")
 	cmd.Flags().BoolVar(&buildDryRun, "dry-run", false, "仅演练管线，不执行真实下载/拉取")
+	cmd.Flags().BoolVar(&buildKeepFiles, "keep-files", false, "构建完成后保留中间文件（packages/images/bundle 目录；默认清理）")
 	cmd.Flags().BoolVar(&buildUpload, "upload", false, "构建完成后将产物 tar.gz 上传到 S3（需配置 s3.bucket 或 --s3-bucket）")
 	cmd.Flags().StringVar(&buildS3Bucket, "s3-bucket", "", "S3 bucket（覆盖配置文件 s3.bucket）")
 	cmd.Flags().StringVar(&buildS3Prefix, "s3-prefix", "", "S3 对象键前缀（覆盖配置文件 s3.prefix）")
 	cmd.Flags().StringVar(&buildS3Endpoint, "s3-endpoint", "", "S3 兼容 endpoint（如 MinIO，覆盖配置文件 s3.endpoint）")
 	cmd.Flags().StringVar(&buildS3Region, "s3-region", "", "S3 region（覆盖配置文件 s3.region）")
+	// COS 上传 flags（build --upload 与 upload 子命令共用；任一提供时优先 COS）
+	cmd.Flags().StringVar(&cosBucket, "cos-bucket", "", "COS bucket（含 appid，如 mybucket-1250000000；覆盖配置文件 cos.bucket）")
+	cmd.Flags().StringVar(&cosRegion, "cos-region", "", "COS 地域（如 ap-guangzhou；覆盖配置文件 cos.region）")
+	cmd.Flags().StringVar(&cosSecretID, "cos-secret-id", "", "COS SecretId（覆盖配置文件 cos.secret_id）")
+	cmd.Flags().StringVar(&cosSecretKey, "cos-secret-key", "", "COS SecretKey（覆盖配置文件 cos.secret_key）")
+	cmd.Flags().StringVar(&cosPrefix, "cos-prefix", "", "COS 对象键前缀（覆盖配置文件 cos.prefix）")
 	// 必填校验（os/os-version/kubernetes-version）改为手动判断：命令行或配置 build 节任一提供即可，
 	// 因此不使用 cobra 的 MarkFlagRequired（它只认命令行，会阻断配置兜底）。
 	// --only-addons 时 kubernetes-version 可省略（不构建 k8s 核心，无需推导 k8s 版本）。
@@ -140,6 +183,7 @@ type buildFlagValues struct {
 	SkipAddons bool
 	OnlyAddons bool
 	DryRun     bool
+	KeepFiles  bool
 }
 
 // buildFlagChanged 记录各 flag 是否被命令行显式设置（true 表示命令行值优先）。
@@ -156,6 +200,7 @@ type buildFlagChanged struct {
 	SkipAddons bool
 	OnlyAddons bool
 	DryRun     bool
+	KeepFiles  bool
 }
 
 // buildOptions build 子命令合并后的生效参数（Mirror 保持字符串，由调用方解析为 mirror.Mirror）。
@@ -171,6 +216,7 @@ type buildOptions struct {
 	SkipAddons bool
 	OnlyAddons bool
 	DryRun     bool
+	KeepFiles  bool
 }
 
 // resolveBuildOptions 按"命令行 > 配置文件 build 节 > flag 内置默认值"合并 build 参数。
@@ -178,17 +224,18 @@ type buildOptions struct {
 // cfg.Build 为配置文件 build 节（可为零值，表示未配置）。
 func resolveBuildOptions(cfg *config.Config, vals buildFlagValues, changed buildFlagChanged) buildOptions {
 	return buildOptions{
-		OS:           resolveString(changed.OS, vals.OS, cfg.Build.OS),
-		OSVersion:    resolveString(changed.OSVersion, vals.OSVersion, cfg.Build.OSVersion),
-		K8sVersion:   resolveString(changed.K8sVersion, vals.K8sVersion, cfg.Build.KubernetesVersion),
-		Arch:         resolveString(changed.Arch, vals.Arch, cfg.Build.Arch),
-		Mirror:       resolveString(changed.Mirror, vals.Mirror, cfg.Build.Mirror),
-		WorkDir:      resolveString(changed.WorkDir, vals.WorkDir, cfg.Build.WorkDir),
-		OutDir:       resolveString(changed.OutDir, vals.OutDir, cfg.Build.OutDir),
-		Mode:         resolveString(changed.Mode, vals.Mode, cfg.Build.Mode),
-		SkipAddons:   resolveBool(changed.SkipAddons, vals.SkipAddons, cfg.Build.SkipAddons),
-		OnlyAddons:   resolveBool(changed.OnlyAddons, vals.OnlyAddons, cfg.Build.OnlyAddons),
-		DryRun:       resolveBool(changed.DryRun, vals.DryRun, cfg.Build.DryRun),
+		OS:         resolveString(changed.OS, vals.OS, cfg.Build.OS),
+		OSVersion:  resolveString(changed.OSVersion, vals.OSVersion, cfg.Build.OSVersion),
+		K8sVersion: resolveString(changed.K8sVersion, vals.K8sVersion, cfg.Build.KubernetesVersion),
+		Arch:       resolveString(changed.Arch, vals.Arch, cfg.Build.Arch),
+		Mirror:     resolveString(changed.Mirror, vals.Mirror, cfg.Build.Mirror),
+		WorkDir:    resolveString(changed.WorkDir, vals.WorkDir, cfg.Build.WorkDir),
+		OutDir:     resolveString(changed.OutDir, vals.OutDir, cfg.Build.OutDir),
+		Mode:       resolveString(changed.Mode, vals.Mode, cfg.Build.Mode),
+		SkipAddons: resolveBool(changed.SkipAddons, vals.SkipAddons, cfg.Build.SkipAddons),
+		OnlyAddons: resolveBool(changed.OnlyAddons, vals.OnlyAddons, cfg.Build.OnlyAddons),
+		DryRun:     resolveBool(changed.DryRun, vals.DryRun, cfg.Build.DryRun),
+		KeepFiles:  resolveBool(changed.KeepFiles, vals.KeepFiles, cfg.Build.KeepFiles),
 	}
 }
 
@@ -252,6 +299,7 @@ func runBuild(cmd *cobra.Command, args []string) error {
 		SkipAddons: buildSkipAddons,
 		OnlyAddons: buildOnlyAddons,
 		DryRun:     buildDryRun,
+		KeepFiles:  buildKeepFiles,
 	}, buildFlagChanged{
 		OS:         cmd.Flags().Changed("os"),
 		OSVersion:  cmd.Flags().Changed("os-version"),
@@ -264,6 +312,7 @@ func runBuild(cmd *cobra.Command, args []string) error {
 		SkipAddons: cmd.Flags().Changed("skip-addons"),
 		OnlyAddons: cmd.Flags().Changed("only-addons"),
 		DryRun:     cmd.Flags().Changed("dry-run"),
+		KeepFiles:  cmd.Flags().Changed("keep-files"),
 	})
 
 	mirrorVal, err := mirror.ParseMirror(opts.Mirror)
@@ -304,6 +353,7 @@ func runBuild(cmd *cobra.Command, args []string) error {
 		SkipAddons: opts.SkipAddons,
 		OnlyAddons: opts.OnlyAddons,
 		DryRun:     opts.DryRun,
+		KeepFiles:  opts.KeepFiles,
 	})
 	if err != nil {
 		return err
@@ -332,13 +382,8 @@ func runBuild(cmd *cobra.Command, args []string) error {
 		if len(files) == 0 && res.TarPath != "" {
 			files = []string{res.TarPath}
 		}
-		uploaded, err := uploadArtifacts(ctx, cfg, files, buildS3Bucket, buildS3Prefix, buildS3Endpoint, buildS3Region)
-		if err != nil {
+		if err := uploadArtifacts(ctx, cfg, files, buildS3Bucket, buildS3Prefix, buildS3Endpoint, buildS3Region); err != nil {
 			return err
-		}
-		fmt.Println("S3 上传完成：")
-		for _, u := range uploaded {
-			fmt.Printf("  - %s → %s\n", u.LocalPath, u.URI)
 		}
 	}
 	return nil
@@ -347,43 +392,157 @@ func runBuild(cmd *cobra.Command, args []string) error {
 func newUploadCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "upload",
-		Short: "将已有离线包 tar.gz 上传到 S3",
+		Short: "将离线包 tar.gz 或文件夹下所有文件上传到 S3/COS",
 		Example: `  builder upload --file ./dist/pixiu-offline-ubuntu-22.04-amd64-v1.27.3-packages.tar.gz
-  builder upload --file a.tar.gz --file b.tar.gz --s3-bucket my-bucket --s3-prefix releases/`,
+  builder upload --file a.tar.gz --file b.tar.gz --s3-bucket my-bucket --s3-prefix releases/
+  builder upload --dir ./dist --skip md5sum.txt --skip checksum.txt --cos-bucket mybucket-1250000000`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg, err := config.Load(configFile)
 			if err != nil {
 				return err
 			}
-			if len(uploadFiles) == 0 {
-				return fmt.Errorf("请通过 --file 指定至少一个 tar.gz")
+			files := make([]string, 0, len(uploadFiles))
+			files = append(files, uploadFiles...)
+			if uploadDir != "" {
+				dirFiles, err := collectDirFiles(uploadDir)
+				if err != nil {
+					return fmt.Errorf("遍历目录 %s 失败: %w", uploadDir, err)
+				}
+				files = append(files, dirFiles...)
+			}
+			files = filterSkipped(files, uploadSkips)
+			if len(files) == 0 {
+				return fmt.Errorf("没有可上传的文件（请用 --file 指定文件或 --dir 指定文件夹）")
 			}
 			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 			defer stop()
-			uploaded, err := uploadArtifacts(ctx, cfg, uploadFiles, uploadS3Bucket, uploadS3Prefix, uploadS3Endpoint, uploadS3Region)
-			if err != nil {
+			if err := uploadArtifacts(ctx, cfg, files, uploadS3Bucket, uploadS3Prefix, uploadS3Endpoint, uploadS3Region); err != nil {
 				return err
-			}
-			fmt.Println("S3 上传完成：")
-			for _, u := range uploaded {
-				fmt.Printf("  - %s → %s\n", u.LocalPath, u.URI)
 			}
 			return nil
 		},
 	}
 	cmd.Flags().StringArrayVar(&uploadFiles, "file", nil, "待上传的本地文件（可重复）")
+	cmd.Flags().StringVar(&uploadDir, "dir", "", "指定文件夹，递归上传其下所有文件")
+	cmd.Flags().StringArrayVar(&uploadSkips, "skip", nil, "按文件名忽略的文件（可重复，对 --file 与 --dir 均生效）")
 	cmd.Flags().StringVar(&uploadS3Bucket, "s3-bucket", "", "S3 bucket（覆盖配置文件 s3.bucket）")
 	cmd.Flags().StringVar(&uploadS3Prefix, "s3-prefix", "", "S3 对象键前缀（覆盖配置文件 s3.prefix）")
 	cmd.Flags().StringVar(&uploadS3Endpoint, "s3-endpoint", "", "S3 兼容 endpoint（覆盖配置文件 s3.endpoint）")
 	cmd.Flags().StringVar(&uploadS3Region, "s3-region", "", "S3 region（覆盖配置文件 s3.region）")
+	// COS 上传 flags（build --upload 与 upload 子命令共用；任一提供时优先 COS）
+	cmd.Flags().StringVar(&cosBucket, "cos-bucket", "", "COS bucket（含 appid，如 mybucket-1250000000；覆盖配置文件 cos.bucket）")
+	cmd.Flags().StringVar(&cosRegion, "cos-region", "", "COS 地域（如 ap-guangzhou；覆盖配置文件 cos.region）")
+	cmd.Flags().StringVar(&cosSecretID, "cos-secret-id", "", "COS SecretId（覆盖配置文件 cos.secret_id）")
+	cmd.Flags().StringVar(&cosSecretKey, "cos-secret-key", "", "COS SecretKey（覆盖配置文件 cos.secret_key）")
+	cmd.Flags().StringVar(&cosPrefix, "cos-prefix", "", "COS 对象键前缀（覆盖配置文件 cos.prefix）")
 	return cmd
 }
 
+// collectDirFiles 递归收集 dir 下所有普通文件（跳过目录本身）。
+func collectDirFiles(dir string) ([]string, error) {
+	var files []string
+	err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if info.IsDir() {
+			return nil
+		}
+		files = append(files, path)
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return files, nil
+}
+
+// filterSkipped 按文件名（basename）过滤掉 skip 列表中的文件。
+func filterSkipped(files, skips []string) []string {
+	skipSet := make(map[string]bool, len(skips))
+	for _, s := range skips {
+		skipSet[s] = true
+	}
+	out := make([]string, 0, len(files))
+	for _, f := range files {
+		if skipSet[filepath.Base(f)] {
+			continue
+		}
+		out = append(out, f)
+	}
+	return out
+}
+
 // uploadArtifacts 合并配置与 CLI 覆盖后上传文件。
-func uploadArtifacts(ctx context.Context, cfg *config.Config, files []string, bucket, prefix, endpoint, region string) ([]s3upload.Result, error) {
-	opts := mergeS3Options(cfg.S3, bucket, prefix, endpoint, region)
+// 上传后端优先 COS（配置 cos.bucket 或 CLI --cos-* 任一提供时）；否则走 S3 / MinIO。
+func uploadArtifacts(ctx context.Context, cfg *config.Config, files []string, s3Bucket, s3Prefix, s3Endpoint, s3Region string) error {
+	if cfg.Cos.Bucket != "" || cosBucket != "" || cosRegion != "" || cosSecretID != "" || cosSecretKey != "" {
+		opts := mergeCosOptions(cfg.Cos, cosBucket, cosRegion, cosSecretID, cosSecretKey, cosPrefix)
+		fmt.Printf("上传到 COS %s/%s （共 %d 个文件）...\n", opts.Bucket, strings.TrimSuffix(opts.Prefix, "/"), len(files))
+		res, err := cosupload.UploadFiles(ctx, opts, files)
+		if err != nil {
+			return err
+		}
+		fmt.Println("上传完成：")
+		for _, u := range res {
+			fmt.Printf("  - %s → %s\n", u.LocalPath, u.URI)
+		}
+		return nil
+	}
+
+	opts := mergeS3Options(cfg.S3, s3Bucket, s3Prefix, s3Endpoint, s3Region)
 	fmt.Printf("上传到 s3://%s/%s （共 %d 个文件）...\n", opts.Bucket, strings.TrimSuffix(opts.Prefix, "/"), len(files))
-	return s3upload.UploadFiles(ctx, opts, files)
+	res, err := s3upload.UploadFiles(ctx, opts, files)
+	if err != nil {
+		return err
+	}
+	fmt.Println("上传完成：")
+	for _, u := range res {
+		fmt.Printf("  - %s → %s\n", u.LocalPath, u.URI)
+	}
+	return nil
+}
+
+func newServeCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "serve",
+		Short: "加载离线产物，提供 docker pull（短名）与 yum/dnf/apt 软件源",
+		Long: `将 builder 产物（目录或 tar.gz）加载后常驻服务：
+  - OCI registry：docker pull <host>:5000/<短名>:<tag>
+  - HTTP 软件源：dnf/yum 使用 /rpm，apt 使用 /deb
+
+纯 Go 实现，不依赖 createrepo / apt-ftparchive 等外部工具。`,
+		Example: `  builder serve --bundle ./dist/pixiu-offline-centos-8-amd64-v1.27.3-packages.tar.gz \
+                --bundle ./dist/pixiu-offline-centos-8-amd64-v1.27.3-images.tar.gz
+  builder serve --bundle ./work/pixiu-offline-ubuntu-22.04-amd64-v1.27.3 --advertise-host 192.168.1.10`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if len(serveBundles) == 0 && serveDir == "" {
+				return fmt.Errorf("请通过 --bundle 指定离线包，或 --dir 指定离线包目录")
+			}
+			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+			defer stop()
+			_, err := serve.Run(ctx, serve.Options{
+				Bundles:       serveBundles,
+				Dir:           serveDir,
+				DataDir:       serveDataDir,
+				RegistryAddr:  serveRegistryAddr,
+				RepoAddr:      serveRepoAddr,
+				AdvertiseHost: serveAdvertiseHost,
+				SkipImages:    serveSkipImages,
+				SkipPackages:  serveSkipPackages,
+			})
+			return err
+		},
+	}
+	cmd.Flags().StringArrayVar(&serveBundles, "bundle", nil, "离线包目录或 tar.gz（可重复，例如 packages + images）")
+	cmd.Flags().StringVar(&serveDir, "dir", "", "离线包目录：加载其下所有 *.tar.gz 并轮询热加载新包（3s）")
+	cmd.Flags().StringVar(&serveDataDir, "data-dir", "./serve-data", "工作目录（解压、repodata、registry blob）")
+	cmd.Flags().StringVar(&serveRegistryAddr, "registry-addr", "0.0.0.0:5000", "OCI registry 监听地址")
+	cmd.Flags().StringVar(&serveRepoAddr, "repo-addr", "0.0.0.0:8080", "软件源 HTTP 监听地址")
+	cmd.Flags().StringVar(&serveAdvertiseHost, "advertise-host", serve.LocalIP(), "打印给客户端的主机名/IP（不含端口），默认本机 IP")
+	cmd.Flags().BoolVar(&serveSkipImages, "skip-images", false, "不提供镜像 registry")
+	cmd.Flags().BoolVar(&serveSkipPackages, "skip-packages", false, "不提供软件源")
+	return cmd
 }
 
 func mergeS3Options(cfg config.S3Config, bucket, prefix, endpoint, region string) s3upload.Options {
@@ -409,6 +568,32 @@ func mergeS3Options(cfg config.S3Config, bucket, prefix, endpoint, region string
 	}
 	if region != "" {
 		opts.Region = region
+	}
+	return opts
+}
+
+func mergeCosOptions(cfg config.CosConfig, bucket, region, secretID, secretKey, prefix string) cosupload.Options {
+	opts := cosupload.Options{
+		Bucket:    cfg.Bucket,
+		Region:    cfg.Region,
+		SecretID:  cfg.SecretID,
+		SecretKey: cfg.SecretKey,
+		Prefix:    cfg.Prefix,
+	}
+	if bucket != "" {
+		opts.Bucket = bucket
+	}
+	if region != "" {
+		opts.Region = region
+	}
+	if secretID != "" {
+		opts.SecretID = secretID
+	}
+	if secretKey != "" {
+		opts.SecretKey = secretKey
+	}
+	if prefix != "" {
+		opts.Prefix = prefix
 	}
 	return opts
 }
@@ -500,6 +685,50 @@ func newListImagesCmd() *cobra.Command {
 	cmd.MarkFlagRequired("os")
 	cmd.MarkFlagRequired("kubernetes-version")
 	return cmd
+}
+
+func newListServeImagesCmd() *cobra.Command {
+	var registryAddr string
+	cmd := &cobra.Command{
+		Use:   "list-serve-images",
+		Short: "列出 serve 已加载的镜像（查询运行中的 registry）",
+		Example: `  builder list-serve-images
+  builder list-serve-images --registry-addr 192.168.1.10:5000`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return listServeImages(context.Background(), registryAddr)
+		},
+	}
+	cmd.Flags().StringVar(&registryAddr, "registry-addr", "127.0.0.1:5000", "serve registry 地址")
+	return cmd
+}
+
+// listServeImages 通过 Docker V2 API 查询 registry 的 _catalog 与各仓库 tags，
+// 打印 serve 已加载的全部镜像（host/repo:tag）。
+func listServeImages(ctx context.Context, addr string) error {
+	repos, err := crane.Catalog(addr, crane.Insecure)
+	if err != nil {
+		return fmt.Errorf("查询 registry %s 失败（serve 是否已启动？）: %w", addr, err)
+	}
+	if len(repos) == 0 {
+		fmt.Printf("registry %s 暂无已加载镜像\n", addr)
+		return nil
+	}
+	sort.Strings(repos)
+	count := 0
+	for _, repo := range repos {
+		tags, err := crane.ListTags(addr+"/"+repo, crane.Insecure)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "列出 %s tags 失败: %v\n", repo, err)
+			continue
+		}
+		sort.Strings(tags)
+		for _, tag := range tags {
+			fmt.Printf("%s/%s:%s\n", addr, repo, tag)
+			count++
+		}
+	}
+	fmt.Printf("共 %d 个镜像\n", count)
+	return nil
 }
 
 func newVerifyCmd() *cobra.Command {

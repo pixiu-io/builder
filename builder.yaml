@@ -21,6 +21,7 @@ build:
   skip_addons: false        # 对应 --skip-addons：跳过附加组件（addon_images 与 addon_packages 均不并入）
   only_addons: false        # 对应 --only-addons：只打包附加（核心软件包/镜像全去）
   dry_run: false            # 对应 --dry-run：仅演练管线，不真实下载/拉取
+  keep_files: false         # 对应 --keep-files：默认 false=构建完成后清理中间文件与 docker 中间镜像；true=保留
 
 
 # ========== OS 注册表 ==========
@@ -105,18 +106,38 @@ versions:
 # ========== 附加组件镜像 ==========
 # 附加组件镜像清单：name → image:tag（仅镜像，不含软件包；附加安装包见下方 addon_packages 节）。
 # name 用作镜像保存文件名（images/addons/{name}.tar）。
-# 地址说明：flannel 与 dashboard 在 registry.k8s.io 无可用 tag（manifest not found），
-# 正确地址位于 docker.io；网络不支持 docker.io 时可用 build --skip-addons 跳过附加组件。
+# CNI 附加组件镜像：flannel（默认 CNI，docker.io + pixiucloud 仓库）与 calico（v3.31.3，pixiucloud 仓库）。
+# 仓库不可达时可用 build --skip-addons 跳过附加组件。
 addon_images:
   - name: flannel
     image: "docker.io/flannel/flannel"
     tag: "v0.24.2"
-  - name: dashboard
-    image: "docker.io/kubernetesui/dashboard"
-    tag: "v2.7.0"
+  - name: flannel-cni-plugin
+    image: "ccr.ccs.tencentyun.com/pixiucloud/flannel-cni-plugin"
+    tag: "v1.4.1-flannel1"
+  # ---- kubez-ansible CNI：calico（enable_calico=yes，v3.31.3，仓库 ccr.ccs.tencentyun.com/pixiucloud）----
+  - name: calico-cni
+    image: "ccr.ccs.tencentyun.com/pixiucloud/cni"
+    tag: "v3.31.3"
+  - name: calico-node
+    image: "ccr.ccs.tencentyun.com/pixiucloud/node"
+    tag: "v3.31.3"
+  - name: calico-kube-controllers
+    image: "ccr.ccs.tencentyun.com/pixiucloud/kube-controllers"
+    tag: "v3.31.3"
+  - name: calico-typha
+    image: "ccr.ccs.tencentyun.com/pixiucloud/typha"
+    tag: "v3.31.3"
+  # ---- kubez-ansible metrics：metrics-server 与 dashboard metrics-scraper（仓库 ccr.ccs.tencentyun.com/pixiucloud）----
   - name: metrics-server
-    image: "registry.k8s.io/metrics-server/metrics-server"
+    image: "ccr.ccs.tencentyun.com/pixiucloud/metrics-server"
     tag: "v0.6.4"
+  - name: metrics-scraper
+    image: "ccr.ccs.tencentyun.com/pixiucloud/metrics-scraper"
+    tag: "v1.0.8"
+  - name: metrics-scraper-nginx
+    image: "ccr.ccs.tencentyun.com/pixiucloud/nginx"
+    tag: "1.25-pixiu"
 
 # ========== 附加安装包 ==========
 # 附加安装包列表（与 addon_images 平级），mode ∈ {packages, all} 且未 --skip-addons 时
@@ -150,3 +171,15 @@ s3:
   access_key: ""              # 如 AWS_ACCESS_KEY_ID
   secret_key: ""              # 如 AWS_SECRET_ACCESS_KEY
   session_token: ""           # 可选临时凭证（如 AWS_SESSION_TOKEN）；无临时凭证留空
+
+# 产物上传到腾讯云 COS（对象存储）。配置了 cos.bucket（或任一 --cos-* flag）时，
+# build --upload / upload 子命令优先走 COS，否则回退到上面的 s3 节。
+# bucket 必须为「桶名-appid」格式（如 mybucket-1250000000）；region 如 ap-guangzhou。
+# 凭证为腾讯云 API 密钥 SecretId / SecretKey（https://console.cloud.tencent.com/cam/capi）。
+# ⚠️ 明文写在配置文件有泄露风险：建议将 builder.yaml 权限设为 600。
+cos:
+  bucket: ""                  # 必填，含 appid，如 mybucket-1250000000（或通过 --cos-bucket 覆盖）
+  region: ""                  # 必填，如 ap-guangzhou（或通过 --cos-region 覆盖）
+  secret_id: ""               # 腾讯云 API SecretId（或通过 --cos-secret-id 覆盖）
+  secret_key: ""              # 腾讯云 API SecretKey（或通过 --cos-secret-key 覆盖）
+  prefix: pixiu-offline/      # 对象键前缀，最终 key = {prefix}{文件名}
