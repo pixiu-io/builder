@@ -616,6 +616,9 @@ func buildPullSaveScript(jobs []saveJob) string {
 		b.WriteString(fmt.Sprintf("echo \"[images] %d/%d save %s\"\n", i+1, total, j.Image))
 		b.WriteString("docker save -o " + tar + " " + img + "\n")
 	}
+	// 容器内以 root 写入 bind mount；CI runner 等非 root 用户随后要读 tar 算 sha256，
+	// 需放开读权限（docker save 默认常为 0600）。
+	b.WriteString("chmod -R a+rX /out\n")
 	return b.String()
 }
 

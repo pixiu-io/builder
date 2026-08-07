@@ -177,6 +177,7 @@ func TestBuildPullSaveScript(t *testing.T) {
 		"docker save -o '/out/core/kube-apiserver.tar' 'registry.k8s.io/kube-apiserver:v1.27.3'",
 		"docker pull 'docker.io/flannel/flannel:v0.24.2'",
 		"docker save -o '/out/addons/flannel.tar' 'docker.io/flannel/flannel:v0.24.2'",
+		"chmod -R a+rX /out",
 	} {
 		if !strings.Contains(s, want) {
 			t.Errorf("脚本缺少 %q:\n%s", want, s)
