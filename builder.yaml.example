@@ -11,11 +11,21 @@
 # 自定义能力完全由顶层 addon_packages / addon_images + --mode + --only-addons / --skip-addons 提供。
 build:
   os: "ubuntu"                    # 对应 --os：目标系统（如 ubuntu）
-  os_version: "22.04"              # 对应 --os-version：系统版本（如 22.04）
+  os_version: "22.04"            # 对应 --os-version：系统版本（如 22.04）
   kubernetes_version: "v1.31.1"    # 对应 --kubernetes-version：k8s 版本（如 v1.31.1）
-  workdir: "./work"                # 对应 --workdir：工作目录（bundle 构建于此）
-  out: "./dist"                    # 对应 --out：产物输出目录（tar.gz 输出到此）
-  mode: "images"                    # 对应 --mode：构建模式（all=两者 / packages=仅软件包 / images=仅镜像；镜像阶段由 --mode packages 跳过）
+  arch: "amd64"             # 对应 --arch：目标架构（amd64/arm64）
+  mirror: "aliyun"         # 对应 --mirror：镜像源（official/aliyun/tencent，默认阿里云 registry.aliyuncs.com/google_containers）
+  workdir: "./work"         # 对应 --workdir：工作目录（bundle 构建于此）
+  out: "./dist"             # 对应 --out：产物输出目录（tar.gz 输出到此）
+  mode: "all"               # 对应 --mode：构建模式（all=两者 / packages=仅软件包 / images=仅镜像；镜像阶段由 --mode packages 跳过）
+  skip_addons: false        # 对应 --skip-addons：跳过附加组件（addon_images 与 addon_packages 均不并入）
+  only_addons: false        # 对应 --only-addons：只打包附加（核心软件包/镜像全去）
+  dry_run: false            # 对应 --dry-run：仅演练管线，不真实下载/拉取
+  keep_files: false         # 对应 --keep-files：默认 false=构建完成后清理中间文件与 docker 中间镜像；true=保留
+  verbose: false            # 对应 --verbose/-v：默认 false=精简输出；true=打印详细过程日志（镜像下载/pull 进度等）
+  kubeadm_mode: "local"     # 对应 --kubeadm-mode：kubeadm 获取模式（local=本地下载，默认 / remote=ssh 远端下载+拷回）
+  kubeadm_remote_host: ""   # 对应 --kubeadm-remote-host：remote 模式远端服务器（user@host，免密登录）
+  kubeadm_remote_path: ""   # 对应 --kubeadm-remote-path：remote 模式远端缓存目录（默认 ~/.builder-kubeadm，含 {version}/{arch} 子目录）
 
 
 # ========== OS 注册表 ==========
