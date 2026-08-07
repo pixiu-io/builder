@@ -28,23 +28,27 @@ var configFile string
 
 // build 子命令 flags
 var (
-	buildOS         string
-	buildOSVersion  string
-	buildK8sVersion string // --kubernetes-version
-	buildArch       string
-	buildMirror     string
-	buildWorkDir    string
-	buildOutDir     string
-	buildMode       string
-	buildSkipAddons bool
-	buildOnlyAddons bool
-	buildDryRun     bool
-	buildKeepFiles  bool
-	buildUpload     bool
-	buildS3Bucket   string
-	buildS3Prefix   string
-	buildS3Endpoint string
-	buildS3Region   string
+	buildOS                string
+	buildOSVersion         string
+	buildK8sVersion        string // --kubernetes-version
+	buildArch              string
+	buildMirror            string
+	buildWorkDir           string
+	buildOutDir            string
+	buildMode              string
+	buildSkipAddons        bool
+	buildOnlyAddons        bool
+	buildDryRun            bool
+	buildKeepFiles         bool
+	buildVerbose           bool
+	buildKubeadmMode       string
+	buildKubeadmRemoteHost string
+	buildKubeadmRemotePath string
+	buildUpload            bool
+	buildS3Bucket          string
+	buildS3Prefix          string
+	buildS3Endpoint        string
+	buildS3Region          string
 )
 
 // upload 子命令 flags
@@ -145,7 +149,7 @@ func newBuildCmd() *cobra.Command {
 	cmd.Flags().StringVar(&buildOSVersion, "os-version", "", "操作系统版本（任意，如 22.04；--mode images 时可省略）")
 	cmd.Flags().StringVar(&buildK8sVersion, "kubernetes-version", "", "k8s 版本（如 v1.27.3；--only-addons 时可选）")
 	cmd.Flags().StringVar(&buildArch, "arch", "amd64", "目标架构（amd64/arm64）")
-	cmd.Flags().StringVar(&buildMirror, "mirror", "official", "镜像仓库源（official/aliyun/tencent，当前仅 official 完整实现，仅影响镜像阶段）")
+	cmd.Flags().StringVar(&buildMirror, "mirror", "aliyun", "镜像仓库源（默认 aliyun；official/aliyun/tencent，镜像阶段获取与生成 k8s 镜像均带该仓库地址）")
 	cmd.Flags().StringVar(&buildWorkDir, "workdir", "./work", "工作目录（bundle 在此构建）")
 	cmd.Flags().StringVar(&buildOutDir, "out", "./dist", "产物输出目录（tar.gz 输出到此）")
 	cmd.Flags().StringVar(&buildMode, "mode", "all", "构建模式：packages=仅软件包 / images=仅镜像 / all=两者都构建（默认）")
@@ -153,6 +157,10 @@ func newBuildCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&buildOnlyAddons, "only-addons", false, "只打包附加组件（addon_images/addon_packages），核心软件包与镜像全去；与 --skip-addons 互斥")
 	cmd.Flags().BoolVar(&buildDryRun, "dry-run", false, "仅演练管线，不执行真实下载/拉取")
 	cmd.Flags().BoolVar(&buildKeepFiles, "keep-files", false, "构建完成后保留中间文件（packages/images/bundle 目录；默认清理）")
+	cmd.Flags().BoolVarP(&buildVerbose, "verbose", "v", false, "打印详细过程日志（镜像下载/pull 进度等）")
+	cmd.Flags().StringVar(&buildKubeadmMode, "kubeadm-mode", "", "kubeadm 获取模式（local=本地下载，默认 / remote=ssh 远端下载+拷回）")
+	cmd.Flags().StringVar(&buildKubeadmRemoteHost, "kubeadm-remote-host", "", "remote 模式远端服务器（user@host，免密登录）")
+	cmd.Flags().StringVar(&buildKubeadmRemotePath, "kubeadm-remote-path", "", "remote 模式远端缓存目录（默认 ~/.builder-kubeadm，含 {version}/{arch} 子目录）")
 	cmd.Flags().BoolVar(&buildUpload, "upload", false, "构建完成后将产物 tar.gz 上传到 S3（需配置 s3.bucket 或 --s3-bucket）")
 	cmd.Flags().StringVar(&buildS3Bucket, "s3-bucket", "", "S3 bucket（覆盖配置文件 s3.bucket）")
 	cmd.Flags().StringVar(&buildS3Prefix, "s3-prefix", "", "S3 对象键前缀（覆盖配置文件 s3.prefix）")
@@ -172,51 +180,63 @@ func newBuildCmd() *cobra.Command {
 
 // buildFlagValues 记录 build 子命令各 flag 的当前值（含 flag 内置默认值或命令行显式传入值）。
 type buildFlagValues struct {
-	OS         string
-	OSVersion  string
-	K8sVersion string
-	Arch       string
-	Mirror     string
-	WorkDir    string
-	OutDir     string
-	Mode       string
-	SkipAddons bool
-	OnlyAddons bool
-	DryRun     bool
-	KeepFiles  bool
+	OS                string
+	OSVersion         string
+	K8sVersion        string
+	Arch              string
+	Mirror            string
+	WorkDir           string
+	OutDir            string
+	Mode              string
+	SkipAddons        bool
+	OnlyAddons        bool
+	DryRun            bool
+	KeepFiles         bool
+	Verbose           bool
+	KubeadmMode       string
+	KubeadmRemoteHost string
+	KubeadmRemotePath string
 }
 
 // buildFlagChanged 记录各 flag 是否被命令行显式设置（true 表示命令行值优先）。
 // K8sVersion 由 --kubernetes-version 被设置即视为显式。
 type buildFlagChanged struct {
-	OS         bool
-	OSVersion  bool
-	K8sVersion bool
-	Arch       bool
-	Mirror     bool
-	WorkDir    bool
-	OutDir     bool
-	Mode       bool
-	SkipAddons bool
-	OnlyAddons bool
-	DryRun     bool
-	KeepFiles  bool
+	OS                bool
+	OSVersion         bool
+	K8sVersion        bool
+	Arch              bool
+	Mirror            bool
+	WorkDir           bool
+	OutDir            bool
+	Mode              bool
+	SkipAddons        bool
+	OnlyAddons        bool
+	DryRun            bool
+	KeepFiles         bool
+	Verbose           bool
+	KubeadmMode       bool
+	KubeadmRemoteHost bool
+	KubeadmRemotePath bool
 }
 
 // buildOptions build 子命令合并后的生效参数（Mirror 保持字符串，由调用方解析为 mirror.Mirror）。
 type buildOptions struct {
-	OS         string
-	OSVersion  string
-	K8sVersion string
-	Arch       string
-	Mirror     string
-	WorkDir    string
-	OutDir     string
-	Mode       string
-	SkipAddons bool
-	OnlyAddons bool
-	DryRun     bool
-	KeepFiles  bool
+	OS                string
+	OSVersion         string
+	K8sVersion        string
+	Arch              string
+	Mirror            string
+	WorkDir           string
+	OutDir            string
+	Mode              string
+	SkipAddons        bool
+	OnlyAddons        bool
+	DryRun            bool
+	KeepFiles         bool
+	Verbose           bool
+	KubeadmMode       string
+	KubeadmRemoteHost string
+	KubeadmRemotePath string
 }
 
 // resolveBuildOptions 按"命令行 > 配置文件 build 节 > flag 内置默认值"合并 build 参数。
@@ -224,18 +244,22 @@ type buildOptions struct {
 // cfg.Build 为配置文件 build 节（可为零值，表示未配置）。
 func resolveBuildOptions(cfg *config.Config, vals buildFlagValues, changed buildFlagChanged) buildOptions {
 	return buildOptions{
-		OS:         resolveString(changed.OS, vals.OS, cfg.Build.OS),
-		OSVersion:  resolveString(changed.OSVersion, vals.OSVersion, cfg.Build.OSVersion),
-		K8sVersion: resolveString(changed.K8sVersion, vals.K8sVersion, cfg.Build.KubernetesVersion),
-		Arch:       resolveString(changed.Arch, vals.Arch, cfg.Build.Arch),
-		Mirror:     resolveString(changed.Mirror, vals.Mirror, cfg.Build.Mirror),
-		WorkDir:    resolveString(changed.WorkDir, vals.WorkDir, cfg.Build.WorkDir),
-		OutDir:     resolveString(changed.OutDir, vals.OutDir, cfg.Build.OutDir),
-		Mode:       resolveString(changed.Mode, vals.Mode, cfg.Build.Mode),
-		SkipAddons: resolveBool(changed.SkipAddons, vals.SkipAddons, cfg.Build.SkipAddons),
-		OnlyAddons: resolveBool(changed.OnlyAddons, vals.OnlyAddons, cfg.Build.OnlyAddons),
-		DryRun:     resolveBool(changed.DryRun, vals.DryRun, cfg.Build.DryRun),
-		KeepFiles:  resolveBool(changed.KeepFiles, vals.KeepFiles, cfg.Build.KeepFiles),
+		OS:                resolveString(changed.OS, vals.OS, cfg.Build.OS),
+		OSVersion:         resolveString(changed.OSVersion, vals.OSVersion, cfg.Build.OSVersion),
+		K8sVersion:        resolveString(changed.K8sVersion, vals.K8sVersion, cfg.Build.KubernetesVersion),
+		Arch:              resolveString(changed.Arch, vals.Arch, cfg.Build.Arch),
+		Mirror:            resolveString(changed.Mirror, vals.Mirror, cfg.Build.Mirror),
+		WorkDir:           resolveString(changed.WorkDir, vals.WorkDir, cfg.Build.WorkDir),
+		OutDir:            resolveString(changed.OutDir, vals.OutDir, cfg.Build.OutDir),
+		Mode:              resolveString(changed.Mode, vals.Mode, cfg.Build.Mode),
+		SkipAddons:        resolveBool(changed.SkipAddons, vals.SkipAddons, cfg.Build.SkipAddons),
+		OnlyAddons:        resolveBool(changed.OnlyAddons, vals.OnlyAddons, cfg.Build.OnlyAddons),
+		DryRun:            resolveBool(changed.DryRun, vals.DryRun, cfg.Build.DryRun),
+		KeepFiles:         resolveBool(changed.KeepFiles, vals.KeepFiles, cfg.Build.KeepFiles),
+		Verbose:           resolveBool(changed.Verbose, vals.Verbose, cfg.Build.Verbose),
+		KubeadmMode:       resolveString(changed.KubeadmMode, vals.KubeadmMode, cfg.Build.KubeadmMode),
+		KubeadmRemoteHost: resolveString(changed.KubeadmRemoteHost, vals.KubeadmRemoteHost, cfg.Build.KubeadmRemoteHost),
+		KubeadmRemotePath: resolveString(changed.KubeadmRemotePath, vals.KubeadmRemotePath, cfg.Build.KubeadmRemotePath),
 	}
 }
 
@@ -288,31 +312,39 @@ func runBuild(cmd *cobra.Command, args []string) error {
 
 	// 合并命令行（显式优先）与配置 build 节：命令行 > 配置文件 > flag 内置默认值。
 	opts := resolveBuildOptions(cfg, buildFlagValues{
-		OS:         buildOS,
-		OSVersion:  buildOSVersion,
-		K8sVersion: buildK8sVersion,
-		Arch:       buildArch,
-		Mirror:     buildMirror,
-		WorkDir:    buildWorkDir,
-		OutDir:     buildOutDir,
-		Mode:       buildMode,
-		SkipAddons: buildSkipAddons,
-		OnlyAddons: buildOnlyAddons,
-		DryRun:     buildDryRun,
-		KeepFiles:  buildKeepFiles,
+		OS:                buildOS,
+		OSVersion:         buildOSVersion,
+		K8sVersion:        buildK8sVersion,
+		Arch:              buildArch,
+		Mirror:            buildMirror,
+		WorkDir:           buildWorkDir,
+		OutDir:            buildOutDir,
+		Mode:              buildMode,
+		SkipAddons:        buildSkipAddons,
+		OnlyAddons:        buildOnlyAddons,
+		DryRun:            buildDryRun,
+		KeepFiles:         buildKeepFiles,
+		Verbose:           buildVerbose,
+		KubeadmMode:       buildKubeadmMode,
+		KubeadmRemoteHost: buildKubeadmRemoteHost,
+		KubeadmRemotePath: buildKubeadmRemotePath,
 	}, buildFlagChanged{
-		OS:         cmd.Flags().Changed("os"),
-		OSVersion:  cmd.Flags().Changed("os-version"),
-		K8sVersion: cmd.Flags().Changed("kubernetes-version"),
-		Arch:       cmd.Flags().Changed("arch"),
-		Mirror:     cmd.Flags().Changed("mirror"),
-		WorkDir:    cmd.Flags().Changed("workdir"),
-		OutDir:     cmd.Flags().Changed("out"),
-		Mode:       cmd.Flags().Changed("mode"),
-		SkipAddons: cmd.Flags().Changed("skip-addons"),
-		OnlyAddons: cmd.Flags().Changed("only-addons"),
-		DryRun:     cmd.Flags().Changed("dry-run"),
-		KeepFiles:  cmd.Flags().Changed("keep-files"),
+		OS:                cmd.Flags().Changed("os"),
+		OSVersion:         cmd.Flags().Changed("os-version"),
+		K8sVersion:        cmd.Flags().Changed("kubernetes-version"),
+		Arch:              cmd.Flags().Changed("arch"),
+		Mirror:            cmd.Flags().Changed("mirror"),
+		WorkDir:           cmd.Flags().Changed("workdir"),
+		OutDir:            cmd.Flags().Changed("out"),
+		Mode:              cmd.Flags().Changed("mode"),
+		SkipAddons:        cmd.Flags().Changed("skip-addons"),
+		OnlyAddons:        cmd.Flags().Changed("only-addons"),
+		DryRun:            cmd.Flags().Changed("dry-run"),
+		KeepFiles:         cmd.Flags().Changed("keep-files"),
+		Verbose:           cmd.Flags().Changed("verbose"),
+		KubeadmMode:       cmd.Flags().Changed("kubeadm-mode"),
+		KubeadmRemoteHost: cmd.Flags().Changed("kubeadm-remote-host"),
+		KubeadmRemotePath: cmd.Flags().Changed("kubeadm-remote-path"),
 	})
 
 	mirrorVal, err := mirror.ParseMirror(opts.Mirror)
@@ -341,19 +373,23 @@ func runBuild(cmd *cobra.Command, args []string) error {
 	defer stop()
 
 	res, err := builder.Build(ctx, builder.Options{
-		Config:     cfg,
-		OS:         opts.OS,
-		OSVersion:  opts.OSVersion,
-		Arch:       opts.Arch,
-		K8sVersion: opts.K8sVersion,
-		Mirror:     mirrorVal,
-		WorkDir:    opts.WorkDir,
-		OutDir:     opts.OutDir,
-		Mode:       mode,
-		SkipAddons: opts.SkipAddons,
-		OnlyAddons: opts.OnlyAddons,
-		DryRun:     opts.DryRun,
-		KeepFiles:  opts.KeepFiles,
+		Config:            cfg,
+		OS:                opts.OS,
+		OSVersion:         opts.OSVersion,
+		Arch:              opts.Arch,
+		K8sVersion:        opts.K8sVersion,
+		Mirror:            mirrorVal,
+		WorkDir:           opts.WorkDir,
+		OutDir:            opts.OutDir,
+		Mode:              mode,
+		SkipAddons:        opts.SkipAddons,
+		OnlyAddons:        opts.OnlyAddons,
+		DryRun:            opts.DryRun,
+		KeepFiles:         opts.KeepFiles,
+		Verbose:           opts.Verbose,
+		KubeadmMode:       opts.KubeadmMode,
+		KubeadmRemoteHost: opts.KubeadmRemoteHost,
+		KubeadmRemotePath: opts.KubeadmRemotePath,
 	})
 	if err != nil {
 		return err

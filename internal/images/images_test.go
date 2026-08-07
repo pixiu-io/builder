@@ -171,6 +171,8 @@ func TestBuildPullSaveScript(t *testing.T) {
 	for _, want := range []string{
 		"set -e",
 		"mkdir -p /out/core /out/addons",
+		`echo "[images] 1/2 pull registry.k8s.io/kube-apiserver:v1.27.3"`,
+		`echo "[images] 2/2 save docker.io/flannel/flannel:v0.24.2"`,
 		"docker pull 'registry.k8s.io/kube-apiserver:v1.27.3'",
 		"docker save -o '/out/core/kube-apiserver.tar' 'registry.k8s.io/kube-apiserver:v1.27.3'",
 		"docker pull 'docker.io/flannel/flannel:v0.24.2'",

@@ -68,6 +68,14 @@ type Options struct {
 	KubeadmBin string
 	// KubeadmBaseURL kubeadm 下载基址，默认 https://dl.k8s.io/release。
 	KubeadmBaseURL string
+	// KubeadmMode kubeadm 获取模式：local=本地下载（默认）/ remote=ssh 远端下载+拷回。
+	KubeadmMode string
+	// KubeadmRemoteHost remote 模式远端服务器（user@host，免密登录）。
+	KubeadmRemoteHost string
+	// KubeadmRemotePath remote 模式远端缓存目录，默认 ~/.builder-kubeadm（含 {version}/{arch} 子目录）。
+	KubeadmRemotePath string
+	// Verbose 打印详细过程日志（下载 kubeadm、镜像 pull/save 进度）；默认 false=精简。
+	Verbose bool
 	// CoreImages 外部传入的最终核心镜像完整引用清单（已解析）。
 	//   nil    → 未外部指定：内部走 kubeadm 生成默认核心清单（再用 CoreFilter 过滤）
 	//   非 nil → 直接使用该清单（可为空 slice，表示不拉取任何核心镜像），不再走 kubeadm
@@ -190,6 +198,9 @@ func Fetch(ctx context.Context, opts Options) (*Result, error) {
 	if opts.CoreImages != nil {
 		coreImages = opts.CoreImages
 	} else {
+		if opts.Verbose {
+			fmt.Printf("  [images] 生成核心镜像清单（kubeadm config images list --image-repository %s）...\n", opts.ImageRepository)
+		}
 		coreImages, err = listCoreImages(ctx, opts)
 		if err != nil {
 			return res, fmt.Errorf("生成核心镜像清单失败: %w", err)
@@ -248,7 +259,7 @@ func listCoreImages(ctx context.Context, opts Options) ([]string, error) {
 	var cleanup func()
 	if kubeadmPath == "" {
 		var err error
-		kubeadmPath, cleanup, err = downloadKubeadm(ctx, opts.K8sVersion, arch, opts.KubeadmBaseURL)
+		kubeadmPath, cleanup, err = downloadKubeadm(ctx, opts.K8sVersion, arch, opts.KubeadmBaseURL, opts.Verbose, opts.KubeadmMode, opts.KubeadmRemoteHost, opts.KubeadmRemotePath)
 		if err != nil {
 			return nil, err
 		}
@@ -285,6 +296,9 @@ func listCoreImages(ctx context.Context, opts Options) ([]string, error) {
 		cmdDesc = "docker " + strings.Join(cmdArgs, " ")
 	}
 
+	if opts.Verbose {
+		fmt.Printf("  [images] 执行 kubeadm 生成核心镜像清单（%s）...\n", cmdDesc)
+	}
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return nil, fmt.Errorf("kubeadm 生成镜像清单失败: %v\n命令: %s\n输出: %s",
@@ -295,6 +309,9 @@ func listCoreImages(ctx context.Context, opts Options) ([]string, error) {
 	if len(images) == 0 {
 		return nil, fmt.Errorf("kubeadm 未返回任何镜像\n命令: %s\n输出: %s",
 			cmdDesc, strings.TrimSpace(string(out)))
+	}
+	if opts.Verbose {
+		fmt.Printf("  [images] 核心镜像清单生成完成：%d 个\n", len(images))
 	}
 	return images, nil
 }
@@ -316,9 +333,18 @@ func normalizeArch(arch string) string {
 	}
 }
 
-// downloadKubeadm 从 dl.k8s.io 下载指定版本/架构的 kubeadm 二进制到临时文件。
-// 依次尝试官方与 CDN 镜像，兼容部分网络环境。
-func downloadKubeadm(ctx context.Context, k8sVersion, arch, baseURL string) (path string, cleanup func(), err error) {
+// downloadKubeadm 获取 kubeadm 二进制。
+// mode=local：本地直接下载（dl.k8s.io / CDN，可配 baseURL）；
+// mode=remote：ssh 到免密服务器按 版本/架构 缓存目录下载/复用，scp 拷回本地。
+func downloadKubeadm(ctx context.Context, k8sVersion, arch, baseURL string, verbose bool, mode, remoteHost, remotePath string) (path string, cleanup func(), err error) {
+	if mode == "remote" {
+		return downloadKubeadmRemote(ctx, k8sVersion, arch, baseURL, verbose, remoteHost, remotePath)
+	}
+	return downloadKubeadmLocal(ctx, k8sVersion, arch, baseURL, verbose)
+}
+
+// downloadKubeadmLocal 本地直接下载 kubeadm 二进制，依次尝试官方与 CDN 镜像。
+func downloadKubeadmLocal(ctx context.Context, k8sVersion, arch, baseURL string, verbose bool) (path string, cleanup func(), err error) {
 	bases := []string{baseURL}
 	if baseURL == "" {
 		bases = []string{
@@ -330,6 +356,9 @@ func downloadKubeadm(ctx context.Context, k8sVersion, arch, baseURL string) (pat
 	var lastErr error
 	for _, base := range bases {
 		url := fmt.Sprintf("%s/%s/bin/linux/%s/kubeadm", strings.TrimSuffix(base, "/"), k8sVersion, arch)
+		if verbose {
+			fmt.Printf("  [images] 下载 kubeadm（%s）...\n", url)
+		}
 		path, cleanup, err = fetchKubeadmURL(ctx, url)
 		if err == nil {
 			return path, cleanup, nil
@@ -337,6 +366,85 @@ func downloadKubeadm(ctx context.Context, k8sVersion, arch, baseURL string) (pat
 		lastErr = err
 	}
 	return "", nil, lastErr
+}
+
+// downloadKubeadmRemote 通过 ssh 在远端服务器下载/复用 kubeadm 二进制并 scp 拷回。
+// 远端缓存目录：{remotePath}/{version}/{arch}/kubeadm（remotePath 默认 ~/.builder-kubeadm）。
+// 远端已有该文件时直接拷贝，否则在远端 curl/wget 下载。
+func downloadKubeadmRemote(ctx context.Context, k8sVersion, arch, baseURL string, verbose bool, host, remotePath string) (path string, cleanup func(), err error) {
+	if host == "" {
+		return "", nil, fmt.Errorf("remote 模式需要配置 kubeadm_remote_host（user@host，免密登录）")
+	}
+	base := baseURL
+	if base == "" {
+		base = "https://dl.k8s.io/release"
+	}
+	url := fmt.Sprintf("%s/%s/bin/linux/%s/kubeadm", strings.TrimSuffix(base, "/"), k8sVersion, arch)
+	if remotePath == "" {
+		remotePath = "~/.builder-kubeadm"
+	}
+	remoteDir := fmt.Sprintf("%s/%s/%s", remotePath, k8sVersion, arch)
+	remoteFile := remoteDir + "/kubeadm"
+
+	exists, err := remoteFileExists(ctx, host, remoteFile)
+	if err != nil {
+		return "", nil, err
+	}
+	if exists {
+		if verbose {
+			fmt.Printf("  [images] 远端已存在 %s，直接拷贝\n", remoteFile)
+		}
+	} else {
+		if verbose {
+			fmt.Printf("  [images] 远端下载 kubeadm（%s）→ %s\n", url, remoteFile)
+		}
+		// 远端下载：curl 优先，wget 兜底。
+		script := fmt.Sprintf("mkdir -p %s && (curl -fsSL -o %s '%s' || wget -q -O %s '%s')",
+			remoteDir, remoteFile, url, remoteFile, url)
+		cmd := exec.CommandContext(ctx, "ssh", host, script)
+		if out, e := cmd.CombinedOutput(); e != nil {
+			return "", nil, fmt.Errorf("远端下载 kubeadm 失败: %v\n输出: %s", e, strings.TrimSpace(string(out)))
+		}
+		if verbose {
+			fmt.Printf("  [images] 远端下载完成：%s\n", remoteFile)
+		}
+	}
+
+	// scp 拷回本地临时文件
+	f, err := os.CreateTemp("", "builder-kubeadm-*")
+	if err != nil {
+		return "", nil, err
+	}
+	localPath := f.Name()
+	f.Close()
+	cleanup = func() { _ = os.Remove(localPath) }
+
+	if verbose {
+		fmt.Printf("  [images] 从远端拷贝 kubeadm 到本地 ...\n")
+	}
+	scp := exec.CommandContext(ctx, "scp", host+":"+remoteFile, localPath)
+	if out, e := scp.CombinedOutput(); e != nil {
+		cleanup()
+		return "", nil, fmt.Errorf("scp 拷贝 kubeadm 失败: %v\n输出: %s", e, strings.TrimSpace(string(out)))
+	}
+	if verbose {
+		fmt.Printf("  [images] kubeadm 已就绪（%s）\n", localPath)
+	}
+	if err := os.Chmod(localPath, 0o755); err != nil {
+		cleanup()
+		return "", nil, err
+	}
+	return localPath, cleanup, nil
+}
+
+// remoteFileExists 检查远端文件是否存在（ssh [ -f ... ]）。
+func remoteFileExists(ctx context.Context, host, remoteFile string) (bool, error) {
+	cmd := exec.CommandContext(ctx, "ssh", host, "[ -f "+remoteFile+" ] && echo yes || echo no")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return false, fmt.Errorf("ssh 检查远端文件失败: %v\n输出: %s", err, strings.TrimSpace(string(out)))
+	}
+	return strings.Contains(strings.TrimSpace(string(out)), "yes"), nil
 }
 
 func fetchKubeadmURL(ctx context.Context, url string) (path string, cleanup func(), err error) {
@@ -452,10 +560,20 @@ func pullAndSaveInContainer(ctx context.Context, opts Options, jobs []saveJob) (
 		"sh", "-c", script,
 	}
 	cmd := exec.CommandContext(ctx, opts.DockerBin, cmdArgs...)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return nil, fmt.Errorf("容器内镜像 pull/save 失败: %v\n命令: docker %s\n输出: %s",
-			err, strings.Join(cmdArgs, " "), strings.TrimSpace(string(out)))
+	if opts.Verbose {
+		fmt.Printf("  [images] 批量拉取并保存 %d 个镜像（容器 %s 内 docker pull + save）...\n", len(jobs), opts.PackImage)
+		// 流式输出：实时展示容器内每个镜像的 pull/save 进度。
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		if err := cmd.Run(); err != nil {
+			return nil, fmt.Errorf("容器内镜像 pull/save 失败: %v", err)
+		}
+	} else {
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			return nil, fmt.Errorf("容器内镜像 pull/save 失败: %v\n输出: %s",
+				err, strings.TrimSpace(string(out)))
+		}
 	}
 
 	var saved []SavedImage
@@ -477,6 +595,9 @@ func pullAndSaveInContainer(ctx context.Context, opts Options, jobs []saveJob) (
 			SHA256:      sum,
 		})
 	}
+	if opts.Verbose {
+		fmt.Printf("  [images] 镜像 pull/save 完成：%d 个 tar\n", len(saved))
+	}
 	return saved, nil
 }
 
@@ -486,10 +607,13 @@ func buildPullSaveScript(jobs []saveJob) string {
 	var b strings.Builder
 	b.WriteString("set -e\n")
 	b.WriteString("mkdir -p /out/core /out/addons\n")
-	for _, j := range jobs {
+	total := len(jobs)
+	for i, j := range jobs {
 		img := shellSingleQuote(j.Image)
 		tar := shellSingleQuote("/out/" + j.SubDir + "/" + j.Name + ".tar")
+		b.WriteString(fmt.Sprintf("echo \"[images] %d/%d pull %s\"\n", i+1, total, j.Image))
 		b.WriteString("docker pull " + img + "\n")
+		b.WriteString(fmt.Sprintf("echo \"[images] %d/%d save %s\"\n", i+1, total, j.Image))
 		b.WriteString("docker save -o " + tar + " " + img + "\n")
 	}
 	return b.String()

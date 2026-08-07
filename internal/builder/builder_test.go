@@ -144,7 +144,6 @@ func TestValidateOptions(t *testing.T) {
 		{"任意未注册 OS 版本", func(o *Options) { o.OSVersion = "18.04" }, ""},
 		{"非法 arch", func(o *Options) { o.Arch = "s390x" }, "不支持的架构"},
 		{"非法 k8s 版本格式", func(o *Options) { o.K8sVersion = "v1.31" }, "非法的 k8s 版本格式"},
-		{"未实现镜像源", func(o *Options) { o.Mirror = mirror.Aliyun }, "尚未完整实现"},
 		{"非法构建模式", func(o *Options) { o.Mode = "bogus" }, "非法的构建模式"},
 		{"仅软件包模式", func(o *Options) { o.Mode = "packages" }, ""},
 		{"仅镜像模式", func(o *Options) { o.Mode = "images" }, ""},

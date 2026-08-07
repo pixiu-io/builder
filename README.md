@@ -206,7 +206,7 @@ build:
   os_version: "22.04"
   kubernetes_version: "v1.31.1"
   arch: "amd64"          # 命令行 --arch 未传时生效
-  mirror: "official"
+  mirror: "aliyun"
   workdir: "./work"
   out: "./dist"
   mode: "all"
@@ -214,6 +214,10 @@ build:
   only_addons: false     # 只打包附加组件（addon_images / addon_packages），核心软件包与镜像全去；与 skip_addons 互斥
   dry_run: false
   keep_files: false      # 默认 false=构建完成后清理中间文件与 docker 中间镜像；true=保留
+  verbose: false         # 默认 false=精简输出；true=打印详细过程日志（镜像下载/pull 进度等）
+  kubeadm_mode: "local"  # kubeadm 获取模式：local=本地下载（默认）/ remote=ssh 远端下载+拷回
+  kubeadm_remote_host: ""   # remote 模式远端服务器（user@host，免密登录）
+  kubeadm_remote_path: ""   # remote 模式远端缓存目录（默认 ~/.builder-kubeadm，含 {version}/{arch} 子目录）
 ```
 
 例如配置 `arch: "arm64"` 后执行 `builder build ...`（不传 `--arch`）会构建 arm64 产物；命令行传 `--arch amd64` 则仍以命令行优先。
@@ -345,10 +349,23 @@ apt-get update && apt-get install kubeadm
 
 ## 镜像源（mirror）
 
-包模式下 k8s 组件与运行时均走官方包源，因此 `--mirror` 仅作用于**镜像阶段**的镜像仓库（`kubeadm config images list --image-repository`）：
+包模式下 k8s 组件与运行时均走官方包源，因此 `--mirror`（或配置文件 `build.mirror`）仅作用于**镜像阶段**的镜像仓库（`kubeadm config images list --image-repository`）。核心镜像清单、拉取/保存的镜像引用及 manifest 中的 `source_image` 均带该镜像仓库地址：
 
-- `official`：完整支持（默认），镜像仓库 `registry.k8s.io`。
-- `aliyun` / `tencent`：预留镜像仓库映射（未实测），传此参数会报错并提示。
+- `aliyun`（默认）：镜像仓库 `registry.aliyuncs.com/google_containers`。
+- `official`：镜像仓库 `registry.k8s.io`。
+- `tencent`：镜像仓库 `mirror.cc.tencentyun.com/kubernetes`。
+
+仓库地址需保证可访问且存在对应版本的 k8s 镜像；软件包源始终走官方源，不受 mirror 影响。
+
+**kubeadm 二进制获取**（生成核心镜像清单用）：支持 `local`（默认，本机从 dl.k8s.io/CDN 下载）与 `remote`（ssh 到**免密登录**服务器下载并 scp 拷回）两种模式。remote 模式远端按 `{缓存目录}/{k8s版本}/{架构}/kubeadm` 缓存，已存在则直接拷回，否则在远端下载：
+
+```bash
+./builder build --os ubuntu --os-version 22.04 --kubernetes-version v1.27.3 \
+  --kubeadm-mode remote --kubeadm-remote-host root@192.168.1.10
+```
+
+- 远端默认缓存目录 `~/.builder-kubeadm`，可用 `--kubeadm-remote-path` / 配置 `kubeadm_remote_path` 覆盖
+- 远端下载 `curl` 优先、`wget` 兜底；远端服务器需已配置免密登录（ssh-key）
 
 ## 安装（目标机使用）
 
@@ -385,4 +402,4 @@ go test ./...    # 单元测试
 - 容器内真实执行依赖 docker，本机无 docker 时仅 dry-run 演练 + 单测；k8s 源（pkgs.k8s.io）未实测，containerd 源（download.docker.com）已用 curl 实测可达，openEuler 系统源（everything 仓库）的 containerd 包已确认 repomd 200 可达。
 - CentOS 7（yum）依赖 downloadonly 插件与 yumdownloader；CentOS 7 已 EOL，默认源已由脚本自动切换 vault.centos.org（见上文软件源说明），且 containerd 源对应 rhel/7 在 download.docker.com 为 404，非 only-addons 场景的 containerd 包下载存在兼容性风险（系统依赖包经 vault 可正常下载，containerd.io 需 docker 源提供）；`--only-addons` 不配置 k8s/containerd 源，不受该 rhel/7 源限制。
 - openEuler 已通过 `containerd_pkg: containerd` + `containerd_repo: none` 从系统源安装 containerd，规避 download.docker.com 无 rhel/7 仓库导致的 `dnf makecache` 失败；即使配置未显式声明这两个字段，也会按发行版自动推断为系统源（containerd + none），旧配置兼容；其他 dnf 系（rocky 等）仍走 docker 源 `containerd.io` 包。
-- aliyun / tencent 镜像仓库未实现，见上文。
+- aliyun / tencent 镜像仓库已支持，仓库地址可用性需按网络环境验证（见上文"镜像源（mirror）"）。

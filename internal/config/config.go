@@ -51,6 +51,14 @@ type BuildOptions struct {
 	DryRun            bool   `yaml:"dry_run"`
 	// KeepFiles 构建完成后是否保留中间文件（packages/images/bundle 目录）；默认 false=清理。
 	KeepFiles bool `yaml:"keep_files"`
+	// Verbose 打印详细过程日志（镜像下载/pull 进度等）；默认 false=精简输出。
+	Verbose bool `yaml:"verbose"`
+	// KubeadmMode kubeadm 获取模式：local=本地下载（默认）/ remote=ssh 远端下载+拷回。
+	KubeadmMode string `yaml:"kubeadm_mode"`
+	// KubeadmRemoteHost remote 模式远端服务器（user@host，免密登录）。
+	KubeadmRemoteHost string `yaml:"kubeadm_remote_host"`
+	// KubeadmRemotePath remote 模式远端缓存目录，默认 ~/.builder-kubeadm（含 {version}/{arch} 子目录）。
+	KubeadmRemotePath string `yaml:"kubeadm_remote_path"`
 }
 
 // S3Config 产物上传到 S3 / MinIO 的默认参数。
