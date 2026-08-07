@@ -16,6 +16,7 @@ build:
   workdir: "./work"                # 对应 --workdir：工作目录（bundle 构建于此）
   out: "./dist"                    # 对应 --out：产物输出目录（tar.gz 输出到此）
   mode: "images"                    # 对应 --mode：构建模式（all=两者 / packages=仅软件包 / images=仅镜像；镜像阶段由 --mode packages 跳过）
+  mirror: "official"             # 对应 --mirror：镜像源（official/aliyun/tencent，默认阿里云 registry.aliyuncs.com/google_containers）
 
 
 # ========== OS 注册表 ==========
