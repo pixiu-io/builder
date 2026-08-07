@@ -19,7 +19,6 @@ import (
 	"builder/internal/config"
 	"builder/internal/cosupload"
 	"builder/internal/mirror"
-	"builder/internal/s3upload"
 	"builder/internal/serve"
 )
 
@@ -45,21 +44,13 @@ var (
 	buildKubeadmRemoteHost string
 	buildKubeadmRemotePath string
 	buildUpload            bool
-	buildS3Bucket          string
-	buildS3Prefix          string
-	buildS3Endpoint        string
-	buildS3Region          string
 )
 
 // upload 子命令 flags
 var (
-	uploadFiles      []string
-	uploadDir        string
-	uploadSkips      []string
-	uploadS3Bucket   string
-	uploadS3Prefix   string
-	uploadS3Endpoint string
-	uploadS3Region   string
+	uploadFiles []string
+	uploadDir   string
+	uploadSkips []string
 )
 
 // verify 子命令 flags
@@ -161,12 +152,8 @@ func newBuildCmd() *cobra.Command {
 	cmd.Flags().StringVar(&buildKubeadmMode, "kubeadm-mode", "", "kubeadm 获取模式（local=本地下载，默认 / remote=ssh 远端下载+拷回）")
 	cmd.Flags().StringVar(&buildKubeadmRemoteHost, "kubeadm-remote-host", "", "remote 模式远端服务器（user@host，免密登录）")
 	cmd.Flags().StringVar(&buildKubeadmRemotePath, "kubeadm-remote-path", "", "remote 模式远端缓存目录（默认 ~/.builder-kubeadm，含 {version}/{arch} 子目录）")
-	cmd.Flags().BoolVar(&buildUpload, "upload", false, "构建完成后将产物 tar.gz 上传到 S3（需配置 s3.bucket 或 --s3-bucket）")
-	cmd.Flags().StringVar(&buildS3Bucket, "s3-bucket", "", "S3 bucket（覆盖配置文件 s3.bucket）")
-	cmd.Flags().StringVar(&buildS3Prefix, "s3-prefix", "", "S3 对象键前缀（覆盖配置文件 s3.prefix）")
-	cmd.Flags().StringVar(&buildS3Endpoint, "s3-endpoint", "", "S3 兼容 endpoint（如 MinIO，覆盖配置文件 s3.endpoint）")
-	cmd.Flags().StringVar(&buildS3Region, "s3-region", "", "S3 region（覆盖配置文件 s3.region）")
-	// COS 上传 flags（build --upload 与 upload 子命令共用；任一提供时优先 COS）
+	cmd.Flags().BoolVar(&buildUpload, "upload", false, "构建完成后将产物 tar.gz 上传到腾讯云 COS（需配置 cos.bucket 或 --cos-bucket）")
+	// COS 上传 flags（build --upload 与 upload 子命令共用）
 	cmd.Flags().StringVar(&cosBucket, "cos-bucket", "", "COS bucket（含 appid，如 mybucket-1250000000；覆盖配置文件 cos.bucket）")
 	cmd.Flags().StringVar(&cosRegion, "cos-region", "", "COS 地域（如 ap-guangzhou；覆盖配置文件 cos.region）")
 	cmd.Flags().StringVar(&cosSecretID, "cos-secret-id", "", "COS SecretId（覆盖配置文件 cos.secret_id）")
@@ -411,14 +398,14 @@ func runBuild(cmd *cobra.Command, args []string) error {
 
 	if buildUpload {
 		if opts.DryRun {
-			fmt.Println("[dry-run] 跳过 S3 上传")
+			fmt.Println("[dry-run] 跳过 COS 上传")
 			return nil
 		}
 		files := res.TarPaths
 		if len(files) == 0 && res.TarPath != "" {
 			files = []string{res.TarPath}
 		}
-		if err := uploadArtifacts(ctx, cfg, files, buildS3Bucket, buildS3Prefix, buildS3Endpoint, buildS3Region); err != nil {
+		if err := uploadArtifacts(ctx, cfg, files); err != nil {
 			return err
 		}
 	}
@@ -428,9 +415,9 @@ func runBuild(cmd *cobra.Command, args []string) error {
 func newUploadCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "upload",
-		Short: "将离线包 tar.gz 或文件夹下所有文件上传到 S3/COS",
+		Short: "将离线包 tar.gz 或文件夹下所有文件上传到腾讯云 COS",
 		Example: `  builder upload --file ./dist/pixiu-offline-ubuntu-22.04-amd64-v1.27.3-packages.tar.gz
-  builder upload --file a.tar.gz --file b.tar.gz --s3-bucket my-bucket --s3-prefix releases/
+  builder upload --file a.tar.gz --file b.tar.gz --cos-bucket mybucket-1250000000 --cos-prefix releases/
   builder upload --dir ./dist --skip md5sum.txt --skip checksum.txt --cos-bucket mybucket-1250000000`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg, err := config.Load(configFile)
@@ -452,7 +439,7 @@ func newUploadCmd() *cobra.Command {
 			}
 			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 			defer stop()
-			if err := uploadArtifacts(ctx, cfg, files, uploadS3Bucket, uploadS3Prefix, uploadS3Endpoint, uploadS3Region); err != nil {
+			if err := uploadArtifacts(ctx, cfg, files); err != nil {
 				return err
 			}
 			return nil
@@ -461,11 +448,6 @@ func newUploadCmd() *cobra.Command {
 	cmd.Flags().StringArrayVar(&uploadFiles, "file", nil, "待上传的本地文件（可重复）")
 	cmd.Flags().StringVar(&uploadDir, "dir", "", "指定文件夹，递归上传其下所有文件")
 	cmd.Flags().StringArrayVar(&uploadSkips, "skip", nil, "按文件名忽略的文件（可重复，对 --file 与 --dir 均生效）")
-	cmd.Flags().StringVar(&uploadS3Bucket, "s3-bucket", "", "S3 bucket（覆盖配置文件 s3.bucket）")
-	cmd.Flags().StringVar(&uploadS3Prefix, "s3-prefix", "", "S3 对象键前缀（覆盖配置文件 s3.prefix）")
-	cmd.Flags().StringVar(&uploadS3Endpoint, "s3-endpoint", "", "S3 兼容 endpoint（覆盖配置文件 s3.endpoint）")
-	cmd.Flags().StringVar(&uploadS3Region, "s3-region", "", "S3 region（覆盖配置文件 s3.region）")
-	// COS 上传 flags（build --upload 与 upload 子命令共用；任一提供时优先 COS）
 	cmd.Flags().StringVar(&cosBucket, "cos-bucket", "", "COS bucket（含 appid，如 mybucket-1250000000；覆盖配置文件 cos.bucket）")
 	cmd.Flags().StringVar(&cosRegion, "cos-region", "", "COS 地域（如 ap-guangzhou；覆盖配置文件 cos.region）")
 	cmd.Flags().StringVar(&cosSecretID, "cos-secret-id", "", "COS SecretId（覆盖配置文件 cos.secret_id）")
@@ -509,26 +491,14 @@ func filterSkipped(files, skips []string) []string {
 	return out
 }
 
-// uploadArtifacts 合并配置与 CLI 覆盖后上传文件。
-// 上传后端优先 COS（配置 cos.bucket 或 CLI --cos-* 任一提供时）；否则走 S3 / MinIO。
-func uploadArtifacts(ctx context.Context, cfg *config.Config, files []string, s3Bucket, s3Prefix, s3Endpoint, s3Region string) error {
-	if cfg.Cos.Bucket != "" || cosBucket != "" || cosRegion != "" || cosSecretID != "" || cosSecretKey != "" {
-		opts := mergeCosOptions(cfg.Cos, cosBucket, cosRegion, cosSecretID, cosSecretKey, cosPrefix)
-		fmt.Printf("上传到 COS %s/%s （共 %d 个文件）...\n", opts.Bucket, strings.TrimSuffix(opts.Prefix, "/"), len(files))
-		res, err := cosupload.UploadFiles(ctx, opts, files)
-		if err != nil {
-			return err
-		}
-		fmt.Println("上传完成：")
-		for _, u := range res {
-			fmt.Printf("  - %s → %s\n", u.LocalPath, u.URI)
-		}
-		return nil
+// uploadArtifacts 合并配置与 CLI 覆盖后上传文件到腾讯云 COS。
+func uploadArtifacts(ctx context.Context, cfg *config.Config, files []string) error {
+	opts := mergeCosOptions(cfg.Cos, cosBucket, cosRegion, cosSecretID, cosSecretKey, cosPrefix)
+	if opts.Bucket == "" {
+		return fmt.Errorf("COS bucket 不能为空（配置 cos.bucket 或 --cos-bucket）")
 	}
-
-	opts := mergeS3Options(cfg.S3, s3Bucket, s3Prefix, s3Endpoint, s3Region)
-	fmt.Printf("上传到 s3://%s/%s （共 %d 个文件）...\n", opts.Bucket, strings.TrimSuffix(opts.Prefix, "/"), len(files))
-	res, err := s3upload.UploadFiles(ctx, opts, files)
+	fmt.Printf("上传到 COS %s/%s （共 %d 个文件）...\n", opts.Bucket, strings.TrimSuffix(opts.Prefix, "/"), len(files))
+	res, err := cosupload.UploadFiles(ctx, opts, files)
 	if err != nil {
 		return err
 	}
@@ -579,33 +549,6 @@ func newServeCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&serveSkipImages, "skip-images", false, "不提供镜像 registry")
 	cmd.Flags().BoolVar(&serveSkipPackages, "skip-packages", false, "不提供软件源")
 	return cmd
-}
-
-func mergeS3Options(cfg config.S3Config, bucket, prefix, endpoint, region string) s3upload.Options {
-	opts := s3upload.Options{
-		Bucket:         cfg.Bucket,
-		Region:         cfg.Region,
-		Endpoint:       cfg.Endpoint,
-		Prefix:         cfg.Prefix,
-		ForcePathStyle: cfg.ForcePathStyle,
-		// 凭证来自配置文件 s3 节；均留空时 s3upload 走默认 AWS 凭证链（环境变量 / IAM role）。
-		AccessKey:    cfg.AccessKey,
-		SecretKey:    cfg.SecretKey,
-		SessionToken: cfg.SessionToken,
-	}
-	if bucket != "" {
-		opts.Bucket = bucket
-	}
-	if prefix != "" {
-		opts.Prefix = prefix
-	}
-	if endpoint != "" {
-		opts.Endpoint = endpoint
-	}
-	if region != "" {
-		opts.Region = region
-	}
-	return opts
 }
 
 func mergeCosOptions(cfg config.CosConfig, bucket, region, secretID, secretKey, prefix string) cosupload.Options {
