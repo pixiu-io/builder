@@ -51,8 +51,16 @@ type Options struct {
 	KeepFiles bool
 	// DockerBin docker 命令路径，默认 "docker"；测试注入用。
 	DockerBin string
-	// KubeadmBin 可选 kubeadm 二进制路径；为空时镜像阶段从 dl.k8s.io 下载（测试注入用）。
+	// Verbose 打印详细过程日志（镜像下载/pull 进度等）；默认 false=精简输出。
+	Verbose bool
+	// KubeadmBin 可选 kubeadm 二进制路径；为空时镜像阶段按 KubeadmMode 获取（测试注入用）。
 	KubeadmBin string
+	// KubeadmMode kubeadm 获取模式：local=本地下载（默认）/ remote=ssh 远端下载+拷回。
+	KubeadmMode string
+	// KubeadmRemoteHost remote 模式远端服务器（user@host，免密登录）。
+	KubeadmRemoteHost string
+	// KubeadmRemotePath remote 模式远端缓存目录，默认 ~/.builder-kubeadm（含 {version}/{arch} 子目录）。
+	KubeadmRemotePath string
 	// Out 实时构建日志输出，默认 os.Stdout；测试注入用。
 	Out io.Writer
 }
@@ -385,21 +393,25 @@ func Build(ctx context.Context, opts Options) (*Result, error) {
 			return stepOut{sr: StepResult{Name: "镜像清单与保存", Status: "ok", Message: "dry-run（镜像: " + imgPlan.summary() + "）"}}
 		}
 		imgRes, err := images.Fetch(c, images.Options{
-			BuildImage:      buildImage,
-			PkgManager:      osDef.PkgManager,
-			K8sMinor:        k8sMinor,
-			Codename:        codename,
-			RPMDistro:       osDef.RPMDistro,
-			AptOS:           aptOS,
-			K8sVersion:      opts.K8sVersion,
-			ImageRepository: opts.Mirror.ImageRepository(),
-			Arch:            opts.Arch,
-			KubeadmBin:      opts.KubeadmBin,
-			CoreImages:      imgPlan.CoreImages,
-			Addons:          imgPlan.Addons,
-			SkipAddons:      opts.SkipAddons,
-			ImagesOutDir:    filepath.Join(bundleDir, "images"),
-			DockerBin:       opts.DockerBin,
+			BuildImage:        buildImage,
+			PkgManager:        osDef.PkgManager,
+			K8sMinor:          k8sMinor,
+			Codename:          codename,
+			RPMDistro:         osDef.RPMDistro,
+			AptOS:             aptOS,
+			K8sVersion:        opts.K8sVersion,
+			ImageRepository:   opts.Mirror.ImageRepository(),
+			Arch:              opts.Arch,
+			KubeadmBin:        opts.KubeadmBin,
+			KubeadmMode:       opts.KubeadmMode,
+			KubeadmRemoteHost: opts.KubeadmRemoteHost,
+			KubeadmRemotePath: opts.KubeadmRemotePath,
+			CoreImages:        imgPlan.CoreImages,
+			Addons:            imgPlan.Addons,
+			SkipAddons:        opts.SkipAddons,
+			ImagesOutDir:      filepath.Join(bundleDir, "images"),
+			DockerBin:         opts.DockerBin,
+			Verbose:           opts.Verbose,
 		})
 		if err != nil {
 			return stepOut{err: fmt.Errorf("[镜像清单与保存] 失败: %w", err)}

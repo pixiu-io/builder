@@ -14,7 +14,7 @@ build:
   os_version: ""            # 对应 --os-version：系统版本（如 22.04）
   kubernetes_version: ""    # 对应 --kubernetes-version：k8s 版本（如 v1.31.1）
   arch: "amd64"             # 对应 --arch：目标架构（amd64/arm64）
-  mirror: "official"        # 对应 --mirror：镜像源（official/aliyun/tencent，仅 official 已实现）
+  mirror: "aliyun"         # 对应 --mirror：镜像源（official/aliyun/tencent，默认阿里云 registry.aliyuncs.com/google_containers）
   workdir: "./work"         # 对应 --workdir：工作目录（bundle 构建于此）
   out: "./dist"             # 对应 --out：产物输出目录（tar.gz 输出到此）
   mode: "all"               # 对应 --mode：构建模式（all=两者 / packages=仅软件包 / images=仅镜像；镜像阶段由 --mode packages 跳过）
@@ -22,6 +22,10 @@ build:
   only_addons: false        # 对应 --only-addons：只打包附加（核心软件包/镜像全去）
   dry_run: false            # 对应 --dry-run：仅演练管线，不真实下载/拉取
   keep_files: false         # 对应 --keep-files：默认 false=构建完成后清理中间文件与 docker 中间镜像；true=保留
+  verbose: false            # 对应 --verbose/-v：默认 false=精简输出；true=打印详细过程日志（镜像下载/pull 进度等）
+  kubeadm_mode: "local"     # 对应 --kubeadm-mode：kubeadm 获取模式（local=本地下载，默认 / remote=ssh 远端下载+拷回）
+  kubeadm_remote_host: ""   # 对应 --kubeadm-remote-host：remote 模式远端服务器（user@host，免密登录）
+  kubeadm_remote_path: ""   # 对应 --kubeadm-remote-path：remote 模式远端缓存目录（默认 ~/.builder-kubeadm，含 {version}/{arch} 子目录）
 
 
 # ========== OS 注册表 ==========
@@ -155,25 +159,7 @@ addon_packages:
     version: "9.0"
 
 
-# ========== S3 上传（可选）==========
-# build --upload 或 upload 子命令时使用。凭证优先级：本节的 access_key/secret_key > 环境变量
-#   AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY（可选 AWS_SESSION_TOKEN）> 本机 ~/.aws/credentials / IAM role。
-# MinIO 等兼容存储设置 endpoint（自定义 endpoint 时自动启用 path-style）。
-s3:
-  bucket: ""                  # 必填（或通过 --s3-bucket 覆盖）
-  region: us-east-1
-  endpoint: ""                # 如 http://minio.example.com:9000；空则走 AWS
-  prefix: pixiu-offline/      # 对象键前缀，最终 key = {prefix}{文件名}
-  force_path_style: false     # 公有云一般 false；自定义 endpoint 时忽略并自动 path-style
-  # 以下三个 key 可选（显式凭证；留空则走环境变量 / 默认 AWS 凭证链）。
-  # ⚠️ 明文写在配置文件有泄露风险：建议将 builder.yaml 权限设为 600（chmod 600），
-  #    或优先使用环境变量 AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY。
-  access_key: ""              # 如 AWS_ACCESS_KEY_ID
-  secret_key: ""              # 如 AWS_SECRET_ACCESS_KEY
-  session_token: ""           # 可选临时凭证（如 AWS_SESSION_TOKEN）；无临时凭证留空
-
-# 产物上传到腾讯云 COS（对象存储）。配置了 cos.bucket（或任一 --cos-* flag）时，
-# build --upload / upload 子命令优先走 COS，否则回退到上面的 s3 节。
+# 产物上传到腾讯云 COS（对象存储）。build --upload / upload 子命令使用。
 # bucket 必须为「桶名-appid」格式（如 mybucket-1250000000）；region 如 ap-guangzhou。
 # 凭证为腾讯云 API 密钥 SecretId / SecretKey（https://console.cloud.tencent.com/cam/capi）。
 # ⚠️ 明文写在配置文件有泄露风险：建议将 builder.yaml 权限设为 600。

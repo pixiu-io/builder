@@ -649,48 +649,6 @@ func TestBuildOptionsZeroValue(t *testing.T) {
 	}
 }
 
-// TestS3OptionsCredentialsParse 验证 s3 节 access_key/secret_key/session_token 能被 yaml 解析，
-// 且未配置时保持零值（走默认 AWS 凭证链）。
-func TestS3OptionsCredentialsParse(t *testing.T) {
-	content := `
-oses:
-  - name: ubuntu
-    versions: ["22.04"]
-    pkg_manager: apt
-    build_images:
-      "22.04": ubuntu:22.04
-    archs: ["amd64"]
-versions:
-  - version: v1.27.3
-s3:
-  bucket: pixiu
-  region: us-east-1
-  endpoint: "http://127.0.0.1:9000"
-  prefix: releases/
-  force_path_style: true
-  access_key: AKIDEXAMPLE
-  secret_key: SECRETKEYEXAMPLE
-  session_token: SESSIONTOKENEXAMPLE
-`
-	cfg, err := Load(writeSample(t, content))
-	if err != nil {
-		t.Fatalf("Load 失败: %v", err)
-	}
-	want := S3Config{
-		Bucket:         "pixiu",
-		Region:         "us-east-1",
-		Endpoint:       "http://127.0.0.1:9000",
-		Prefix:         "releases/",
-		ForcePathStyle: true,
-		AccessKey:      "AKIDEXAMPLE",
-		SecretKey:      "SECRETKEYEXAMPLE",
-		SessionToken:   "SESSIONTOKENEXAMPLE",
-	}
-	if cfg.S3 != want {
-		t.Errorf("S3Config 解析异常:\n got %+v\nwant %+v", cfg.S3, want)
-	}
-}
-
 // TestCosOptionsParse 验证 cos 节能被 yaml 解析。
 func TestCosOptionsParse(t *testing.T) {
 	content := `
@@ -755,17 +713,6 @@ build:
 	}
 	if cfg2.Build.KeepFiles {
 		t.Error("未配置 keep_files 应为 false")
-	}
-}
-
-func TestS3OptionsCredentialsZeroValue(t *testing.T) {
-	// 未配置 s3 凭证字段时保持零值，保证留空走默认 AWS 凭证链行为不变。
-	cfg, err := Load(sampleFile(t)) // sampleContent 无 s3 节
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cfg.S3.AccessKey != "" || cfg.S3.SecretKey != "" || cfg.S3.SessionToken != "" {
-		t.Errorf("未配置 s3 凭证应保持零值，实际 %+v", cfg.S3)
 	}
 }
 

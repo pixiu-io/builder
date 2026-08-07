@@ -48,8 +48,8 @@ go build -o builder ./cmd/builder
 
 | 命令 | 说明 |
 |------|------|
-| `build` | 构建离线安装包。`--kubernetes-version` 必填（任意 vX.Y.Z；`--only-addons` 时可省略）。`--os` / `--os-version` 在 `--mode all` 或 `packages` 时必填（**任意**取值，不必在 list-os 中；未登记时构建镜像默认为 `{os}:{os-version}`）；`--mode images` 时可省略。可选：`--arch`（amd64/arm64，默认 amd64）、`--mirror`、`--mode`、`--workdir`、`--out`、`--skip-addons`、`--only-addons`、`--dry-run`、`--keep-files`（默认清理中间文件与 docker 中间镜像，置位保留）、`--upload`、`--s3-bucket` 等。核心软件包/镜像始终使用默认清单，自定义能力由配置 `addon_packages` / `addon_images` + `--mode` + `--only-addons` / `--skip-addons` 提供（见下文"自定义附加组件"）。所有 build 参数均可在配置文件 `build` 节预设（优先级：命令行 > 配置 > 内置默认值），见下文"build 参数配置化" |
-| `upload` | 将已有产物 tar.gz 上传到 S3/MinIO 或腾讯云 COS。`--file` 可重复；`--s3-*` 覆盖 `s3` 节，`--cos-*` 覆盖 `cos` 节 |
+| `build` | 构建离线安装包。`--kubernetes-version` 必填（任意 vX.Y.Z；`--only-addons` 时可省略）。`--os` / `--os-version` 在 `--mode all` 或 `packages` 时必填（**任意**取值，不必在 list-os 中；未登记时构建镜像默认为 `{os}:{os-version}`）；`--mode images` 时可省略。可选：`--arch`（amd64/arm64，默认 amd64）、`--mirror`、`--mode`、`--workdir`、`--out`、`--skip-addons`、`--only-addons`、`--dry-run`、`--keep-files`（默认清理中间文件与 docker 中间镜像，置位保留）、`--upload`、`--cos-*` 等。核心软件包/镜像始终使用默认清单，自定义能力由配置 `addon_packages` / `addon_images` + `--mode` + `--only-addons` / `--skip-addons` 提供（见下文"自定义附加组件"）。所有 build 参数均可在配置文件 `build` 节预设（优先级：命令行 > 配置 > 内置默认值），见下文"build 参数配置化" |
+| `upload` | 将已有产物 tar.gz 上传到腾讯云 COS。`--file` 可重复；`--cos-*` 覆盖 `cos` 节 |
 | `serve` | 加载离线产物，提供本地 OCI registry（`docker pull` 短名）与 yum/dnf/apt HTTP 软件源（纯 Go，无外部工具依赖） |
 | `list-os` | 列出参考 OS / 版本（builder.yaml；实际 build 不限于此列表） |
 | `list-k8s` | 列出支持的 k8s 版本（含记录用运行时版本） |
@@ -185,8 +185,7 @@ pixiu-offline-images-{arch}-{k8sver}/         # --mode images 且未指定 OS
 | `versions` | k8s 版本定义；containerd/runc 为记录用，crictl 用于 cri-tools 包缺失时的静态回退 |
 | `addon_images` | 附加组件镜像清单（name → image:tag；仅镜像，不含软件包） |
 | `addon_packages` | 附加安装包列表（对象格式：name + 可选 version；version 空不锁版本、非空按目标包管理器语法转译 name=version / name-version；mode ∈ packages/all 且未跳过附加时并入软件包清单） |
-| `s3` | 可选：产物上传到 S3/MinIO（bucket/region/endpoint/prefix/access_key/secret_key/session_token）；凭证优先级：配置 > 环境变量 > 默认凭证链 |
-| `cos` | 可选：产物上传到腾讯云 COS（bucket 含 appid/region/secret_id/secret_key/prefix）；配置后优先于 `s3` |
+| `cos` | 可选：产物上传到腾讯云 COS（bucket 含 appid/region/secret_id/secret_key/prefix） |
 
 > `versions` / `build_images` 为初始值，加载器不验证镜像可用性，生产使用请按需核对。
 
@@ -206,7 +205,7 @@ build:
   os_version: "22.04"
   kubernetes_version: "v1.31.1"
   arch: "amd64"          # 命令行 --arch 未传时生效
-  mirror: "official"
+  mirror: "aliyun"
   workdir: "./work"
   out: "./dist"
   mode: "all"
@@ -214,68 +213,46 @@ build:
   only_addons: false     # 只打包附加组件（addon_images / addon_packages），核心软件包与镜像全去；与 skip_addons 互斥
   dry_run: false
   keep_files: false      # 默认 false=构建完成后清理中间文件与 docker 中间镜像；true=保留
+  verbose: false         # 默认 false=精简输出；true=打印详细过程日志（镜像下载/pull 进度等）
+  kubeadm_mode: "local"  # kubeadm 获取模式：local=本地下载（默认）/ remote=ssh 远端下载+拷回
+  kubeadm_remote_host: ""   # remote 模式远端服务器（user@host，免密登录）
+  kubeadm_remote_path: ""   # remote 模式远端缓存目录（默认 ~/.builder-kubeadm，含 {version}/{arch} 子目录）
 ```
 
 例如配置 `arch: "arm64"` 后执行 `builder build ...`（不传 `--arch`）会构建 arm64 产物；命令行传 `--arch amd64` 则仍以命令行优先。
 
-## 上传产物（S3 / MinIO / 腾讯云 COS）
+## 上传产物（腾讯云 COS）
 
-构建完成后可用 `--upload` 自动上传产物，或用 `upload` 子命令上传已有 tar.gz。
+构建完成后可用 `--upload` 自动上传产物，或用 `upload` 子命令上传已有 tar.gz。需在 `builder.yaml` 配置 `cos` 节，或通过 `--cos-*` flag 覆盖。
 
-凭证优先级：**builder.yaml s3 节显式 `access_key` / `secret_key` > 环境变量 > 默认凭证链**。
+```yaml
+cos:
+  bucket: mybucket-1250000000   # 桶名-appid
+  region: ap-guangzhou
+  secret_id: xxx
+  secret_key: yyy
+  prefix: pixiu-offline/
+```
 
-- 配置文件（优先级最高）：在 `s3` 节设置 `access_key` / `secret_key`（可选 `session_token`）；
-  > ⚠️ AK/SK 明文写入配置文件有泄露风险，建议 `chmod 600 builder.yaml`，或优先使用环境变量。
-- 环境变量 `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`（可选 `AWS_SESSION_TOKEN`）
-- 本机 `~/.aws/credentials` / IAM 角色
+> ⚠️ SecretId/SecretKey 明文写入配置文件有泄露风险，建议 `chmod 600 builder.yaml`。
 
 ```bash
-# 配置文件填写 s3.bucket 后，构建并上传（凭证走环境变量）
-export AWS_ACCESS_KEY_ID=xxx
-export AWS_SECRET_ACCESS_KEY=yyy
+# 配置文件填写 cos 节后，构建并上传
 ./builder build --os ubuntu --os-version 22.04 --kubernetes-version v1.27.3 --upload
 
-# 或把 AK/SK 直接写进 builder.yaml 的 s3 节（access_key/secret_key），优先级高于环境变量：
-#   s3:
-#     bucket: pixiu
-#     access_key: xxx
-#     secret_key: yyy
-
 # 覆盖 bucket / 前缀
-./builder build ... --upload --s3-bucket my-bucket --s3-prefix releases/v1.27.3/
-
-# MinIO
-./builder build ... --upload --s3-endpoint http://127.0.0.1:9000 --s3-bucket pixiu
+./builder build ... --upload --cos-bucket mybucket-1250000000 --cos-prefix releases/v1.27.3/
 
 # 仅上传已有产物
 ./builder upload --file ./dist/pixiu-offline-packages-ubuntu-22.04-amd64-v1.27.3.tar.gz
 
 # 上传整个目录（递归子目录），并按文件名忽略部分文件（--skip 可重复）
-./builder upload --dir ./dist --skip md5sum.txt --skip checksum.txt
+./builder upload --dir ./dist --skip md5sum.txt --skip checksum.txt \
+  --cos-bucket mybucket-1250000000 --cos-region ap-guangzhou \
+  --cos-secret-id xxx --cos-secret-key yyy
 ```
 
 对象键为 `{prefix}{文件名}`，例如 `pixiu-offline/pixiu-offline-packages-ubuntu-22.04-amd64-v1.27.3.tar.gz`。
-
-### 上传到腾讯云 COS
-
-在 `builder.yaml` 配置 `cos` 节（`bucket` 含 appid、`region`、`secret_id` / `secret_key`）后，`build --upload` / `upload` 优先走 COS；未配置 `cos` 时回退到上面的 S3 / MinIO 逻辑。也可用 `--cos-*` flag 覆盖。
-
-```bash
-# 配置文件填写 cos 节后，构建并上传
-#   cos:
-#     bucket: mybucket-1250000000
-#     region: ap-guangzhou
-#     secret_id: xxx
-#     secret_key: yyy
-./builder build ... --upload
-
-# 或纯 CLI 覆盖（无需改配置）
-./builder upload --file ./dist/xxx.tar.gz \
-  --cos-bucket mybucket-1250000000 --cos-region ap-guangzhou \
-  --cos-secret-id xxx --cos-secret-key yyy --cos-prefix releases/v1.27.3/
-```
-
-对象键规则与 S3 相同：`{cos.prefix}{文件名}`。
 
 ## 离线源服务（`serve`）
 
@@ -345,10 +322,23 @@ apt-get update && apt-get install kubeadm
 
 ## 镜像源（mirror）
 
-包模式下 k8s 组件与运行时均走官方包源，因此 `--mirror` 仅作用于**镜像阶段**的镜像仓库（`kubeadm config images list --image-repository`）：
+包模式下 k8s 组件与运行时均走官方包源，因此 `--mirror`（或配置文件 `build.mirror`）仅作用于**镜像阶段**的镜像仓库（`kubeadm config images list --image-repository`）。核心镜像清单、拉取/保存的镜像引用及 manifest 中的 `source_image` 均带该镜像仓库地址：
 
-- `official`：完整支持（默认），镜像仓库 `registry.k8s.io`。
-- `aliyun` / `tencent`：预留镜像仓库映射（未实测），传此参数会报错并提示。
+- `aliyun`（默认）：镜像仓库 `registry.aliyuncs.com/google_containers`。
+- `official`：镜像仓库 `registry.k8s.io`。
+- `tencent`：镜像仓库 `mirror.cc.tencentyun.com/kubernetes`。
+
+仓库地址需保证可访问且存在对应版本的 k8s 镜像；软件包源始终走官方源，不受 mirror 影响。
+
+**kubeadm 二进制获取**（生成核心镜像清单用）：支持 `local`（默认，本机从 dl.k8s.io/CDN 下载）与 `remote`（ssh 到**免密登录**服务器下载并 scp 拷回）两种模式。remote 模式远端按 `{缓存目录}/{k8s版本}/{架构}/kubeadm` 缓存，已存在则直接拷回，否则在远端下载：
+
+```bash
+./builder build --os ubuntu --os-version 22.04 --kubernetes-version v1.27.3 \
+  --kubeadm-mode remote --kubeadm-remote-host root@192.168.1.10
+```
+
+- 远端默认缓存目录 `~/.builder-kubeadm`，可用 `--kubeadm-remote-path` / 配置 `kubeadm_remote_path` 覆盖
+- 远端下载 `curl` 优先、`wget` 兜底；远端服务器需已配置免密登录（ssh-key）
 
 ## 安装（目标机使用）
 
@@ -385,4 +375,4 @@ go test ./...    # 单元测试
 - 容器内真实执行依赖 docker，本机无 docker 时仅 dry-run 演练 + 单测；k8s 源（pkgs.k8s.io）未实测，containerd 源（download.docker.com）已用 curl 实测可达，openEuler 系统源（everything 仓库）的 containerd 包已确认 repomd 200 可达。
 - CentOS 7（yum）依赖 downloadonly 插件与 yumdownloader；CentOS 7 已 EOL，默认源已由脚本自动切换 vault.centos.org（见上文软件源说明），且 containerd 源对应 rhel/7 在 download.docker.com 为 404，非 only-addons 场景的 containerd 包下载存在兼容性风险（系统依赖包经 vault 可正常下载，containerd.io 需 docker 源提供）；`--only-addons` 不配置 k8s/containerd 源，不受该 rhel/7 源限制。
 - openEuler 已通过 `containerd_pkg: containerd` + `containerd_repo: none` 从系统源安装 containerd，规避 download.docker.com 无 rhel/7 仓库导致的 `dnf makecache` 失败；即使配置未显式声明这两个字段，也会按发行版自动推断为系统源（containerd + none），旧配置兼容；其他 dnf 系（rocky 等）仍走 docker 源 `containerd.io` 包。
-- aliyun / tencent 镜像仓库未实现，见上文。
+- aliyun / tencent 镜像仓库已支持，仓库地址可用性需按网络环境验证（见上文"镜像源（mirror）"）。

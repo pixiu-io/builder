@@ -20,9 +20,9 @@ const (
 
 // notes 镜像源说明。
 var notes = map[Mirror]string{
-	Official: "官方源，完整支持",
-	Aliyun:   "预留：镜像阶段走 aliyun 镜像仓库；软件包源仍为官方",
-	Tencent:  "预留：镜像阶段走 tencent 镜像仓库；软件包源仍为官方",
+	Official: "官方源 registry.k8s.io",
+	Aliyun:   "阿里云 registry.aliyuncs.com/google_containers",
+	Tencent:  "腾讯 mirror.cc.tencentyun.com/kubernetes",
 }
 
 // ParseMirror 解析镜像源参数。
@@ -34,14 +34,21 @@ func ParseMirror(s string) (Mirror, error) {
 	return m, nil
 }
 
-// IsSupported 判断镜像源是否已完整实现。
-// 当前仅 official 完整支持。
+// IsSupported 判断镜像源是否可用。
+// official / aliyun / tencent 均可用：镜像阶段获取 k8s 镜像清单与拉取镜像
+// 时使用对应镜像仓库地址（ImageRepository），生成的镜像引用/清单均带该地址。
 func (m Mirror) IsSupported() bool {
-	return m == Official
+	switch m {
+	case Official, Aliyun, Tencent:
+		return true
+	default:
+		return false
+	}
 }
 
 // ImageRepository 返回镜像阶段使用的镜像仓库。
-// 仅 official 为可用的官方仓库；aliyun/tencent 为预留映射（未实测）。
+// 核心镜像清单（kubeadm config images list --image-repository）与拉取/保存的
+// 镜像引用均以此地址为仓库前缀。
 func (m Mirror) ImageRepository() string {
 	switch m {
 	case Aliyun:

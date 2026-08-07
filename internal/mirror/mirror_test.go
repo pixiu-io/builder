@@ -32,11 +32,10 @@ func TestParseMirror(t *testing.T) {
 }
 
 func TestIsSupported(t *testing.T) {
-	if !Official.IsSupported() {
-		t.Error("official 应标记为已支持")
-	}
-	if Aliyun.IsSupported() || Tencent.IsSupported() {
-		t.Error("aliyun/tencent 应标记为未完整实现")
+	for _, m := range []Mirror{Official, Aliyun, Tencent} {
+		if !m.IsSupported() {
+			t.Errorf("%s 应标记为已支持", m)
+		}
 	}
 }
 

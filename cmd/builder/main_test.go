@@ -5,7 +5,6 @@ import (
 	"testing"
 
 	"builder/internal/config"
-	"builder/internal/s3upload"
 )
 
 // TestResolveBuildOptionsPriority 验证 build 参数合并优先级：命令行 > 配置 > 默认值。
@@ -132,43 +131,6 @@ func TestResolveBuildOptionsEmptyConfig(t *testing.T) {
 	cfg.Build.OS = ""
 	if got := resolveBuildOptions(cfg, vals, buildFlagChanged{}); got.OS != "" {
 		t.Errorf("配置 os 为空时应保持空，实际 %q", got.OS)
-	}
-}
-
-// TestMergeS3OptionsCredentials 验证 s3 组装逻辑：配置文件 s3 节 AK/SK/SessionToken 透传到
-// s3upload.Options；CLI 覆盖 bucket 等参数时不丢失凭证；凭证留空时 Options 对应字段为零值（走默认凭证链）。
-func TestMergeS3OptionsCredentials(t *testing.T) {
-	cfg := config.S3Config{
-		Bucket:         "pixiu",
-		Region:         "us-east-1",
-		Endpoint:       "http://127.0.0.1:9000",
-		Prefix:         "releases/",
-		ForcePathStyle: true,
-		AccessKey:      "AKIDEXAMPLE",
-		SecretKey:      "SECRETKEYEXAMPLE",
-		SessionToken:   "SESSIONTOKENEXAMPLE",
-	}
-
-	// 配置凭证 → s3upload.Options 携带；CLI 覆盖 bucket 不影响凭证。
-	got := mergeS3Options(cfg, "cli-bucket", "", "", "")
-	want := s3upload.Options{
-		Bucket:         "cli-bucket", // CLI 覆盖生效
-		Region:         "us-east-1",
-		Endpoint:       "http://127.0.0.1:9000",
-		Prefix:         "releases/",
-		ForcePathStyle: true,
-		AccessKey:      "AKIDEXAMPLE",
-		SecretKey:      "SECRETKEYEXAMPLE",
-		SessionToken:   "SESSIONTOKENEXAMPLE",
-	}
-	if got != want {
-		t.Errorf("mergeS3Options 凭证透传异常:\n got %+v\nwant %+v", got, want)
-	}
-
-	// 凭证留空 → Options 凭证字段零值（s3upload 走默认 AWS 凭证链）。
-	empty := mergeS3Options(config.S3Config{Bucket: "b"}, "", "", "", "")
-	if empty.AccessKey != "" || empty.SecretKey != "" || empty.SessionToken != "" {
-		t.Errorf("凭证留空时应为零值（默认凭证链），实际 %+v", empty)
 	}
 }
 

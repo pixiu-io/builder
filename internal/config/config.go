@@ -13,7 +13,7 @@ import (
 )
 
 // Config 聚合清单配置（oses / versions / addon_images / addon_packages）、
-// 可选 s3 上传配置与 build 默认参数。
+// 可选 COS 上传配置与 build 默认参数。
 // OSRegistry / K8sVersions / AddonImages 以 inline 展开，使单文件顶层键直接映射。
 type Config struct {
 	OSRegistry  OSRegistry  `yaml:",inline"`
@@ -24,7 +24,6 @@ type Config struct {
 	// 每项为 {name, version} 对象；version 为空 = 不锁版本（透传纯包名），
 	// version 非空按目标包管理器语法转译（apt: name=version；dnf: name-version）。
 	AddonPackages []AddonPackage `yaml:"addon_packages"`
-	S3            S3Config       `yaml:"s3"`
 	Cos           CosConfig      `yaml:"cos"`
 	// Build build 子命令默认参数（优先级：命令行 > 配置 > 内置默认值）。
 	Build BuildOptions `yaml:"build"`
@@ -51,23 +50,14 @@ type BuildOptions struct {
 	DryRun            bool   `yaml:"dry_run"`
 	// KeepFiles 构建完成后是否保留中间文件（packages/images/bundle 目录）；默认 false=清理。
 	KeepFiles bool `yaml:"keep_files"`
-}
-
-// S3Config 产物上传到 S3 / MinIO 的默认参数。
-// 凭证优先级：配置文件显式 access_key/secret_key（可选 session_token）> AWS 环境变量 / 默认凭证链；
-// 均留空时使用 AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY（或 IAM role）。
-// 注意：AK/SK 明文写入配置文件有泄露风险，建议将配置文件权限设为 600，或改用环境变量。
-type S3Config struct {
-	Bucket         string `yaml:"bucket"`
-	Region         string `yaml:"region"`
-	Endpoint       string `yaml:"endpoint"`
-	Prefix         string `yaml:"prefix"`
-	ForcePathStyle bool   `yaml:"force_path_style"`
-	// AccessKey / SecretKey 可选显式凭证（S3 / MinIO）；皆空时走默认 AWS 凭证链。
-	AccessKey string `yaml:"access_key"`
-	SecretKey string `yaml:"secret_key"`
-	// SessionToken 可选临时凭证。
-	SessionToken string `yaml:"session_token"`
+	// Verbose 打印详细过程日志（镜像下载/pull 进度等）；默认 false=精简输出。
+	Verbose bool `yaml:"verbose"`
+	// KubeadmMode kubeadm 获取模式：local=本地下载（默认）/ remote=ssh 远端下载+拷回。
+	KubeadmMode string `yaml:"kubeadm_mode"`
+	// KubeadmRemoteHost remote 模式远端服务器（user@host，免密登录）。
+	KubeadmRemoteHost string `yaml:"kubeadm_remote_host"`
+	// KubeadmRemotePath remote 模式远端缓存目录，默认 ~/.builder-kubeadm（含 {version}/{arch} 子目录）。
+	KubeadmRemotePath string `yaml:"kubeadm_remote_path"`
 }
 
 // CosConfig 产物上传到腾讯云 COS 的参数。
