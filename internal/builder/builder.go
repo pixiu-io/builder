@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -46,6 +47,8 @@ type Options struct {
 	OnlyAddons bool
 	// DryRun 仅演练管线，不执行真实下载/拉取。
 	DryRun bool
+	// KeepFiles 构建完成后是否保留中间文件（packages/images/bundle 目录）；默认 false=清理。
+	KeepFiles bool
 	// DockerBin docker 命令路径，默认 "docker"；测试注入用。
 	DockerBin string
 	// KubeadmBin 可选 kubeadm 二进制路径；为空时镜像阶段从 dl.k8s.io 下载（测试注入用）。
@@ -266,9 +269,12 @@ func Build(ctx context.Context, opts Options) (*Result, error) {
 	}
 
 	var bundleName string
-	if opts.Mode == "images" && osOmitted {
+	switch {
+	case opts.Mode == "images" && osOmitted:
 		bundleName = ImagesBundleName(opts.Arch, opts.K8sVersion)
-	} else {
+	case opts.Mode == "packages":
+		bundleName = PackagesBundleName(opts.OS, opts.OSVersion, opts.Arch, opts.K8sVersion)
+	default:
 		bundleName = BundleName(opts.OS, opts.OSVersion, opts.Arch, opts.K8sVersion)
 	}
 	bundleDir := filepath.Join(opts.WorkDir, bundleName)
@@ -294,6 +300,10 @@ func Build(ctx context.Context, opts Options) (*Result, error) {
 	aptOS := aptFamily(osDef.Name)
 
 	res := &Result{BundleDir: bundleDir, BundleName: bundleName}
+
+	// pulledImages 记录本次 build 拉取到宿主机的镜像（构建后清理 docker 中间镜像用）。
+	var imgMu sync.Mutex
+	var pulledImages []string
 	step := func(name, status, msg string) {
 		res.Steps = append(res.Steps, StepResult{Name: name, Status: status, Message: msg})
 	}
@@ -397,6 +407,14 @@ func Build(ctx context.Context, opts Options) (*Result, error) {
 		if imgRes.Skipped {
 			return stepOut{err: fmt.Errorf("[镜像清单与保存] 中断: %s", imgRes.SkipReason)}
 		}
+		imgMu.Lock()
+		for _, s := range imgRes.Core {
+			pulledImages = append(pulledImages, s.SourceImage)
+		}
+		for _, s := range imgRes.Addons {
+			pulledImages = append(pulledImages, s.SourceImage)
+		}
+		imgMu.Unlock()
 		msg := fmt.Sprintf("核心 %d 个 + addons %d 个", len(imgRes.Core), len(imgRes.Addons))
 		if imgRes.SkipAddons {
 			msg += "（按 --skip-addons 跳过附加组件）"
@@ -486,6 +504,7 @@ func Build(ctx context.Context, opts Options) (*Result, error) {
 	}
 
 	var packTargets []packTarget // 待打包的独立 bundle（目录名 = tar 顶层名）
+	var extraCleanup []string    // 打包后需清理的额外中间目录（all 模式的拆分 bundle）
 	if opts.Mode == "all" {
 		// all：拆成两个独立 bundle（packages / images），各自带脚本与 manifest
 		pkgName := PackagesBundleName(opts.OS, opts.OSVersion, opts.Arch, opts.K8sVersion)
@@ -506,6 +525,7 @@ func Build(ctx context.Context, opts Options) (*Result, error) {
 			{Dir: pkgDir, Name: pkgName},
 			{Dir: imgDir, Name: imgName},
 		}
+		extraCleanup = append(extraCleanup, pkgDir, imgDir)
 		step("生成 manifest", "ok", "packages + images 各一份")
 		stepDone(4, "完成（packages + images 独立 manifest）")
 	} else {
@@ -543,6 +563,34 @@ func Build(ctx context.Context, opts Options) (*Result, error) {
 	step("打包 tar.gz", "ok", msg5)
 	stepDone(5, "完成（"+msg5+"）")
 
+	// 默认清理构建中间文件（packages / images / bundle 目录）与 docker 中间镜像；--keep-files 保留。
+	if !opts.KeepFiles && !opts.DryRun {
+		cleanupDirs := append([]string{bundleDir}, extraCleanup...)
+		for _, d := range cleanupDirs {
+			if err := os.RemoveAll(d); err != nil {
+				logf(opts.Out, "[清理] 删除中间目录 %s 失败: %v", d, err)
+			}
+		}
+		logf(opts.Out, "[清理] 已删除构建中间文件（--keep-files 可保留）")
+
+		// 清理拉取到宿主机的中间镜像（docker rmi；镜像被容器占用时删除失败，仅记录）。
+		if len(pulledImages) > 0 {
+			dockerBin := opts.DockerBin
+			if dockerBin == "" {
+				dockerBin = "docker"
+			}
+			removed := 0
+			for _, img := range pulledImages {
+				if err := exec.Command(dockerBin, "rmi", img).Run(); err != nil {
+					logf(opts.Out, "[清理] docker rmi %s 失败: %v", img, err)
+				} else {
+					removed++
+				}
+			}
+			logf(opts.Out, "[清理] 已删除 %d 个中间镜像（--keep-files 可保留）", removed)
+		}
+	}
+
 	return res, nil
 }
 
@@ -557,9 +605,10 @@ func BundleName(osName, osVer, arch, k8sVer string) string {
 	return fmt.Sprintf("pixiu-offline-%s-%s-%s-%s", osName, osVer, arch, k8sVer)
 }
 
-// PackagesBundleName / ImagesOfflineBundleName：--mode all 拆分后的独立产物名。
+// PackagesBundleName 软件包产物名（单模式 packages 与 --mode all 拆分统一）：
+// pixiu-offline-packages-{os}-{osver}-{arch}-{k8s}。
 func PackagesBundleName(osName, osVer, arch, k8sVer string) string {
-	return BundleName(osName, osVer, arch, k8sVer) + "-packages"
+	return fmt.Sprintf("pixiu-offline-packages-%s-%s-%s-%s", osName, osVer, arch, k8sVer)
 }
 
 func ImagesOfflineBundleName(osName, osVer, arch, k8sVer string) string {

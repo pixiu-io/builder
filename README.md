@@ -48,11 +48,13 @@ go build -o builder ./cmd/builder
 
 | 命令 | 说明 |
 |------|------|
-| `build` | 构建离线安装包。`--kubernetes-version` 必填（任意 vX.Y.Z；`--only-addons` 时可省略）。`--os` / `--os-version` 在 `--mode all` 或 `packages` 时必填（**任意**取值，不必在 list-os 中；未登记时构建镜像默认为 `{os}:{os-version}`）；`--mode images` 时可省略。可选：`--arch`（amd64/arm64，默认 amd64）、`--mirror`、`--mode`、`--workdir`、`--out`、`--skip-addons`、`--only-addons`、`--dry-run`、`--upload`、`--s3-bucket` 等。核心软件包/镜像始终使用默认清单，自定义能力由配置 `addon_packages` / `addon_images` + `--mode` + `--only-addons` / `--skip-addons` 提供（见下文"自定义附加组件"）。所有 build 参数均可在配置文件 `build` 节预设（优先级：命令行 > 配置 > 内置默认值），见下文"build 参数配置化" |
-| `upload` | 将已有产物 tar.gz 上传到 S3/MinIO。`--file` 可重复；bucket/prefix/endpoint/region 可覆盖配置文件 `s3` 节 |
+| `build` | 构建离线安装包。`--kubernetes-version` 必填（任意 vX.Y.Z；`--only-addons` 时可省略）。`--os` / `--os-version` 在 `--mode all` 或 `packages` 时必填（**任意**取值，不必在 list-os 中；未登记时构建镜像默认为 `{os}:{os-version}`）；`--mode images` 时可省略。可选：`--arch`（amd64/arm64，默认 amd64）、`--mirror`、`--mode`、`--workdir`、`--out`、`--skip-addons`、`--only-addons`、`--dry-run`、`--keep-files`（默认清理中间文件与 docker 中间镜像，置位保留）、`--upload`、`--s3-bucket` 等。核心软件包/镜像始终使用默认清单，自定义能力由配置 `addon_packages` / `addon_images` + `--mode` + `--only-addons` / `--skip-addons` 提供（见下文"自定义附加组件"）。所有 build 参数均可在配置文件 `build` 节预设（优先级：命令行 > 配置 > 内置默认值），见下文"build 参数配置化" |
+| `upload` | 将已有产物 tar.gz 上传到 S3/MinIO 或腾讯云 COS。`--file` 可重复；`--s3-*` 覆盖 `s3` 节，`--cos-*` 覆盖 `cos` 节 |
+| `serve` | 加载离线产物，提供本地 OCI registry（`docker pull` 短名）与 yum/dnf/apt HTTP 软件源（纯 Go，无外部工具依赖） |
 | `list-os` | 列出参考 OS / 版本（builder.yaml；实际 build 不限于此列表） |
 | `list-k8s` | 列出支持的 k8s 版本（含记录用运行时版本） |
 | `list-images` | 列出附加组件镜像清单。纯 flag 指定：`--os`（必填）、`--kubernetes-version`（必填）、`--arch`（默认 amd64） |
+| `list-serve-images` | 列出 serve 已加载的镜像（查询运行中的 registry，`--registry-addr` 默认 `127.0.0.1:5000`） |
 | `verify` | 校验 bundle（目录或 tar.gz）完整性 |
 | `version` | 打印版本 |
 
@@ -154,7 +156,7 @@ addon_packages:
 ## 产物目录结构
 
 ```
-pixiu-offline-{os}-{osver}-{arch}-{k8sver}/   # 完整包 / 指定 OS 的镜像包
+pixiu-offline-{os}-{osver}-{arch}-{k8sver}/   # 指定 OS 的镜像包（--mode images 且指定 OS）
 pixiu-offline-images-{arch}-{k8sver}/         # --mode images 且未指定 OS
 ├── packages/
 │   ├── *.deb / *.rpm    # k8s + 运行时 + 系统依赖（容器内 apt/dnf 递归下载）
@@ -168,8 +170,8 @@ pixiu-offline-images-{arch}-{k8sver}/         # --mode images 且未指定 OS
 └── manifest.yaml        # 完整性清单（path/size/sha256）
 ```
 
-构建完成后会在 `--out` 目录生成同名 `.tar.gz`。`--mode all` 时拆成两个独立产物：
-- `pixiu-offline-{os}-{osver}-{arch}-{k8sver}-packages.tar.gz`
+构建完成后会在 `--out` 目录生成同名 `.tar.gz`。软件包产物统一为 `pixiu-offline-packages-{os}-{osver}-{arch}-{k8sver}.tar.gz`（单模式 packages 与 `--mode all` 拆分一致）；`--mode all` 时拆成两个独立产物：
+- `pixiu-offline-packages-{os}-{osver}-{arch}-{k8sver}.tar.gz`
 - `pixiu-offline-{os}-{osver}-{arch}-{k8sver}-images.tar.gz`
 
 ## 配置文件
@@ -184,6 +186,7 @@ pixiu-offline-images-{arch}-{k8sver}/         # --mode images 且未指定 OS
 | `addon_images` | 附加组件镜像清单（name → image:tag；仅镜像，不含软件包） |
 | `addon_packages` | 附加安装包列表（对象格式：name + 可选 version；version 空不锁版本、非空按目标包管理器语法转译 name=version / name-version；mode ∈ packages/all 且未跳过附加时并入软件包清单） |
 | `s3` | 可选：产物上传到 S3/MinIO（bucket/region/endpoint/prefix/access_key/secret_key/session_token）；凭证优先级：配置 > 环境变量 > 默认凭证链 |
+| `cos` | 可选：产物上传到腾讯云 COS（bucket 含 appid/region/secret_id/secret_key/prefix）；配置后优先于 `s3` |
 
 > `versions` / `build_images` 为初始值，加载器不验证镜像可用性，生产使用请按需核对。
 
@@ -210,11 +213,12 @@ build:
   skip_addons: false
   only_addons: false     # 只打包附加组件（addon_images / addon_packages），核心软件包与镜像全去；与 skip_addons 互斥
   dry_run: false
+  keep_files: false      # 默认 false=构建完成后清理中间文件与 docker 中间镜像；true=保留
 ```
 
 例如配置 `arch: "arm64"` 后执行 `builder build ...`（不传 `--arch`）会构建 arm64 产物；命令行传 `--arch amd64` 则仍以命令行优先。
 
-## 上传到 S3
+## 上传产物（S3 / MinIO / 腾讯云 COS）
 
 构建完成后可用 `--upload` 自动上传产物，或用 `upload` 子命令上传已有 tar.gz。
 
@@ -244,10 +248,73 @@ export AWS_SECRET_ACCESS_KEY=yyy
 ./builder build ... --upload --s3-endpoint http://127.0.0.1:9000 --s3-bucket pixiu
 
 # 仅上传已有产物
-./builder upload --file ./dist/pixiu-offline-ubuntu-22.04-amd64-v1.27.3-packages.tar.gz
+./builder upload --file ./dist/pixiu-offline-packages-ubuntu-22.04-amd64-v1.27.3.tar.gz
+
+# 上传整个目录（递归子目录），并按文件名忽略部分文件（--skip 可重复）
+./builder upload --dir ./dist --skip md5sum.txt --skip checksum.txt
 ```
 
-对象键为 `{prefix}{文件名}`，例如 `pixiu-offline/pixiu-offline-ubuntu-22.04-amd64-v1.27.3-packages.tar.gz`。
+对象键为 `{prefix}{文件名}`，例如 `pixiu-offline/pixiu-offline-packages-ubuntu-22.04-amd64-v1.27.3.tar.gz`。
+
+### 上传到腾讯云 COS
+
+在 `builder.yaml` 配置 `cos` 节（`bucket` 含 appid、`region`、`secret_id` / `secret_key`）后，`build --upload` / `upload` 优先走 COS；未配置 `cos` 时回退到上面的 S3 / MinIO 逻辑。也可用 `--cos-*` flag 覆盖。
+
+```bash
+# 配置文件填写 cos 节后，构建并上传
+#   cos:
+#     bucket: mybucket-1250000000
+#     region: ap-guangzhou
+#     secret_id: xxx
+#     secret_key: yyy
+./builder build ... --upload
+
+# 或纯 CLI 覆盖（无需改配置）
+./builder upload --file ./dist/xxx.tar.gz \
+  --cos-bucket mybucket-1250000000 --cos-region ap-guangzhou \
+  --cos-secret-id xxx --cos-secret-key yyy --cos-prefix releases/v1.27.3/
+```
+
+对象键规则与 S3 相同：`{cos.prefix}{文件名}`。
+
+## 离线源服务（`serve`）
+
+将 builder 产物加载为常驻服务：镜像走本地 registry（短名），软件包走 HTTP yum/dnf/apt 源。不依赖 `createrepo` / `apt-ftparchive`。
+
+```bash
+# packages + images 两个 tar 一起加载
+./builder serve \
+  --bundle ./dist/pixiu-offline-packages-centos-8-amd64-v1.27.3.tar.gz \
+  --bundle ./dist/pixiu-offline-centos-8-amd64-v1.27.3-images.tar.gz \
+  --advertise-host 192.168.1.10
+
+# 已解压目录
+./builder serve --bundle ./work/pixiu-offline-ubuntu-22.04-amd64-v1.27.3
+
+# 指定离线包目录：自动加载其中所有 *.tar.gz，并每 3s 轮询热加载新放入的包
+./builder serve --dir ./offline-packages --advertise-host 192.168.1.10
+```
+
+`--advertise-host` 默认取**本机非 loopback IP**（打印给客户端），无需显式指定；仅在需要对外暴露固定地址时手动覆盖。
+
+默认端口：
+- registry：`0.0.0.0:5000` → `docker pull <host>:5000/kube-apiserver:v1.27.3`
+- 软件源：`0.0.0.0:8080` → `http://<host>:8080/rpm`（dnf）或 `/deb`（apt）
+
+客户端示例：
+
+```bash
+# 镜像（需将 host:5000 加入 Docker insecure-registries）
+docker pull 192.168.1.10:5000/kube-apiserver:v1.27.3
+kubeadm init --image-repository 192.168.1.10:5000 ...
+
+# dnf / yum
+dnf install --repofrompath=pixiu,http://192.168.1.10:8080/rpm kubeadm
+
+# apt
+echo 'deb [trusted=yes] http://192.168.1.10:8080/deb ./' > /etc/apt/sources.list.d/pixiu-offline.list
+apt-get update && apt-get install kubeadm
+```
 
 ## 软件源与包下载
 

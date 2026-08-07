@@ -109,7 +109,7 @@ func TestBundleName(t *testing.T) {
 	if got := ImagesBundleName("amd64", "v1.27.3"); got != "pixiu-offline-images-amd64-v1.27.3" {
 		t.Errorf("ImagesBundleName = %q", got)
 	}
-	if got := PackagesBundleName("ubuntu", "22.04", "amd64", "v1.27.3"); got != "pixiu-offline-ubuntu-22.04-amd64-v1.27.3-packages" {
+	if got := PackagesBundleName("ubuntu", "22.04", "amd64", "v1.27.3"); got != "pixiu-offline-packages-ubuntu-22.04-amd64-v1.27.3" {
 		t.Errorf("PackagesBundleName = %q", got)
 	}
 	if got := ImagesOfflineBundleName("ubuntu", "22.04", "amd64", "v1.27.3"); got != "pixiu-offline-ubuntu-22.04-amd64-v1.27.3-images" {
@@ -217,7 +217,7 @@ func TestBuildDryRun(t *testing.T) {
 			t.Errorf("独立 tar 缺失: %s (%v)", p, err)
 		}
 	}
-	wantPkg := filepath.Join(outDir, "pixiu-offline-ubuntu-22.04-amd64-v1.27.3-packages.tar.gz")
+	wantPkg := filepath.Join(outDir, "pixiu-offline-packages-ubuntu-22.04-amd64-v1.27.3.tar.gz")
 	wantImg := filepath.Join(outDir, "pixiu-offline-ubuntu-22.04-amd64-v1.27.3-images.tar.gz")
 	if res.TarPaths[0] != wantPkg || res.TarPaths[1] != wantImg {
 		t.Errorf("TarPaths = %v, want [%s %s]", res.TarPaths, wantPkg, wantImg)
@@ -627,6 +627,7 @@ func TestBuildSkipAddons(t *testing.T) {
 		DockerBin:  binPath,
 		KubeadmBin: kubeadmPath,
 		SkipAddons: true,
+		KeepFiles:  true,
 	})
 	if err != nil {
 		t.Fatalf("--skip-addons 构建失败: %v", err)
@@ -692,6 +693,52 @@ func TestBuildModePackages(t *testing.T) {
 	}
 }
 
+// TestBuildKeepFilesCleanup 验证中间文件清理：默认（KeepFiles=false）构建后删除
+// bundle 中间目录；KeepFiles=true 时保留。
+func TestBuildKeepFilesCleanup(t *testing.T) {
+	cfg := loadSampleConfig(t)
+	binDir := t.TempDir()
+	binPath := filepath.Join(binDir, "docker")
+	writeBuilderFakeDocker(t, binPath)
+
+	build := func(workDir string, keep bool) error {
+		_, err := Build(context.Background(), Options{
+			Config:     cfg,
+			OS:         "ubuntu",
+			OSVersion:  "22.04",
+			Arch:       "amd64",
+			K8sVersion: "v1.27.3",
+			Mirror:     mirror.Official,
+			WorkDir:    workDir,
+			OutDir:     filepath.Join(t.TempDir(), "dist"),
+			DockerBin:  binPath,
+			Mode:       "packages",
+			KeepFiles:  keep,
+		})
+		return err
+	}
+
+	bundleName := "pixiu-offline-packages-ubuntu-22.04-amd64-v1.27.3"
+
+	// 默认清理
+	workDir := filepath.Join(t.TempDir(), "work")
+	if err := build(workDir, false); err != nil {
+		t.Fatalf("构建失败: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(workDir, bundleName)); !os.IsNotExist(err) {
+		t.Error("默认应清理中间 bundle 目录")
+	}
+
+	// KeepFiles=true 保留
+	workDir2 := filepath.Join(t.TempDir(), "work")
+	if err := build(workDir2, true); err != nil {
+		t.Fatalf("构建失败: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(workDir2, bundleName)); err != nil {
+		t.Errorf("KeepFiles=true 应保留中间 bundle 目录: %v", err)
+	}
+}
+
 func TestBuildModeImages(t *testing.T) {
 	// --mode images 仅构建镜像：软件包步骤跳过（非失败），镜像步骤执行，tar 正常生成。
 	cfg := loadSampleConfig(t)
@@ -713,6 +760,7 @@ func TestBuildModeImages(t *testing.T) {
 		DockerBin:  binPath,
 		KubeadmBin: kubeadmPath,
 		Mode:       "images",
+		KeepFiles:  true,
 	})
 	if err != nil {
 		t.Fatalf("--mode images 构建失败: %v", err)

@@ -24,7 +24,8 @@ type Config struct {
 	// 每项为 {name, version} 对象；version 为空 = 不锁版本（透传纯包名），
 	// version 非空按目标包管理器语法转译（apt: name=version；dnf: name-version）。
 	AddonPackages []AddonPackage `yaml:"addon_packages"`
-	S3            S3Config `yaml:"s3"`
+	S3            S3Config       `yaml:"s3"`
+	Cos           CosConfig      `yaml:"cos"`
 	// Build build 子命令默认参数（优先级：命令行 > 配置 > 内置默认值）。
 	Build BuildOptions `yaml:"build"`
 
@@ -48,6 +49,8 @@ type BuildOptions struct {
 	SkipAddons        bool   `yaml:"skip_addons"`
 	OnlyAddons        bool   `yaml:"only_addons"`
 	DryRun            bool   `yaml:"dry_run"`
+	// KeepFiles 构建完成后是否保留中间文件（packages/images/bundle 目录）；默认 false=清理。
+	KeepFiles bool `yaml:"keep_files"`
 }
 
 // S3Config 产物上传到 S3 / MinIO 的默认参数。
@@ -65,6 +68,17 @@ type S3Config struct {
 	SecretKey string `yaml:"secret_key"`
 	// SessionToken 可选临时凭证。
 	SessionToken string `yaml:"session_token"`
+}
+
+// CosConfig 产物上传到腾讯云 COS 的参数。
+// bucket 需为「桶名-appid」格式（如 mybucket-1250000000），region 如 ap-guangzhou。
+// 凭证：secret_id / secret_key（腾讯云 API 密钥，对应 cos 节）。
+type CosConfig struct {
+	Bucket    string `yaml:"bucket"`
+	Region    string `yaml:"region"`
+	SecretID  string `yaml:"secret_id"`
+	SecretKey string `yaml:"secret_key"`
+	Prefix    string `yaml:"prefix"`
 }
 
 // OSRegistry 操作系统注册表。
