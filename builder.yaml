@@ -10,9 +10,9 @@
 # 核心软件包/镜像始终使用默认清单（BuildPackageList / kubeadm 生成），不再提供覆盖/追加参数；
 # 自定义能力完全由顶层 addon_packages / addon_images + --mode + --only-addons / --skip-addons 提供。
 build:
-  os: ""                    # 对应 --os：目标系统（如 ubuntu）
-  os_version: ""            # 对应 --os-version：系统版本（如 22.04）
-  kubernetes_version: ""    # 对应 --kubernetes-version：k8s 版本（如 v1.31.1）
+  os: "ubuntu"                    # 对应 --os：目标系统（如 ubuntu）
+  os_version: "22.04"            # 对应 --os-version：系统版本（如 22.04）
+  kubernetes_version: "v1.31.1"    # 对应 --kubernetes-version：k8s 版本（如 v1.31.1）
   arch: "amd64"             # 对应 --arch：目标架构（amd64/arm64）
   mirror: "aliyun"         # 对应 --mirror：镜像源（official/aliyun/tencent，默认阿里云 registry.aliyuncs.com/google_containers）
   workdir: "./work"         # 对应 --workdir：工作目录（bundle 构建于此）
