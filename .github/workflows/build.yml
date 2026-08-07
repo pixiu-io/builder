@@ -1,0 +1,19 @@
+name: build packages and images
+
+on:
+  push:
+    branches:
+      - "*"
+
+env:
+  GO_VERSION: '1.25.0'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: run build commands
+        run: go run cmd/builder/main.go build --configFile builder.yaml

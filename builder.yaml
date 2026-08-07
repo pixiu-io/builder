@@ -168,4 +168,4 @@ cos:
   region: ""                  # 必填，如 ap-guangzhou（或通过 --cos-region 覆盖）
   secret_id: ""               # 腾讯云 API SecretId（或通过 --cos-secret-id 覆盖）
   secret_key: ""              # 腾讯云 API SecretKey（或通过 --cos-secret-key 覆盖）
-  prefix: pixiu-offline/      # 对象键前缀，最终 key = {prefix}{文件名}
+  prefix: ""                  # 对象键前缀，最终 key = {prefix}{文件名}
