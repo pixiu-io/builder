@@ -244,10 +244,9 @@ func Build(ctx context.Context, opts Options) (*Result, error) {
 		opts.Mode = "all"
 	}
 
-	// --mode images 且未指定 OS 时：选用默认构建容器（仅用于容器内 kubeadm 拉清单），
-	// bundle 名使用 images 前缀，不绑定具体发行版。
-	osOmitted := opts.OS == "" && opts.OSVersion == ""
-	if opts.Mode == "images" && osOmitted {
+	// build images：不绑定发行版；选用默认构建容器仅用于容器内拉镜像清单，
+	// 产物名固定为 pixiu-images-{arch}-{k8s}。
+	if opts.Mode == "images" {
 		name, ver, err := defaultBuildOS(opts.Config)
 		if err != nil {
 			return nil, err
@@ -278,10 +277,8 @@ func Build(ctx context.Context, opts Options) (*Result, error) {
 
 	var bundleName string
 	switch {
-	case opts.Mode == "images" && osOmitted:
-		bundleName = ImagesBundleName(opts.Arch, opts.K8sVersion)
 	case opts.Mode == "images":
-		bundleName = ImagesOSBundleName(opts.OS, opts.OSVersion, opts.Arch, opts.K8sVersion)
+		bundleName = ImagesBundleName(opts.Arch, opts.K8sVersion)
 	case opts.Mode == "packages":
 		bundleName = PackagesBundleName(opts.OS, opts.OSVersion, opts.Arch, opts.K8sVersion)
 	default:
@@ -505,7 +502,7 @@ func Build(ctx context.Context, opts Options) (*Result, error) {
 	// ---------- Step 4: 生成 manifest ----------
 	stepStart(4, "生成 manifest")
 	metaOS, metaOSVer := opts.OS, opts.OSVersion
-	if opts.Mode == "images" && osOmitted {
+	if opts.Mode == "images" {
 		metaOS, metaOSVer = "images", "-"
 	}
 	meta := manifest.Meta{
@@ -522,7 +519,7 @@ func Build(ctx context.Context, opts Options) (*Result, error) {
 	if opts.Mode == "all" {
 		// all：拆成两个独立 bundle（packages / images），各自带脚本与 manifest
 		pkgName := PackagesBundleName(opts.OS, opts.OSVersion, opts.Arch, opts.K8sVersion)
-		imgName := ImagesOSBundleName(opts.OS, opts.OSVersion, opts.Arch, opts.K8sVersion)
+		imgName := ImagesBundleName(opts.Arch, opts.K8sVersion)
 		pkgDir := filepath.Join(opts.WorkDir, pkgName)
 		imgDir := filepath.Join(opts.WorkDir, imgName)
 		if err := materializeSplitBundle(bundleDir, pkgDir, []string{"packages"}, meta); err != nil {
@@ -750,7 +747,7 @@ func validateOptions(opts Options) error {
 	}
 	// packages/all 必须指定 OS；images 模式可在 Build 中先填入默认 OS 后再校验。
 	if mode != "images" && (opts.OS == "" || opts.OSVersion == "") {
-		return fmt.Errorf("缺少 OS/版本（--mode images 时可省略）")
+		return fmt.Errorf("缺少 OS/版本（build images 不需要）")
 	}
 	if opts.OS != "" || opts.OSVersion != "" {
 		if opts.OS == "" || opts.OSVersion == "" {

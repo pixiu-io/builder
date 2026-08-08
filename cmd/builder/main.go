@@ -29,7 +29,7 @@ import (
 // 全局 flag
 var configFile string
 
-// build 子命令 flags
+// build 子命令 flags（packages / images 共用；OS 仅 packages 使用）
 var (
 	buildOS         string
 	buildOSVersion  string
@@ -38,7 +38,6 @@ var (
 	buildMirror     string
 	buildWorkDir    string
 	buildOutDir     string
-	buildMode       string
 	buildSkipAddons bool
 	buildOnlyAddons bool
 	buildDryRun     bool
@@ -47,6 +46,9 @@ var (
 	buildKubeadmDir string
 	buildUpload     bool
 )
+
+// githubImagesReleaseTag build images --upload 时使用的固定 Release 名/tag。
+const githubImagesReleaseTag = "images"
 
 // upload 子命令 flags
 var (
@@ -148,33 +150,75 @@ func newBuildCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "build",
 		Short: "构建离线安装包",
-		Args:  cobra.NoArgs,
-		Example: `  builder build --os ubuntu --os-version 22.04 --kubernetes-version v1.27.3 --arch amd64
-  builder build --mode images --kubernetes-version v1.27.3 --arch amd64 --out ./dist
-  builder build --os ubuntu --os-version 22.04 --kubernetes-version v1.27.3 --only-addons
-  builder build --os ubuntu --os-version 22.04 --kubernetes-version v1.27.3 --skip-addons`,
-		RunE: runBuild,
+		Long: `构建 Kubernetes 离线产物，需指定子命令：
+  build packages  构建软件包离线包（需 --os / --os-version）
+  build images    构建镜像离线包（无需操作系统；产物 pixiu-images-{arch}-{k8s}.tar.gz）`,
+		Example: `  builder build packages --os ubuntu --os-version 22.04 --kubernetes-version v1.31.6
+  builder build images --kubernetes-version v1.31.6 --arch amd64 --upload
+  builder build packages --os ubuntu --os-version 22.04 --kubernetes-version v1.31.6 --skip-addons`,
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return fmt.Errorf("请指定子命令：build packages 或 build images")
+		},
 	}
-	cmd.Flags().StringVar(&buildOS, "os", "", "目标操作系统（任意，如 ubuntu；--mode images 时可省略）")
-	cmd.Flags().StringVar(&buildOSVersion, "os-version", "", "操作系统版本（任意，如 22.04；--mode images 时可省略）")
-	cmd.Flags().StringVar(&buildK8sVersion, "kubernetes-version", "", "k8s 版本（如 v1.27.3；--only-addons 时可选）")
+	cmd.AddCommand(newBuildPackagesCmd())
+	cmd.AddCommand(newBuildImagesCmd())
+	return cmd
+}
+
+func newBuildPackagesCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "packages",
+		Short: "构建软件包离线安装包",
+		Example: `  builder build packages --os ubuntu --os-version 22.04 --kubernetes-version v1.31.6 --arch amd64
+  builder build packages --os ubuntu --os-version 22.04 --kubernetes-version v1.31.6 --upload`,
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runBuild(cmd, "packages")
+		},
+	}
+	addBuildCommonFlags(cmd, true)
+	return cmd
+}
+
+func newBuildImagesCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "images",
+		Short: "构建镜像离线安装包（不绑定操作系统）",
+		Long: `构建核心/附加组件镜像并打包为 pixiu-images-{arch}-{k8sVersion}.tar.gz。
+无需指定 --os / --os-version。
+--upload 时上传到名为 images 的 GitHub Release（不存在则自动创建）。`,
+		Example: `  builder build images --kubernetes-version v1.31.6 --arch amd64
+  builder build images --kubernetes-version v1.31.6 --arch amd64 --upload`,
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runBuild(cmd, "images")
+		},
+	}
+	addBuildCommonFlags(cmd, false)
+	return cmd
+}
+
+// addBuildCommonFlags 为 build packages / build images 注册共用 flags。
+// withOS 为 true 时注册 --os / --os-version（仅 packages 需要）。
+func addBuildCommonFlags(cmd *cobra.Command, withOS bool) {
+	if withOS {
+		cmd.Flags().StringVar(&buildOS, "os", "", "目标操作系统（任意，如 ubuntu）")
+		cmd.Flags().StringVar(&buildOSVersion, "os-version", "", "操作系统版本（任意，如 22.04）")
+	}
+	cmd.Flags().StringVar(&buildK8sVersion, "kubernetes-version", "", "k8s 版本（如 v1.31.6；--only-addons 时可选）")
 	cmd.Flags().StringVar(&buildArch, "arch", "amd64", "目标架构（amd64/arm64）")
-	cmd.Flags().StringVar(&buildMirror, "mirror", "aliyun", "镜像仓库源（默认 aliyun；official/aliyun/tencent，镜像阶段获取与生成 k8s 镜像均带该仓库地址）")
+	cmd.Flags().StringVar(&buildMirror, "mirror", "aliyun", "镜像仓库源（默认 aliyun；official/aliyun/tencent）")
 	cmd.Flags().StringVar(&buildWorkDir, "workdir", "./work", "工作目录（bundle 在此构建）")
 	cmd.Flags().StringVar(&buildOutDir, "out", "./dist", "产物输出目录（tar.gz 输出到此）")
-	cmd.Flags().StringVar(&buildMode, "mode", "all", "构建模式：packages=仅软件包 / images=仅镜像 / all=两者都构建（默认）")
-	cmd.Flags().BoolVar(&buildSkipAddons, "skip-addons", false, "跳过附加组件（addon_images 与 addon_packages 均不并入），仅核心软件包/镜像")
-	cmd.Flags().BoolVar(&buildOnlyAddons, "only-addons", false, "只打包附加组件（addon_images/addon_packages），核心软件包与镜像全去；与 --skip-addons 互斥")
+	cmd.Flags().BoolVar(&buildSkipAddons, "skip-addons", false, "跳过附加组件（addon_images 与 addon_packages 均不并入）")
+	cmd.Flags().BoolVar(&buildOnlyAddons, "only-addons", false, "只打包附加组件；与 --skip-addons 互斥")
 	cmd.Flags().BoolVar(&buildDryRun, "dry-run", false, "仅演练管线，不执行真实下载/拉取")
-	cmd.Flags().BoolVar(&buildKeepFiles, "keep-files", false, "构建完成后保留中间文件（packages/images/bundle 目录；默认清理）")
-	cmd.Flags().BoolVarP(&buildVerbose, "verbose", "v", false, "打印详细过程日志（镜像下载/pull 进度等）")
-	cmd.Flags().StringVar(&buildKubeadmDir, "kubeadm-dir", "./kube", "kubeadm 二进制缓存目录（按 kubeadm-{version}-linux-{arch} 命名）")
-	cmd.Flags().BoolVar(&buildUpload, "upload", false, "构建完成后将产物 tar.gz 上传到 GitHub Release（需配置 github.owner/repo 或 --github-owner/--github-repo）")
+	cmd.Flags().BoolVar(&buildKeepFiles, "keep-files", false, "构建完成后保留中间文件（默认清理）")
+	cmd.Flags().BoolVarP(&buildVerbose, "verbose", "v", false, "打印详细过程日志")
+	cmd.Flags().StringVar(&buildKubeadmDir, "kubeadm-dir", "./kube", "kubeadm 二进制缓存目录")
+	cmd.Flags().BoolVar(&buildUpload, "upload", false, "构建完成后将产物上传到 GitHub Release")
 	addGitHubFlags(cmd)
-	// 必填校验（os/os-version/kubernetes-version）改为手动判断：命令行或配置 build 节任一提供即可，
-	// 因此不使用 cobra 的 MarkFlagRequired（它只认命令行，会阻断配置兜底）。
-	// --only-addons 时 kubernetes-version 可省略（不构建 k8s 核心，无需推导 k8s 版本）。
-	return cmd
 }
 
 func addGitHubFlags(cmd *cobra.Command) {
@@ -283,9 +327,7 @@ func resolveBool(changed bool, flagVal, cfgVal bool) bool {
 }
 
 // requiredMissing 返回 build 必填参数中缺失项的列表（空表示无缺失）。
-// os/os-version 在 images 模式下可不指定；kubernetes-version 在 --only-addons 时可不指定，
-// 其余情况任何模式均必填。
-// 缺失项由命令行 flag 或配置 build 节任一提供即可，这里只看最终生效值。
+// images 不要求 os/os-version；packages 要求。kubernetes-version 在 --only-addons 时可省略。
 func requiredMissing(opts buildOptions, mode string) []string {
 	var missing []string
 	if !opts.OnlyAddons && opts.K8sVersion == "" {
@@ -302,7 +344,8 @@ func requiredMissing(opts buildOptions, mode string) []string {
 	return missing
 }
 
-func runBuild(cmd *cobra.Command, args []string) error {
+// runBuild 执行构建；mode 由子命令固定为 packages 或 images。
+func runBuild(cmd *cobra.Command, mode string) error {
 	cfg, err := config.Load(configFile)
 	if err != nil {
 		return err
@@ -317,7 +360,7 @@ func runBuild(cmd *cobra.Command, args []string) error {
 		Mirror:     buildMirror,
 		WorkDir:    buildWorkDir,
 		OutDir:     buildOutDir,
-		Mode:       buildMode,
+		Mode:       mode,
 		SkipAddons: buildSkipAddons,
 		OnlyAddons: buildOnlyAddons,
 		DryRun:     buildDryRun,
@@ -332,7 +375,7 @@ func runBuild(cmd *cobra.Command, args []string) error {
 		Mirror:     cmd.Flags().Changed("mirror"),
 		WorkDir:    cmd.Flags().Changed("workdir"),
 		OutDir:     cmd.Flags().Changed("out"),
-		Mode:       cmd.Flags().Changed("mode"),
+		Mode:       true, // 子命令强制 mode
 		SkipAddons: cmd.Flags().Changed("skip-addons"),
 		OnlyAddons: cmd.Flags().Changed("only-addons"),
 		DryRun:     cmd.Flags().Changed("dry-run"),
@@ -340,25 +383,24 @@ func runBuild(cmd *cobra.Command, args []string) error {
 		Verbose:    cmd.Flags().Changed("verbose"),
 		KubeadmDir: cmd.Flags().Changed("kubeadm-dir"),
 	})
+	opts.Mode = mode
 
 	mirrorVal, err := mirror.ParseMirror(opts.Mirror)
 	if err != nil {
 		return err
 	}
 
-	// 构建模式校验：packages=仅软件包 / images=仅镜像 / all=两者都构建
-	mode := opts.Mode
 	switch mode {
-	case "packages", "images", "all":
+	case "packages", "images":
 	default:
-		return fmt.Errorf("非法 --mode 取值 %q（可选: packages=仅软件包 / images=仅镜像 / all=两者都构建）", opts.Mode)
+		return fmt.Errorf("非法构建模式 %q（可选: packages / images）", mode)
 	}
 
-	// 必填校验：os / os-version / kubernetes-version 由命令行或配置 build 节任一提供。
-	// --mode images 可不指定 OS；packages/all 必须指定；--only-addons 时 kubernetes-version 可省略。
-	if mode == "images" && (opts.OS == "") != (opts.OSVersion == "") {
-		return fmt.Errorf("--mode images 下 --os 与 --os-version 需同时指定或同时省略")
+	// images 不绑定 OS：忽略配置/残留的 os 字段，避免误绑发行版。
+	if mode == "images" {
+		opts.OS, opts.OSVersion = "", ""
 	}
+
 	if missing := requiredMissing(opts, mode); len(missing) > 0 {
 		return fmt.Errorf("缺少必填参数: %s（可通过命令行 flag 或配置文件 build 节指定）", strings.Join(missing, ", "))
 	}
@@ -420,7 +462,14 @@ func runBuild(cmd *cobra.Command, args []string) error {
 		if len(files) == 0 && res.TarPath != "" {
 			files = []string{res.TarPath}
 		}
-		if err := uploadGitHubArtifacts(ctx, cfg, files, opts.K8sVersion); err != nil {
+		uploadTag := opts.K8sVersion
+		forceTag := false
+		if mode == "images" {
+			// 镜像产物固定上传到名为 images 的 Release（不受 github.tag / --github-tag 覆盖）。
+			uploadTag = githubImagesReleaseTag
+			forceTag = true
+		}
+		if err := uploadGitHubArtifacts(ctx, cfg, files, uploadTag, forceTag); err != nil {
 			return err
 		}
 	}
@@ -454,7 +503,7 @@ func newUploadCmd() *cobra.Command {
 			}
 			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 			defer stop()
-			return uploadGitHubArtifacts(ctx, cfg, files, "")
+			return uploadGitHubArtifacts(ctx, cfg, files, "", false)
 		},
 	}
 	cmd.Flags().StringArrayVar(&uploadFiles, "file", nil, "待上传的本地文件（可重复）")
@@ -806,10 +855,11 @@ func ensureGitHubRelease(ctx context.Context, cfg *config.Config, defaultTag str
 }
 
 // uploadGitHubArtifacts 合并配置与 CLI 覆盖后上传文件到 GitHub Release。
-// defaultTag 在配置与 flag 均未指定 tag 时使用（build 场景一般为 kubernetes 版本）。
-func uploadGitHubArtifacts(ctx context.Context, cfg *config.Config, files []string, defaultTag string) error {
+// defaultTag 在配置与 flag 均未指定 tag 时使用（packages 一般为 k8s 版本；images 为 "images"）。
+// forceTag 为 true 时强制使用 defaultTag（忽略配置与 --github-tag）。
+func uploadGitHubArtifacts(ctx context.Context, cfg *config.Config, files []string, defaultTag string, forceTag bool) error {
 	opts := mergeGitHubOptions(cfg.GitHub, githubOwner, githubRepo, githubTag, githubToken)
-	if opts.Tag == "" {
+	if forceTag || opts.Tag == "" {
 		opts.Tag = defaultTag
 	}
 	if opts.Owner == "" || opts.Repo == "" {

@@ -139,19 +139,18 @@ func TestRequiredParamsMissing(t *testing.T) {
 	buildK8sVersion = ""
 	buildOS = ""
 	buildOSVersion = ""
-	buildMode = "all"
 	buildArch = "amd64"
 
-	// 空配置 + 未传任何必填 flag → 三个必填项全部列出。
+	// 空配置 + 未传任何必填 flag → packages 三个必填项全部列出。
 	cfg := &config.Config{}
 	opts := resolveBuildOptions(cfg, buildFlagValues{
 		K8sVersion: buildK8sVersion, OS: buildOS, OSVersion: buildOSVersion,
-		Arch: "amd64", Mirror: "official", WorkDir: "./work", OutDir: "./dist", Mode: "all",
+		Arch: "amd64", Mirror: "official", WorkDir: "./work", OutDir: "./dist", Mode: "packages",
 	}, buildFlagChanged{})
 	if opts.OS != "" || opts.OSVersion != "" || opts.K8sVersion != "" {
 		t.Fatalf("期望全部必填为空，实际 %+v", opts)
 	}
-	missing := requiredMissing(opts, "all")
+	missing := requiredMissing(opts, "packages")
 	if strings.Join(missing, ",") != "kubernetes-version,os,os-version" {
 		t.Errorf("缺失项列出顺序异常: %v", missing)
 	}

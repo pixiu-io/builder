@@ -29,17 +29,17 @@ go build -o builder ./cmd/builder
 # 查看附加组件镜像
 ./builder list-images --os ubuntu --kubernetes-version v1.27.3
 
-# 构建离线包（dry-run 演练，不执行真实下载/拉取）
-./builder build --os ubuntu --os-version 22.04 --kubernetes-version v1.27.3 --arch amd64 --dry-run
+# 构建软件包（dry-run 演练）
+./builder build packages --os ubuntu --os-version 22.04 --kubernetes-version v1.31.6 --arch amd64 --dry-run
 
-# 真实构建（需联网 + 本机 docker；docker 不可用时构建直接中断，不产出离线包）
-./builder build --os ubuntu --os-version 22.04 --kubernetes-version v1.27.3 --arch amd64 --out ./dist
+# 构建软件包（需联网 + 本机 docker）
+./builder build packages --os ubuntu --os-version 22.04 --kubernetes-version v1.31.6 --arch amd64 --out ./dist
 
-# 仅镜像（可不指定 --os / --os-version）
-./builder build --mode images --kubernetes-version v1.27.3 --arch amd64 --out ./dist
+# 构建镜像（无需 --os；产物 pixiu-images-{arch}-{k8s}.tar.gz）
+./builder build images --kubernetes-version v1.31.6 --arch amd64 --out ./dist
 
 # 校验离线包（目录或 tar.gz）
-./builder verify --bundle ./dist/pixiu-images-ubuntu-22.04-amd64-v1.27.3.tar.gz
+./builder verify --bundle ./dist/pixiu-images-amd64-v1.31.6.tar.gz
 ```
 
 `build` 执行时按 5 步管线实时输出 `[builder]` 前缀日志（步骤开始 / 完成 / 跳过 / 失败，dry-run 额外标注），便于跟踪长耗时构建；结束后打印构建步骤汇总表。
@@ -48,7 +48,8 @@ go build -o builder ./cmd/builder
 
 | 命令 | 说明 |
 |------|------|
-| `build` | 构建离线安装包。`--kubernetes-version` 必填（任意 vX.Y.Z；`--only-addons` 时可省略）。`--os` / `--os-version` 在 `--mode all` 或 `packages` 时必填（**任意**取值，不必在 list-os 中；未登记时构建镜像默认为 `{os}:{os-version}`）；`--mode images` 时可省略。可选：`--arch`（amd64/arm64，默认 amd64）、`--mirror`、`--mode`、`--workdir`、`--out`、`--skip-addons`、`--only-addons`、`--dry-run`、`--keep-files`、`--upload`、`--github-*` 等。核心软件包/镜像始终使用默认清单，自定义能力由配置 `addon_packages` / `addon_images` + `--mode` + `--only-addons` / `--skip-addons` 提供（见下文"自定义附加组件"）。所有 build 参数均可在配置文件 `build` 节预设（优先级：命令行 > 配置 > 内置默认值），见下文"build 参数配置化" |
+| `build packages` | 构建软件包离线包。需 `--os` / `--os-version` / `--kubernetes-version`（`--only-addons` 时可省略 k8s 版本）。产物：`pixiu-packages-{os}-{osver}-{arch}-{k8s}.tar.gz`。`--upload` 上传到以 k8s 版本为名的 Release |
+| `build images` | 构建镜像离线包（**无需**操作系统）。需 `--kubernetes-version`。产物：`pixiu-images-{arch}-{k8s}.tar.gz`。`--upload` 上传到名为 `images` 的 Release（不存在则创建） |
 | `upload` | 将已有产物 tar.gz 上传到 GitHub Release。`--file` 可重复；`--github-*` 覆盖配置节 |
 | `sync-kubeadm` | 创建以 k8s 版本为名的 GitHub Release，并上传 kubeadm 二进制。默认单版本；`--all` 同步全部 >= v1.31.0 的正式版本 |
 | `serve` | 加载离线产物，提供本地 OCI registry（`docker pull` 短名）与 yum/dnf/apt HTTP 软件源（纯 Go，无外部工具依赖） |
@@ -59,29 +60,21 @@ go build -o builder ./cmd/builder
 | `verify` | 校验 bundle（目录或 tar.gz）完整性 |
 | `version` | 打印版本 |
 
-## 构建模式（`--mode`）
+## 构建子命令
 
-`build` 按 `--mode` 决定构建内容（默认 `all`），适合按需产出的场景：
+| 子命令 | 构建内容 | 产物名 | 上传 Release |
+|--------|---------|--------|--------------|
+| `build packages` | 软件包（k8s/运行时/系统依赖）+ 脚本 + manifest | `pixiu-packages-{os}-{osver}-{arch}-{k8s}.tar.gz` | k8s 版本（或 `--github-tag`） |
+| `build images` | 镜像（核心 + 附加组件）+ 脚本 + manifest | `pixiu-images-{arch}-{k8s}.tar.gz` | 固定为 `images` |
 
-| 模式 | 构建内容 | 适用场景 |
-|------|---------|---------|
-| `all`（默认） | 软件包 + 镜像 | 完整离线包，一次性交付 |
-| `packages` | 仅软件包（k8s/运行时/系统依赖）+ 脚本 + manifest | 只更新软件包、或本机无 docker / 网络不支持镜像拉取时 |
-| `images` | 仅镜像（核心 + 附加组件镜像）+ 脚本 + manifest | 软件包已就绪，只补充镜像；不依赖容器内包下载 |
-
-`--mode packages` 即"仅软件包、跳过镜像阶段"，需要跳过镜像时直接使用该模式。被跳过的步骤在构建步骤汇总中标记为 `skipped`（非失败），Step 3/4/5（脚本/manifest/打包）始终执行，产物目录结构完整。
-
-`--mode all` 时步骤 1（软件包，`builder-packages-*`）与步骤 2（镜像，`builder-images-*`）**并行**执行；仅跑其中一侧（`packages` / `images`）或 `--dry-run` 时仍串行。
+被跳过的步骤在构建汇总中标记为 `skipped`（非失败）。`build images` 不需要、也不接受操作系统参数。
 
 ```bash
-# 仅软件包（跳过镜像阶段）
-./builder build --os ubuntu --os-version 22.04 --kubernetes-version v1.27.3 --arch amd64 --mode packages
+# 软件包
+./builder build packages --os ubuntu --os-version 22.04 --kubernetes-version v1.31.6 --arch amd64
 
-# 仅镜像（可省略 --os / --os-version；产物名为 pixiu-images-{arch}-{k8sver}）
-./builder build --mode images --kubernetes-version v1.27.3 --arch amd64
-
-# 仅镜像且仍绑定发行版（产物名仍含 os/osver）
-./builder build --os ubuntu --os-version 22.04 --kubernetes-version v1.27.3 --arch amd64 --mode images
+# 镜像（无需 --os；可 --upload 到 images Release）
+./builder build images --kubernetes-version v1.31.6 --arch amd64 --upload
 ```
 
 ## 自定义附加组件（addon_packages / addon_images）
@@ -157,23 +150,23 @@ addon_packages:
 ## 产物目录结构
 
 ```
-pixiu-images-{os}-{osver}-{arch}-{k8sver}/   # 指定 OS 的镜像包（--mode images 且指定 OS）
-pixiu-images-{arch}-{k8sver}/         # --mode images 且未指定 OS
-├── packages/
-│   ├── *.deb / *.rpm    # k8s + 运行时 + 系统依赖（容器内 apt/dnf 递归下载）
-│   └── runtime/         # crictl 静态 tar（仅 cri-tools 包源不可用时的回退产物）
-├── images/
-│   ├── core/            # 核心镜像 tar（kube-apiserver.tar 等）
-│   └── addons/          # 附加组件镜像 tar（flannel.tar 等）
+pixiu-packages-{os}-{osver}-{arch}-{k8sver}/   # build packages
+pixiu-images-{arch}-{k8sver}/                  # build images（不绑定 OS）
+├── packages/   # 仅 packages 产物含此目录
+│   ├── *.deb / *.rpm
+│   └── runtime/
+├── images/     # 仅 images 产物含此目录
+│   ├── core/
+│   └── addons/
 ├── install/
-│   ├── install.sh       # 目标机一键安装脚本（包安装 + preflight）
-│   └── load-images.sh   # 镜像导入（docker load → ctr import 回退）
-└── manifest.yaml        # 完整性清单（path/size/sha256）
+│   ├── install.sh
+│   └── load-images.sh
+└── manifest.yaml
 ```
 
-构建完成后会在 `--out` 目录生成同名 `.tar.gz`。软件包产物统一为 `pixiu-packages-{os}-{osver}-{arch}-{k8sver}.tar.gz`（单模式 packages 与 `--mode all` 拆分一致）；`--mode all` 时拆成两个独立产物：
+构建完成后会在 `--out` 目录生成同名 `.tar.gz`：
 - `pixiu-packages-{os}-{osver}-{arch}-{k8sver}.tar.gz`
-- `pixiu-images-{os}-{osver}-{arch}-{k8sver}.tar.gz`
+- `pixiu-images-{arch}-{k8sver}.tar.gz`
 
 ## 配置文件
 
@@ -235,26 +228,22 @@ github:
 ```bash
 export GITHUB_TOKEN=ghp_xxx
 
-# 构建并上传到 GitHub Release（tag 默认 = kubernetes 版本）
-./builder build --os ubuntu --os-version 22.04 --kubernetes-version v1.27.3 --upload \
+# 软件包构建并上传（Release tag 默认 = k8s 版本）
+./builder build packages --os ubuntu --os-version 22.04 --kubernetes-version v1.31.6 --upload \
   --github-owner acme --github-repo builder
 
-# 指定 tag
-./builder build ... --upload --github-tag v1.27.3-offline
+# 镜像构建并上传到名为 images 的 Release（不存在则创建）
+./builder build images --kubernetes-version v1.31.6 --arch amd64 --upload \
+  --github-owner acme --github-repo builder
 
 # 上传已有产物到 Release
 ./builder upload --file ./dist/a.tar.gz \
   --github-owner acme --github-repo builder --github-tag v1.27.3
 
-# 创建名为 v1.31.6 的 Release，下载并上传 kubeadm（--github-tag 为空时复用 --kubernetes-version）
+# 同步 kubeadm 到各 k8s 版本 Release
 ./builder sync-kubeadm --kubernetes-version v1.31.6 --arch amd64 \
   --github-owner acme --github-repo builder
-
-# 同步全部 >= v1.31.0 的正式 k8s 版本：补齐缺失 Release，并上传缺失的 kubeadm 资产
 ./builder sync-kubeadm --all --arch amd64 --github-owner acme --github-repo builder
-
-# build 生成核心镜像清单时会从 GitHub Release asset 获取 kubeadm
-./builder build --os ubuntu --os-version 22.04 --kubernetes-version v1.31.6 --arch amd64
 ```
 
 行为说明：`sync-kubeadm` 创建的 Release 名称即为 k8s 版本号；`--github-tag` 为空时复用 `--kubernetes-version`。`--all` 会查询本仓库 Release 列表与 `kubernetes/kubernetes` 正式 tag（排除 `-rc`/`-alpha`/`-beta`），确保 >= v1.31.0 的版本均有 Release，并在 kubeadm 资产缺失时下载上传；已存在则跳过。`build --upload` / `upload` 在目标 Release 不存在时也会自动创建。Token 需具备 `contents: write`（经典 PAT 用 `repo`）权限。
