@@ -3,7 +3,7 @@ name: sync kubeadm command
 on:
   push:
     branches:
-      - "*"
+      - "caoyingjunz-patch-1"
 
 env:
   GO_VERSION: '1.25.0'
