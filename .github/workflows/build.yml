@@ -1,4 +1,4 @@
-name: build packages and images
+name: sync kubeadm command
 
 on:
   push:
@@ -15,5 +15,5 @@ jobs:
     steps:
       - uses: actions/checkout@v3
 
-      - name: run build commands
-        run: go run cmd/builder/main.go build --configFile builder.yaml -v --upload --cos-bucket ${{ secrets.BUCKET }} --cos-region ${{ secrets.REGION }}  --cos-secret-id ${{ secrets.SECRET_ID }}  --cos-secret-key ${{ secrets.SECRET_KEY }}
+      - name: sync kubeadm command
+        run: go run cmd/builder/main.go sync-kubeadm --all --configFile builder.yaml --github-owner ${{ secrets.OWNER }} --github-repo ${{ secrets.REPO }}  --github-token ${{ secrets.TOKEN }}
