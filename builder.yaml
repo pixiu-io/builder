@@ -17,7 +17,7 @@ build:
   mirror: "aliyun"         # 对应 --mirror：镜像源（official/aliyun/tencent，默认阿里云 registry.aliyuncs.com/google_containers）
   workdir: "./work"         # 对应 --workdir：工作目录（bundle 构建于此）
   out: "./dist"             # 对应 --out：产物输出目录（tar.gz 输出到此）
-  mode: "all"               # 对应 --mode：构建模式（all=两者 / packages=仅软件包 / images=仅镜像；镜像阶段由 --mode packages 跳过）
+  mode: ""                  # 已废弃：请使用子命令 build packages / build images
   skip_addons: false        # 对应 --skip-addons：跳过附加组件（addon_images 与 addon_packages 均不并入）
   only_addons: false        # 对应 --only-addons：只打包附加（核心软件包/镜像全去）
   dry_run: false            # 对应 --dry-run：仅演练管线，不真实下载/拉取

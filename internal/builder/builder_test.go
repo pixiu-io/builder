@@ -217,7 +217,7 @@ func TestBuildDryRun(t *testing.T) {
 		}
 	}
 	wantPkg := filepath.Join(outDir, "pixiu-packages-ubuntu-22.04-amd64-v1.27.3.tar.gz")
-	wantImg := filepath.Join(outDir, "pixiu-images-ubuntu-22.04-amd64-v1.27.3.tar.gz")
+	wantImg := filepath.Join(outDir, "pixiu-images-amd64-v1.27.3.tar.gz")
 	if res.TarPaths[0] != wantPkg || res.TarPaths[1] != wantImg {
 		t.Errorf("TarPaths = %v, want [%s %s]", res.TarPaths, wantPkg, wantImg)
 	}
@@ -739,7 +739,7 @@ func TestBuildKeepFilesCleanup(t *testing.T) {
 }
 
 func TestBuildModeImages(t *testing.T) {
-	// --mode images 仅构建镜像：软件包步骤跳过（非失败），镜像步骤执行，tar 正常生成。
+	// build images 仅构建镜像：软件包步骤跳过，产物名为 pixiu-images-{arch}-{k8s}（不带 OS）。
 	cfg := loadSampleConfig(t)
 	binDir := t.TempDir()
 	binPath := filepath.Join(binDir, "docker")
@@ -762,10 +762,10 @@ func TestBuildModeImages(t *testing.T) {
 		KeepFiles:  true,
 	})
 	if err != nil {
-		t.Fatalf("--mode images 构建失败: %v", err)
+		t.Fatalf("build images 构建失败: %v", err)
 	}
-	if res.BundleName != "pixiu-images-ubuntu-22.04-amd64-v1.27.3" {
-		t.Errorf("指定 OS 时 BundleName = %q", res.BundleName)
+	if res.BundleName != "pixiu-images-amd64-v1.27.3" {
+		t.Errorf("images BundleName = %q, want pixiu-images-amd64-v1.27.3", res.BundleName)
 	}
 	if _, err := os.Stat(res.TarPath); err != nil {
 		t.Errorf("tar.gz 未生成: %v", err)
