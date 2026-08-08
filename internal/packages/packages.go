@@ -178,7 +178,6 @@ func BuildDownloadScript(opts DownloadScriptOpts) string {
 		if opts.CheckCrictl {
 			b.WriteString("if ! dnf list --available cri-tools >/dev/null 2>&1; then touch /out/cri-tools-missing; fi\n")
 		}
-		b.WriteString("chmod -R a+rX " + opts.ArchiveDir + "\n")
 	case "yum": // CentOS 7 等无 dnf，仅 yum。源配置与 dnf 相同（/etc/yum.repos.d/ + rpm --import）。
 		b.WriteString("set -e\n")
 		// CentOS 7 已 EOL，官方 mirrorlist 源不可解析，先切换到 vault 归档源（非 CentOS 7 该片段不生效）。
@@ -195,7 +194,6 @@ func BuildDownloadScript(opts DownloadScriptOpts) string {
 		if opts.CheckCrictl {
 			b.WriteString("if ! yum list --available cri-tools >/dev/null 2>&1; then touch /out/cri-tools-missing; fi\n")
 		}
-		b.WriteString("chmod -R a+rX " + opts.ArchiveDir + "\n")
 	default: // apt
 		b.WriteString("set -e\nexport DEBIAN_FRONTEND=noninteractive\n")
 		b.WriteString("apt-get update\n")
@@ -209,7 +207,6 @@ func BuildDownloadScript(opts DownloadScriptOpts) string {
 		if opts.CheckCrictl {
 			b.WriteString("if ! apt-cache policy cri-tools 2>/dev/null | grep -Eq 'Candidate: [0-9]'; then touch /out/cri-tools-missing; fi\n")
 		}
-		b.WriteString("chmod -R a+rX " + opts.ArchiveDir + "\n")
 	}
 	return b.String()
 }
