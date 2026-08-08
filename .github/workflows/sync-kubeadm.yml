@@ -1,0 +1,20 @@
+name: sync kubeadm command
+
+on:
+  schedule:
+    # 每天北京时间 01:00（UTC 17:00）执行一次
+    - cron: '0 17 * * *'
+  workflow_dispatch: # 保留手动触发
+
+env:
+  GO_VERSION: '1.25.0'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: sync kubeadm command
+        run: go run cmd/builder/main.go sync-kubeadm --all --configFile builder.yaml --github-owner ${{ secrets.OWNER }} --github-repo ${{ secrets.REPO }}  --github-token ${{ secrets.TOKEN }}

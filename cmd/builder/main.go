@@ -11,9 +11,11 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"syscall"
 
 	"github.com/spf13/cobra"
+	"golang.org/x/sync/errgroup"
 
 	"github.com/google/go-containerregistry/pkg/crane"
 
@@ -55,10 +57,20 @@ var (
 
 // upload kubeadm 子命令 flags
 var (
-	uploadKubeadmVersion string
-	uploadKubeadmArch    string
-	uploadKubeadmOutDir  string
+	syncKubeadmVersion string
+	syncKubeadmArch    string
+	syncKubeadmOutDir  string
+	syncKubeadmAll     bool
 )
+
+// kubeadmSyncMinVersion --all 模式下同步的最低正式 k8s 版本（含）。
+const kubeadmSyncMinVersion = "v1.31.0"
+
+// kubeadmSyncConcurrency --all 模式下下载/上传的最大并发数。
+const kubeadmSyncConcurrency = 10
+
+const kubernetesGitHubOwner = "kubernetes"
+const kubernetesGitHubRepo = "kubernetes"
 
 // verify 子命令 flags
 var verifyBundle string
@@ -120,7 +132,7 @@ func newRootCmd() *cobra.Command {
 
 	root.AddCommand(newBuildCmd())
 	root.AddCommand(newUploadCmd())
-	root.AddCommand(newUploadKubeadmCmd())
+	root.AddCommand(newSyncKubeadmCmd())
 	root.AddCommand(newServeCmd())
 	root.AddCommand(newListOSCmd())
 	root.AddCommand(newListK8sCmd())
@@ -168,7 +180,7 @@ func newBuildCmd() *cobra.Command {
 func addGitHubFlags(cmd *cobra.Command) {
 	cmd.Flags().StringVar(&githubOwner, "github-owner", "", "GitHub 仓库所有者（覆盖配置文件 github.owner）")
 	cmd.Flags().StringVar(&githubRepo, "github-repo", "", "GitHub 仓库名（覆盖配置文件 github.repo）")
-	cmd.Flags().StringVar(&githubTag, "github-tag", "", "GitHub Release tag（覆盖配置文件 github.tag；build 时默认用 --kubernetes-version）")
+	cmd.Flags().StringVar(&githubTag, "github-tag", "", "GitHub Release tag（覆盖配置文件 github.tag；为空时复用 --kubernetes-version）")
 	cmd.Flags().StringVar(&githubToken, "github-token", "", "GitHub token（覆盖配置文件 github.token；也可用环境变量 GITHUB_TOKEN/GH_TOKEN）")
 }
 
@@ -452,55 +464,184 @@ func newUploadCmd() *cobra.Command {
 	return cmd
 }
 
-func newUploadKubeadmCmd() *cobra.Command {
+func newSyncKubeadmCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "upload-kubeadm",
-		Short: "下载 kubeadm 二进制并上传到 GitHub Release",
-		Example: `  builder upload-kubeadm --kubernetes-version v1.31.6 --arch amd64 --github-owner acme --github-repo builder
-  builder upload-kubeadm --kubernetes-version v1.31.6 --arch amd64 --out-dir ./dist --github-tag v1.31.6`,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			cfg, err := config.Load(configFile)
-			if err != nil {
-				return err
-			}
-			if uploadKubeadmVersion == "" {
-				return fmt.Errorf("缺少 --kubernetes-version")
-			}
-			if !cfg.ValidK8s(uploadKubeadmVersion) {
-				return fmt.Errorf("非法的 k8s 版本格式: %s（期望形如 v1.31.6）", uploadKubeadmVersion)
-			}
-			if !config.ValidArch(uploadKubeadmArch) {
-				return fmt.Errorf("不支持的架构 %s（可选 amd64/arm64）", uploadKubeadmArch)
-			}
+		Use:   "sync-kubeadm",
+		Short: "创建以 k8s 版本为名的 GitHub Release，并上传对应 kubeadm 二进制",
+		Long: `为指定（或批量）k8s 正式版本创建 GitHub Release（名称=版本号），并下载/上传 kubeadm 二进制。
 
-			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-			defer stop()
-
-			githubOpts := mergeGitHubOptions(cfg.GitHub, githubOwner, githubRepo, githubTag, githubToken)
-			fmt.Printf("确保 GitHub Release 存在: %s/%s@%s\n", githubOpts.Owner, githubOpts.Repo, effectiveGitHubTag(cfg, uploadKubeadmVersion))
-			if err := ensureGitHubRelease(ctx, cfg, uploadKubeadmVersion); err != nil {
-				return err
-			}
-
-			if err := os.MkdirAll(uploadKubeadmOutDir, 0o755); err != nil {
-				return fmt.Errorf("创建输出目录失败 %s: %w", uploadKubeadmOutDir, err)
-			}
-			name := fmt.Sprintf("kubeadm-%s-linux-%s", uploadKubeadmVersion, uploadKubeadmArch)
-			path := filepath.Join(uploadKubeadmOutDir, name)
-			u := kubeadmDownloadURL(uploadKubeadmVersion, uploadKubeadmArch)
-			fmt.Printf("下载 kubeadm: %s → %s\n", u, path)
-			if err := downloadFile(ctx, u, path, 0o755); err != nil {
-				return err
-			}
-			fmt.Printf("下载完成: %s\n", path)
-			return uploadGitHubArtifacts(ctx, cfg, []string{path}, uploadKubeadmVersion)
-		},
+默认（--all=false）：为 --kubernetes-version 创建 Release（--github-tag 为空时复用该版本），再下载并上传 kubeadm。
+--all=true：对比 kubernetes/kubernetes 正式 tag（>= v1.31.0，排除 -rc/-alpha/-beta）与本仓库已有 Release，
+补齐缺失的 Release，并在 kubeadm 资产缺失时下载上传。`,
+		Example: `  builder sync-kubeadm --kubernetes-version v1.31.6 --arch amd64 --github-owner acme --github-repo builder
+  builder sync-kubeadm --kubernetes-version v1.31.6 --arch amd64 --out-dir ./dist
+  builder sync-kubeadm --all --arch amd64 --github-owner acme --github-repo builder`,
+		RunE: runSyncKubeadm,
 	}
-	cmd.Flags().StringVar(&uploadKubeadmVersion, "kubernetes-version", "", "k8s 版本（如 v1.31.6，必填）")
-	cmd.Flags().StringVar(&uploadKubeadmArch, "arch", "amd64", "目标架构（amd64/arm64）")
-	cmd.Flags().StringVar(&uploadKubeadmOutDir, "out-dir", "./dist", "kubeadm 下载输出目录")
+	cmd.Flags().StringVar(&syncKubeadmVersion, "kubernetes-version", "", "k8s 版本（如 v1.31.6；--all 时可省略）")
+	cmd.Flags().StringVar(&syncKubeadmArch, "arch", "amd64", "目标架构（amd64/arm64）")
+	cmd.Flags().StringVar(&syncKubeadmOutDir, "out-dir", "./dist", "kubeadm 下载输出目录")
+	cmd.Flags().BoolVar(&syncKubeadmAll, "all", false, "同步全部 >= v1.31.0 的正式 k8s 版本 Release 与 kubeadm 资产")
 	addGitHubFlags(cmd)
 	return cmd
+}
+
+func runSyncKubeadm(cmd *cobra.Command, args []string) error {
+	cfg, err := config.Load(configFile)
+	if err != nil {
+		return err
+	}
+	if !config.ValidArch(syncKubeadmArch) {
+		return fmt.Errorf("不支持的架构 %s（可选 amd64/arm64）", syncKubeadmArch)
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	if syncKubeadmAll {
+		return syncKubeadmAllVersions(ctx, cfg)
+	}
+	return syncKubeadmOneVersion(ctx, cfg)
+}
+
+func syncKubeadmOneVersion(ctx context.Context, cfg *config.Config) error {
+	if syncKubeadmVersion == "" {
+		return fmt.Errorf("缺少 --kubernetes-version（或使用 --all）")
+	}
+	if !cfg.ValidK8s(syncKubeadmVersion) {
+		return fmt.Errorf("非法的 k8s 版本格式: %s（期望形如 v1.31.6）", syncKubeadmVersion)
+	}
+	// --github-tag 为空时复用 --kubernetes-version。
+	tag := effectiveGitHubTag(cfg, syncKubeadmVersion)
+	return ensureReleaseAndSyncKubeadm(ctx, cfg, syncKubeadmVersion, tag)
+}
+
+func syncKubeadmAllVersions(ctx context.Context, cfg *config.Config) error {
+	opts := mergeGitHubOptions(cfg.GitHub, githubOwner, githubRepo, githubTag, githubToken)
+	if err := opts.ValidateRepo(); err != nil {
+		return err
+	}
+
+	fmt.Printf("列出 GitHub Release: %s/%s\n", opts.Owner, opts.Repo)
+	releases, err := ghupload.ListReleases(ctx, opts)
+	if err != nil {
+		return err
+	}
+	relByTag := make(map[string]ghupload.ReleaseInfo, len(releases))
+	for _, r := range releases {
+		relByTag[r.Tag] = r
+	}
+	fmt.Printf("已有 Release: %d 个\n", len(relByTag))
+
+	fmt.Printf("列出 kubernetes/kubernetes 正式 tag（>= %s）...\n", kubeadmSyncMinVersion)
+	allTags, err := ghupload.ListTags(ctx, opts, kubernetesGitHubOwner, kubernetesGitHubRepo)
+	if err != nil {
+		return err
+	}
+	versions, err := config.FilterStableK8sTags(allTags, kubeadmSyncMinVersion)
+	if err != nil {
+		return err
+	}
+	if len(versions) == 0 {
+		return fmt.Errorf("未找到 >= %s 的正式 k8s tag", kubeadmSyncMinVersion)
+	}
+	fmt.Printf("待同步正式版本: %d 个（%s … %s）\n", len(versions), versions[0], versions[len(versions)-1])
+
+	var missingReleases []string
+	for _, ver := range versions {
+		if _, ok := relByTag[ver]; !ok {
+			missingReleases = append(missingReleases, ver)
+		}
+	}
+	if len(missingReleases) == 0 {
+		fmt.Println("需要新增的 Release: 无")
+	} else {
+		fmt.Printf("需要新增的 Release（%d）:\n", len(missingReleases))
+		for _, name := range missingReleases {
+			fmt.Printf("  - %s\n", name)
+		}
+	}
+
+	var toSync []string
+	var skipped int
+	for _, ver := range versions {
+		asset := kubeadmAssetName(ver, syncKubeadmArch)
+		if rel, ok := relByTag[ver]; ok && rel.HasAsset(asset) {
+			fmt.Printf("[skip] %s 已有 Release 与 asset %s\n", ver, asset)
+			skipped++
+			continue
+		}
+		toSync = append(toSync, ver)
+	}
+	if len(toSync) == 0 {
+		fmt.Printf("同步完成：新建/补齐 0，跳过 %d，其中新建 Release %d\n", skipped, len(missingReleases))
+		return nil
+	}
+
+	if err := os.MkdirAll(syncKubeadmOutDir, 0o755); err != nil {
+		return fmt.Errorf("创建输出目录失败 %s: %w", syncKubeadmOutDir, err)
+	}
+	fmt.Printf("开始并发同步 %d 个版本（并发=%d）...\n", len(toSync), kubeadmSyncConcurrency)
+
+	g, gctx := errgroup.WithContext(ctx)
+	g.SetLimit(kubeadmSyncConcurrency)
+	var uploaded atomic.Int64
+	for _, ver := range toSync {
+		ver := ver
+		g.Go(func() error {
+			asset := kubeadmAssetName(ver, syncKubeadmArch)
+			fmt.Printf("[sync] %s → 确保 Release 并上传 %s\n", ver, asset)
+			if err := ensureReleaseAndSyncKubeadm(gctx, cfg, ver, ver); err != nil {
+				return fmt.Errorf("同步 %s 失败: %w", ver, err)
+			}
+			uploaded.Add(1)
+			return nil
+		})
+	}
+	if err := g.Wait(); err != nil {
+		return err
+	}
+	fmt.Printf("同步完成：新建/补齐 %d，跳过 %d，其中新建 Release %d\n", uploaded.Load(), skipped, len(missingReleases))
+	return nil
+}
+
+// ensureReleaseAndSyncKubeadm 以 releaseName（通常=k8s 版本）创建/确保 Release，再下载并上传 kubeadm。
+// releaseName 会强制作为 GitHub tag/Release 名，不受配置或 --github-tag 覆盖（调用方已解析好）。
+func ensureReleaseAndSyncKubeadm(ctx context.Context, cfg *config.Config, k8sVersion, releaseName string) error {
+	if releaseName == "" {
+		releaseName = k8sVersion
+	}
+	opts := mergeGitHubOptions(cfg.GitHub, githubOwner, githubRepo, "", githubToken)
+	opts.Tag = releaseName
+	if err := opts.Validate(); err != nil {
+		return err
+	}
+
+	fmt.Printf("确保 GitHub Release 存在: name/tag=%s\n", releaseName)
+	if err := ghupload.EnsureRelease(ctx, opts); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(syncKubeadmOutDir, 0o755); err != nil {
+		return fmt.Errorf("创建输出目录失败 %s: %w", syncKubeadmOutDir, err)
+	}
+	name := kubeadmAssetName(k8sVersion, syncKubeadmArch)
+	path := filepath.Join(syncKubeadmOutDir, name)
+	u := kubeadmDownloadURL(k8sVersion, syncKubeadmArch)
+	fmt.Printf("下载 kubeadm: %s → %s\n", u, path)
+	if err := downloadFile(ctx, u, path, 0o755); err != nil {
+		return err
+	}
+	fmt.Printf("下载完成: %s\n", path)
+
+	fmt.Printf("上传到 GitHub Release %s/%s@%s ...\n", opts.Owner, opts.Repo, opts.Tag)
+	res, err := ghupload.UploadFiles(ctx, opts, []string{path})
+	if err != nil {
+		return err
+	}
+	for _, u := range res {
+		fmt.Printf("  - %s → %s\n", u.LocalPath, u.BrowserURL)
+	}
+	return nil
 }
 
 // collectDirFiles 递归收集 dir 下所有普通文件（跳过目录本身）。

@@ -257,6 +257,59 @@ func TestEnsureReleaseCreatesMissingRelease(t *testing.T) {
 	}
 }
 
+func TestListReleasesAndTags(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/repos/acme/builder/releases", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("page") != "1" {
+			_ = json.NewEncoder(w).Encode([]any{})
+			return
+		}
+		_ = json.NewEncoder(w).Encode([]map[string]any{
+			{
+				"id":       1,
+				"tag_name": "v1.31.0",
+				"assets":   []map[string]any{{"id": 11, "name": "kubeadm-v1.31.0-linux-amd64"}},
+			},
+			{
+				"id":       2,
+				"tag_name": "v1.32.0",
+				"assets":   []any{},
+			},
+		})
+	})
+	mux.HandleFunc("/repos/kubernetes/kubernetes/tags", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("page") != "1" {
+			_ = json.NewEncoder(w).Encode([]any{})
+			return
+		}
+		_ = json.NewEncoder(w).Encode([]map[string]string{
+			{"name": "v1.32.0"},
+			{"name": "v1.31.0-rc.1"},
+			{"name": "v1.31.0"},
+		})
+	})
+
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	opts := Options{Owner: "acme", Repo: "builder", Token: "tok", APIBase: srv.URL, HTTPClient: srv.Client()}
+
+	rels, err := ListReleases(context.Background(), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rels) != 2 || !rels[0].HasAsset("kubeadm-v1.31.0-linux-amd64") || rels[1].HasAsset("x") {
+		t.Fatalf("unexpected releases %#v", rels)
+	}
+
+	tags, err := ListTags(context.Background(), opts, "kubernetes", "kubernetes")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tags) != 3 || tags[0] != "v1.32.0" {
+		t.Fatalf("unexpected tags %#v", tags)
+	}
+}
+
 func TestUploadFilesMissingReleaseDoesNotCreate(t *testing.T) {
 	var gotCreate bool
 	mux := http.NewServeMux()

@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -516,4 +517,82 @@ func K8sMinor(version string) (string, error) {
 		return "", fmt.Errorf("非法 k8s 版本 %q：期望形如 v1.27.3", version)
 	}
 	return "v" + parts[0] + "." + parts[1], nil
+}
+
+// ParseK8sVersion 解析正式版 vX.Y.Z，返回 major/minor/patch。
+func ParseK8sVersion(version string) (major, minor, patch int, err error) {
+	if !k8sVersionRe.MatchString(version) {
+		return 0, 0, 0, fmt.Errorf("非法或不正式的 k8s 版本 %q：期望形如 v1.31.0（不含 -rc/-alpha/-beta）", version)
+	}
+	parts := strings.Split(strings.TrimPrefix(version, "v"), ".")
+	if _, err = fmt.Sscanf(parts[0], "%d", &major); err != nil {
+		return 0, 0, 0, err
+	}
+	if _, err = fmt.Sscanf(parts[1], "%d", &minor); err != nil {
+		return 0, 0, 0, err
+	}
+	if _, err = fmt.Sscanf(parts[2], "%d", &patch); err != nil {
+		return 0, 0, 0, err
+	}
+	return major, minor, patch, nil
+}
+
+// CompareK8sVersion 比较两个正式版：-1(a<b) / 0 / 1(a>b)。
+func CompareK8sVersion(a, b string) (int, error) {
+	am, an, ap, err := ParseK8sVersion(a)
+	if err != nil {
+		return 0, err
+	}
+	bm, bn, bp, err := ParseK8sVersion(b)
+	if err != nil {
+		return 0, err
+	}
+	if am != bm {
+		if am < bm {
+			return -1, nil
+		}
+		return 1, nil
+	}
+	if an != bn {
+		if an < bn {
+			return -1, nil
+		}
+		return 1, nil
+	}
+	if ap < bp {
+		return -1, nil
+	}
+	if ap > bp {
+		return 1, nil
+	}
+	return 0, nil
+}
+
+// FilterStableK8sTags 从 tag 列表中筛出正式版（vX.Y.Z），且版本 >= minVersion（如 v1.31.0），并按版本升序去重。
+func FilterStableK8sTags(tags []string, minVersion string) ([]string, error) {
+	if _, _, _, err := ParseK8sVersion(minVersion); err != nil {
+		return nil, fmt.Errorf("非法最小版本 %s: %w", minVersion, err)
+	}
+	seen := make(map[string]bool)
+	var out []string
+	for _, tag := range tags {
+		tag = strings.TrimSpace(tag)
+		if !k8sVersionRe.MatchString(tag) {
+			continue
+		}
+		cmp, err := CompareK8sVersion(tag, minVersion)
+		if err != nil || cmp < 0 {
+			continue
+		}
+		if seen[tag] {
+			continue
+		}
+		seen[tag] = true
+		out = append(out, tag)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		cmp, _ := CompareK8sVersion(out[i], out[j])
+		return cmp < 0
+	})
+	return out, nil
 }

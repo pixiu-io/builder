@@ -600,6 +600,43 @@ func TestK8sMinor(t *testing.T) {
 	}
 }
 
+func TestFilterStableK8sTags(t *testing.T) {
+	tags := []string{
+		"v1.30.0",
+		"v1.31.0-rc.1",
+		"v1.31.0-alpha.0",
+		"v1.31.0",
+		"v1.31.1",
+		"v1.32.1",
+		"v1.32.1-beta.0",
+		"not-a-version",
+		"v1.31.0", // dup
+	}
+	got, err := FilterStableK8sTags(tags, "v1.31.0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"v1.31.0", "v1.31.1", "v1.32.1"}
+	if len(got) != len(want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("got %v, want %v", got, want)
+		}
+	}
+}
+
+func TestCompareK8sVersion(t *testing.T) {
+	cmp, err := CompareK8sVersion("v1.31.0", "v1.32.1")
+	if err != nil || cmp >= 0 {
+		t.Fatalf("expected <0, got %d err=%v", cmp, err)
+	}
+	if _, err := CompareK8sVersion("v1.31.0-rc.1", "v1.31.0"); err == nil {
+		t.Fatal("pre-release should fail parse")
+	}
+}
+
 func TestBuildOptionsParse(t *testing.T) {
 	content := sampleContent + `
 build:

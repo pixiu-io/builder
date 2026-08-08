@@ -50,7 +50,7 @@ go build -o builder ./cmd/builder
 |------|------|
 | `build` | 构建离线安装包。`--kubernetes-version` 必填（任意 vX.Y.Z；`--only-addons` 时可省略）。`--os` / `--os-version` 在 `--mode all` 或 `packages` 时必填（**任意**取值，不必在 list-os 中；未登记时构建镜像默认为 `{os}:{os-version}`）；`--mode images` 时可省略。可选：`--arch`（amd64/arm64，默认 amd64）、`--mirror`、`--mode`、`--workdir`、`--out`、`--skip-addons`、`--only-addons`、`--dry-run`、`--keep-files`、`--upload`、`--github-*` 等。核心软件包/镜像始终使用默认清单，自定义能力由配置 `addon_packages` / `addon_images` + `--mode` + `--only-addons` / `--skip-addons` 提供（见下文"自定义附加组件"）。所有 build 参数均可在配置文件 `build` 节预设（优先级：命令行 > 配置 > 内置默认值），见下文"build 参数配置化" |
 | `upload` | 将已有产物 tar.gz 上传到 GitHub Release。`--file` 可重复；`--github-*` 覆盖配置节 |
-| `upload-kubeadm` | 下载指定版本/架构的 kubeadm 二进制，并上传到 GitHub Release |
+| `sync-kubeadm` | 创建以 k8s 版本为名的 GitHub Release，并上传 kubeadm 二进制。默认单版本；`--all` 同步全部 >= v1.31.0 的正式版本 |
 | `serve` | 加载离线产物，提供本地 OCI registry（`docker pull` 短名）与 yum/dnf/apt HTTP 软件源（纯 Go，无外部工具依赖） |
 | `list-os` | 列出参考 OS / 版本（builder.yaml；实际 build 不限于此列表） |
 | `list-k8s` | 列出支持的 k8s 版本（含记录用运行时版本） |
@@ -246,15 +246,18 @@ export GITHUB_TOKEN=ghp_xxx
 ./builder upload --file ./dist/a.tar.gz \
   --github-owner acme --github-repo builder --github-tag v1.27.3
 
-# 下载 kubeadm 并上传到 Release（tag 默认 = kubernetes 版本）
-./builder upload-kubeadm --kubernetes-version v1.31.6 --arch amd64 \
+# 创建名为 v1.31.6 的 Release，下载并上传 kubeadm（--github-tag 为空时复用 --kubernetes-version）
+./builder sync-kubeadm --kubernetes-version v1.31.6 --arch amd64 \
   --github-owner acme --github-repo builder
+
+# 同步全部 >= v1.31.0 的正式 k8s 版本：补齐缺失 Release，并上传缺失的 kubeadm 资产
+./builder sync-kubeadm --all --arch amd64 --github-owner acme --github-repo builder
 
 # build 生成核心镜像清单时会从 GitHub Release asset 获取 kubeadm
 ./builder build --os ubuntu --os-version 22.04 --kubernetes-version v1.31.6 --arch amd64
 ```
 
-行为说明：`build --upload` 与 `upload` 会在目标 tag 的 Release 不存在时自动创建；`upload-kubeadm` 在下载前先确保 Release 存在。上传同名 asset 已存在时会先删除再上传。Token 需具备 `contents: write`（经典 PAT 用 `repo`）权限。
+行为说明：`sync-kubeadm` 创建的 Release 名称即为 k8s 版本号；`--github-tag` 为空时复用 `--kubernetes-version`。`--all` 会查询本仓库 Release 列表与 `kubernetes/kubernetes` 正式 tag（排除 `-rc`/`-alpha`/`-beta`），确保 >= v1.31.0 的版本均有 Release，并在 kubeadm 资产缺失时下载上传；已存在则跳过。`build --upload` / `upload` 在目标 Release 不存在时也会自动创建。Token 需具备 `contents: write`（经典 PAT 用 `repo`）权限。
 
 ## 离线源服务（`serve`）
 
@@ -332,7 +335,7 @@ apt-get update && apt-get install kubeadm
 
 仓库地址需保证可访问且存在对应版本的 k8s 镜像；软件包源不受 `--mirror` 影响（k8s 组件源与 containerd 源由各自配置决定，见上文"软件源与包下载"）。
 
-**kubeadm 二进制获取**（生成核心镜像清单用）：`build` 会先检查 `--kubeadm-dir`（默认 `./kube`）下是否存在 `kubeadm-{k8s版本}-linux-{架构}`。若存在则直接 `chmod 755` 后复用；若不存在，再按同名规则从配置的 GitHub Release assets 下载并保存到该目录。例如 `--kubernetes-version v1.31.6 --arch amd64` 对应本地文件 / asset `kubeadm-v1.31.6-linux-amd64`。请先执行 `upload-kubeadm` 上传该资产；若 Release 或 asset 不存在，build 会在镜像阶段前报错。
+**kubeadm 二进制获取**（生成核心镜像清单用）：`build` 会先检查 `--kubeadm-dir`（默认 `./kube`）下是否存在 `kubeadm-{k8s版本}-linux-{架构}`。若存在则直接 `chmod 755` 后复用；若不存在，再按同名规则从配置的 GitHub Release assets 下载并保存到该目录。例如 `--kubernetes-version v1.31.6 --arch amd64` 对应本地文件 / asset `kubeadm-v1.31.6-linux-amd64`。请先执行 `sync-kubeadm` 上传该资产；若 Release 或 asset 不存在，build 会在镜像阶段前报错。
 
 ## 安装（目标机使用）
 
