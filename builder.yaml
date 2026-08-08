@@ -164,7 +164,7 @@ addon_packages:
 # tag 为空时，build --upload 默认使用 --kubernetes-version。
 # 对应 Release 必须已存在；上传不会自动创建 Release。
 github:
-  owner: "xiaoshuaai"                   # 仓库所有者（或通过 --github-owner 覆盖）
-  repo: "builder"                    # 仓库名（或通过 --github-repo 覆盖）
-  tag: "v1.31.6"                     # Release tag，如 v1.27.3（或通过 --github-tag 覆盖）
+  owner: ""                   # 仓库所有者（或通过 --github-owner 覆盖）
+  repo: ""                    # 仓库名（或通过 --github-repo 覆盖）
+  tag: ""                     # Release tag，如 v1.27.3（或通过 --github-tag 覆盖）
   token: ""                   # GitHub PAT（建议用环境变量 GITHUB_TOKEN / GH_TOKEN，勿明文写入）
