@@ -258,7 +258,7 @@ func Build(ctx context.Context, opts Options) (*Result, error) {
 	}
 
 	// WorkDir/OutDir 转绝对路径：docker -v 挂载宿主机目录必须是绝对路径，
-	// 相对路径（如 "./work" → work/pixiu-offline-.../packages）会被 docker 当作
+	// 相对路径（如 "./work" → work/pixiu-.../packages）会被 docker 当作
 	// 本地 volume 名校验而失败（含 "/" 非法）。统一转绝对路径也避免其他相对路径问题。
 	if abs, err := filepath.Abs(opts.WorkDir); err != nil {
 		return nil, fmt.Errorf("解析 WorkDir 绝对路径失败: %w", err)
@@ -280,6 +280,8 @@ func Build(ctx context.Context, opts Options) (*Result, error) {
 	switch {
 	case opts.Mode == "images" && osOmitted:
 		bundleName = ImagesBundleName(opts.Arch, opts.K8sVersion)
+	case opts.Mode == "images":
+		bundleName = ImagesOSBundleName(opts.OS, opts.OSVersion, opts.Arch, opts.K8sVersion)
 	case opts.Mode == "packages":
 		bundleName = PackagesBundleName(opts.OS, opts.OSVersion, opts.Arch, opts.K8sVersion)
 	default:
@@ -295,7 +297,7 @@ func Build(ctx context.Context, opts Options) (*Result, error) {
 		return nil, err
 	}
 	buildImage := osDef.BuildImage
-	// k8s 大版本仅在指定了 k8s 版本时推导（pkgs.k8s.io 仓库路径）。
+	// k8s 大版本仅在指定了 k8s 版本时推导（Kubernetes 包源路径）。
 	// --only-addons 且未指定 k8s 版本时不构建 k8s 核心，无需推导；下游 K8sRepos 对空值自带保底默认。
 	var k8sMinor string
 	if opts.K8sVersion != "" {
@@ -520,7 +522,7 @@ func Build(ctx context.Context, opts Options) (*Result, error) {
 	if opts.Mode == "all" {
 		// all：拆成两个独立 bundle（packages / images），各自带脚本与 manifest
 		pkgName := PackagesBundleName(opts.OS, opts.OSVersion, opts.Arch, opts.K8sVersion)
-		imgName := ImagesOfflineBundleName(opts.OS, opts.OSVersion, opts.Arch, opts.K8sVersion)
+		imgName := ImagesOSBundleName(opts.OS, opts.OSVersion, opts.Arch, opts.K8sVersion)
 		pkgDir := filepath.Join(opts.WorkDir, pkgName)
 		imgDir := filepath.Join(opts.WorkDir, imgName)
 		if err := materializeSplitBundle(bundleDir, pkgDir, []string{"packages"}, meta); err != nil {
@@ -614,17 +616,19 @@ type packTarget struct {
 
 // BundleName 生成完整/单模式 bundle 目录名。
 func BundleName(osName, osVer, arch, k8sVer string) string {
-	return fmt.Sprintf("pixiu-offline-%s-%s-%s-%s", osName, osVer, arch, k8sVer)
+	return fmt.Sprintf("pixiu-%s-%s-%s-%s", osName, osVer, arch, k8sVer)
 }
 
 // PackagesBundleName 软件包产物名（单模式 packages 与 --mode all 拆分统一）：
-// pixiu-offline-packages-{os}-{osver}-{arch}-{k8s}。
+// pixiu-packages-{os}-{osver}-{arch}-{k8s}。
 func PackagesBundleName(osName, osVer, arch, k8sVer string) string {
-	return fmt.Sprintf("pixiu-offline-packages-%s-%s-%s-%s", osName, osVer, arch, k8sVer)
+	return fmt.Sprintf("pixiu-packages-%s-%s-%s-%s", osName, osVer, arch, k8sVer)
 }
 
-func ImagesOfflineBundleName(osName, osVer, arch, k8sVer string) string {
-	return BundleName(osName, osVer, arch, k8sVer) + "-images"
+// ImagesOSBundleName 指定 OS 的镜像产物名（单模式 images 且指定 OS，与 --mode all 拆分统一）：
+// pixiu-images-{os}-{osver}-{arch}-{k8s}。
+func ImagesOSBundleName(osName, osVer, arch, k8sVer string) string {
+	return fmt.Sprintf("pixiu-images-%s-%s-%s-%s", osName, osVer, arch, k8sVer)
 }
 
 // materializeSplitBundle 从合并构建目录复制指定子目录 + install，并生成独立 manifest。
@@ -696,7 +700,7 @@ func copyDir(src, dst string) error {
 
 // ImagesBundleName 生成仅镜像模式（未指定 OS）的 bundle 目录名。
 func ImagesBundleName(arch, k8sVer string) string {
-	return fmt.Sprintf("pixiu-offline-images-%s-%s", arch, k8sVer)
+	return fmt.Sprintf("pixiu-images-%s-%s", arch, k8sVer)
 }
 
 // defaultBuildOS 为 --mode images 未指定 OS 时挑选默认构建容器发行版。
@@ -806,7 +810,7 @@ func Verify(bundle string) (*manifest.Manifest, error) {
 			return nil, fmt.Errorf("目录 %s 下未找到 manifest.yaml", bundle)
 		}
 	} else if strings.HasSuffix(bundle, ".tar.gz") {
-		tmpDir, err = os.MkdirTemp("", "pixiu-offline-verify-*")
+		tmpDir, err = os.MkdirTemp("", "pixiu-verify-*")
 		if err != nil {
 			return nil, fmt.Errorf("创建临时目录失败: %w", err)
 		}

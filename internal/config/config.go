@@ -13,7 +13,7 @@ import (
 )
 
 // Config 聚合清单配置（oses / versions / addon_images / addon_packages）、
-// 可选 COS 上传配置与 build 默认参数。
+// 可选 GitHub Release 上传配置与 build 默认参数。
 // OSRegistry / K8sVersions / AddonImages 以 inline 展开，使单文件顶层键直接映射。
 type Config struct {
 	OSRegistry  OSRegistry  `yaml:",inline"`
@@ -24,7 +24,7 @@ type Config struct {
 	// 每项为 {name, version} 对象；version 为空 = 不锁版本（透传纯包名），
 	// version 非空按目标包管理器语法转译（apt: name=version；dnf: name-version）。
 	AddonPackages []AddonPackage `yaml:"addon_packages"`
-	Cos           CosConfig      `yaml:"cos"`
+	GitHub        GitHubConfig   `yaml:"github"`
 	// Build build 子命令默认参数（优先级：命令行 > 配置 > 内置默认值）。
 	Build BuildOptions `yaml:"build"`
 
@@ -52,23 +52,17 @@ type BuildOptions struct {
 	KeepFiles bool `yaml:"keep_files"`
 	// Verbose 打印详细过程日志（镜像下载/pull 进度等）；默认 false=精简输出。
 	Verbose bool `yaml:"verbose"`
-	// KubeadmMode kubeadm 获取模式：local=本地下载（默认）/ remote=ssh 远端下载+拷回。
-	KubeadmMode string `yaml:"kubeadm_mode"`
-	// KubeadmRemoteHost remote 模式远端服务器（user@host，免密登录）。
-	KubeadmRemoteHost string `yaml:"kubeadm_remote_host"`
-	// KubeadmRemotePath remote 模式远端缓存目录，默认 ~/.builder-kubeadm（含 {version}/{arch} 子目录）。
-	KubeadmRemotePath string `yaml:"kubeadm_remote_path"`
+	// KubeadmDir kubeadm 二进制缓存目录，默认 ./kube。
+	KubeadmDir string `yaml:"kubeadm_dir"`
 }
 
-// CosConfig 产物上传到腾讯云 COS 的参数。
-// bucket 需为「桶名-appid」格式（如 mybucket-1250000000），region 如 ap-guangzhou。
-// 凭证：secret_id / secret_key（腾讯云 API 密钥，对应 cos 节）。
-type CosConfig struct {
-	Bucket    string `yaml:"bucket"`
-	Region    string `yaml:"region"`
-	SecretID  string `yaml:"secret_id"`
-	SecretKey string `yaml:"secret_key"`
-	Prefix    string `yaml:"prefix"`
+// GitHubConfig 产物上传到 GitHub Release 的参数。
+// token 建议用环境变量 GITHUB_TOKEN / GH_TOKEN，避免明文写入配置文件。
+type GitHubConfig struct {
+	Owner string `yaml:"owner"`
+	Repo  string `yaml:"repo"`
+	Tag   string `yaml:"tag"`
+	Token string `yaml:"token"`
 }
 
 // OSRegistry 操作系统注册表。
@@ -89,15 +83,16 @@ type OS struct {
 	Codename string `yaml:"codename"`
 	// Codenames apt 系版本 → 版本代号映射（ubuntu 20.04→focal、22.04→jammy…）。
 	Codenames map[string]string `yaml:"codenames"`
-	// RPMDistro dnf/yum 系发行版标识，用于 containerd 官方 rpm 源（rocky→rhel9、openEuler→rhel7）。
+	// RPMDistro dnf/yum 系发行版标识，用于 containerd dnf 源（rocky→rhel9、openEuler→rhel7）。
 	RPMDistro string `yaml:"rpm_distro"`
 	// ContainerdPkg containerd 软件包包名；留空时按发行版推断（ResolveOS）：
-	// openEuler 等从系统源安装的发行版推断为 "containerd"，其余默认 "containerd.io"（docker 源包名）。
+	// openEuler 等从系统源安装的发行版推断为 "containerd"，其余默认 "containerd.io"（docker-ce 源包名）。
 	// 显式配置（如 openEuler 系统源包名 "containerd"）优先于推断。
 	ContainerdPkg string `yaml:"containerd_pkg"`
-	// ContainerdRepo containerd 源类型：docker=download.docker.com 官方源（默认）；
-	// none=不配置 docker 源，containerd 由系统源（everything 等）提供。
-	// 留空时按发行版推断（ResolveOS）：openEuler 推断为 none，其余默认 docker。
+	// ContainerdRepo containerd 源类型：aliyun=阿里云 mirrors.aliyun.com/docker-ce（默认）；
+	// ustc=中科大 mirrors.ustc.edu.cn/docker-ce；docker=官方 download.docker.com（可选）；
+	// none=不配置 docker-ce 源，containerd 由系统源（everything 等）提供。
+	// 留空时按发行版推断（ResolveOS）：openEuler 推断为 none，其余默认 aliyun。
 	ContainerdRepo string `yaml:"containerd_repo"`
 }
 
@@ -279,7 +274,7 @@ type ResolvedOS struct {
 	RPMDistro  string
 	// ContainerdPkg containerd 软件包包名（未配置时按发行版推断：openEuler→containerd；其他→containerd.io）。
 	ContainerdPkg string
-	// ContainerdRepo containerd 源（未配置时按发行版推断：openEuler→none；其他→docker）。
+	// ContainerdRepo containerd 源（未配置时按发行版推断：openEuler→none；其他→aliyun）。
 	ContainerdRepo string
 	// FromRegistry 是否命中 builder.yaml oses 节（仅版本未登记时仍可能为 true）。
 	FromRegistry bool
@@ -298,7 +293,7 @@ func (c *Config) ResolveOS(name, version string) (*ResolvedOS, error) {
 		Name:           name,
 		Version:        version,
 		ContainerdPkg:  "containerd.io",
-		ContainerdRepo: "docker",
+		ContainerdRepo: "aliyun",
 	}
 	if osDef, ok := c.FindOS(name); ok {
 		res.FromRegistry = true
@@ -338,13 +333,15 @@ func (c *Config) ResolveOS(name, version string) (*ResolvedOS, error) {
 	return res, nil
 }
 
+const defaultBuildImageRegistry = "swr.cn-north-4.myhuaweicloud.com/pixiu-public"
+
 // DefaultBuildImage 按发行版约定生成构建容器镜像引用。
 func DefaultBuildImage(osName, version string) string {
 	switch strings.ToLower(osName) {
 	case "openeuler":
-		return "openeuler/openeuler:" + version
+		return defaultBuildImageRegistry + "/openeuler/openeuler:" + version
 	default:
-		return osName + ":" + version
+		return defaultBuildImageRegistry + "/" + osName + ":" + version
 	}
 }
 
@@ -418,7 +415,7 @@ func InferRPMDistro(osName, version string) string {
 
 // InferContainerdPkg 按发行版推断 containerd 软件包包名：
 // openEuler 从系统源（everything 仓库）安装，包名为 "containerd"；
-// 其余发行版从 docker 官方源安装，包名为 "containerd.io"。
+// 其余发行版从 docker-ce 源安装，包名为 "containerd.io"。
 // 仅当 builder.yaml 未显式配置 containerd_pkg 时生效（显式配置优先）。
 func InferContainerdPkg(osName string) string {
 	if strings.ToLower(osName) == "openeuler" {
@@ -429,13 +426,13 @@ func InferContainerdPkg(osName string) string {
 
 // InferContainerdRepo 按发行版推断 containerd 源类型：
 // openEuler 对应 download.docker.com/linux/rhel/7/ 实测 404（docker 官方已停止发布 RHEL7 仓库），
-// 返回 "none"（不配置 docker 源，由系统源提供）；其余发行版返回 "docker"（官方源默认）。
+// 返回 "none"（不配置 docker-ce 源，由系统源提供）；其余发行版返回 "aliyun"（国内镜像默认）。
 // 仅当 builder.yaml 未显式配置 containerd_repo 时生效（显式配置优先）。
 func InferContainerdRepo(osName string) string {
 	if strings.ToLower(osName) == "openeuler" {
 		return "none"
 	}
-	return "docker"
+	return "aliyun"
 }
 
 // k8sVersionRe 合法 k8s 版本格式：vX.Y.Z（如 v1.31.0、v1.29.5）。
@@ -511,7 +508,7 @@ func (c *Config) RPMDistroFor(osName string) string {
 	return InferRPMDistro(osName, "")
 }
 
-// K8sMinor 从 k8s 版本（如 v1.27.3）推导 pkgs.k8s.io 大版本 repo（如 v1.27）。
+// K8sMinor 从 k8s 版本（如 v1.27.3）推导 Kubernetes 包源大版本 repo（如 v1.27）。
 func K8sMinor(version string) (string, error) {
 	trimmed := strings.TrimPrefix(version, "v")
 	parts := strings.Split(trimmed, ".")

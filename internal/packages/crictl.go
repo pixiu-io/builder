@@ -14,7 +14,7 @@ import (
 // 下载 crictl 静态 tar 并放入 destDir/runtime 之外的 destDir 中（调用方传入
 // OutDir/runtime）。
 //
-// 例外说明：pkgs.k8s.io 与 download.docker.com 源内通常不存在 cri-tools 包，
+// 例外说明：Kubernetes 源与 docker-ce 源内通常不存在 cri-tools 包，
 // 因此这是包模式的兜底方案（代码注释与 README 均已标注该例外）。
 func FetchCrictlFallback(ctx context.Context, crictlVersion, arch, destDir, baseURL string) (FileInfo, error) {
 	if crictlVersion == "" {

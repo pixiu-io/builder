@@ -11,14 +11,14 @@ func TestK8sRepos(t *testing.T) {
 		t.Fatalf("期望 1 个 repo，实际 %d", len(repos))
 	}
 	r := repos[0]
-	// 软件包仓库仍指向目标小版本；签名密钥改从已续期的 v1.31 拉取（规避 EXPKEYSIG）
+	// apt 软件包仓库指向阿里云目标小版本；签名密钥从阿里云 v1.31 拉取（规避旧版密钥过期与 EXPKEYSIG）
 	for _, want := range []string{
-		"https://pkgs.k8s.io/core:/stable:/v1.27/deb/ /",
+		"https://mirrors.aliyun.com/kubernetes-new/core/stable/v1.27/deb/ /",
 		"kubernetes-apt-keyring.gpg",
-		"https://pkgs.k8s.io/core:/stable:/v1.31/deb/Release.key",
+		"https://mirrors.aliyun.com/kubernetes-new/core/stable/v1.31/deb/Release.key",
 		"[kubernetes]",
-		"https://pkgs.k8s.io/core:/stable:/v1.27/rpm/",
-		"https://pkgs.k8s.io/core:/stable:/v1.31/rpm/repodata/repomd.xml.key",
+		"https://mirrors.aliyun.com/kubernetes-new/core/stable/v1.27/rpm/",
+		"https://mirrors.aliyun.com/kubernetes-new/core/stable/v1.31/rpm/repodata/repomd.xml.key",
 	} {
 		if !strings.Contains(r.AptLine+r.AptKeyURL+r.DnfRepoBlock+r.DnfKeyURL, want) {
 			t.Errorf("k8s repo 缺少 %q\nAptKeyURL=%s\nDnfKeyURL=%s", want, r.AptKeyURL, r.DnfKeyURL)
@@ -42,32 +42,56 @@ func TestK8sRepos(t *testing.T) {
 }
 
 func TestContainerdRepos(t *testing.T) {
-	repos := ContainerdRepos("ubuntu", "jammy", "rhel9")
+	// 默认 aliyun（国内镜像 mirrors.aliyun.com/docker-ce）
+	repos := ContainerdRepos("ubuntu", "jammy", "rhel9", "aliyun")
 	if len(repos) != 1 {
 		t.Fatalf("期望 1 个 repo，实际 %d", len(repos))
 	}
 	r := repos[0]
 	for _, want := range []string{
-		"https://download.docker.com/linux/ubuntu jammy stable",
+		"https://mirrors.aliyun.com/docker-ce/linux/ubuntu jammy stable",
 		"containerd-apt-keyring.gpg",
-		"https://download.docker.com/linux/ubuntu/gpg",
+		"https://mirrors.aliyun.com/docker-ce/linux/ubuntu/gpg",
 		"[docker-ce-stable]",
-		"https://download.docker.com/linux/rhel/9/$basearch/stable",
-		"https://download.docker.com/linux/rhel/gpg",
+		"https://mirrors.aliyun.com/docker-ce/linux/centos/9/$basearch/stable",
+		"https://mirrors.aliyun.com/docker-ce/linux/centos/gpg",
 	} {
 		if !strings.Contains(r.AptLine+r.AptKeyURL+r.DnfRepoBlock+r.DnfKeyURL, want) {
 			t.Errorf("containerd repo 缺少 %q", want)
 		}
 	}
 
-	debian := ContainerdRepos("debian", "bookworm", "")
-	if !strings.Contains(debian[0].AptLine, "https://download.docker.com/linux/debian bookworm stable") {
-		t.Errorf("debian 源异常: %q", debian[0].AptLine)
+	// ustc（中科大 mirrors.ustc.edu.cn/docker-ce）
+	ustc := ContainerdRepos("ubuntu", "noble", "", "ustc")
+	for _, want := range []string{
+		"https://mirrors.ustc.edu.cn/docker-ce/linux/ubuntu noble stable",
+		"https://mirrors.ustc.edu.cn/docker-ce/linux/ubuntu/gpg",
+	} {
+		if !strings.Contains(ustc[0].AptLine+ustc[0].AptKeyURL, want) {
+			t.Errorf("ustc repo 缺少 %q", want)
+		}
+	}
+
+	// docker 官方保留（download.docker.com，rpm 段为 rhel）
+	docker := ContainerdRepos("ubuntu", "jammy", "rhel9", "docker")
+	for _, want := range []string{
+		"https://download.docker.com/linux/rhel/9/$basearch/stable",
+		"https://download.docker.com/linux/rhel/gpg",
+	} {
+		if !strings.Contains(docker[0].DnfRepoBlock+docker[0].DnfKeyURL, want) {
+			t.Errorf("docker repo 缺少 %q", want)
+		}
+	}
+
+	// 空 repoType 默认 aliyun
+	def := ContainerdRepos("debian", "bookworm", "", "")
+	if !strings.Contains(def[0].AptLine, "https://mirrors.aliyun.com/docker-ce/linux/debian bookworm stable") {
+		t.Errorf("空 repoType 应默认 aliyun: %q", def[0].AptLine)
 	}
 }
 
 func TestAptSourceScript(t *testing.T) {
-	s := AptSourceScript(ContainerdRepos("ubuntu", "jammy", ""))
+	s := AptSourceScript(ContainerdRepos("ubuntu", "jammy", "", ""))
 	for _, want := range []string{
 		"mkdir -p /etc/apt/keyrings",
 		"rm -f",
@@ -111,7 +135,7 @@ func TestBuildPackageList(t *testing.T) {
 }
 
 func TestBuildPackageListCustomContainerdPkg(t *testing.T) {
-	// openEuler 等系统源场景：containerd 包名为 "containerd"（非 docker 源 containerd.io）。
+	// openEuler 等系统源场景：containerd 包名为 "containerd"（非 docker-ce 源 containerd.io）。
 	got := BuildPackageList("dnf", "v1.35.7", []string{"conntrack"}, false, "containerd")
 	want := []string{"kubeadm", "kubelet", "kubectl", "containerd", "cri-tools", "conntrack"}
 	if len(got) != len(want) {

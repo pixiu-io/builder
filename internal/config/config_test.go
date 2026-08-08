@@ -13,9 +13,9 @@ oses:
     versions: ["20.04", "22.04", "24.04"]
     pkg_manager: apt
     build_images:
-      "20.04": ubuntu:20.04
-      "22.04": ubuntu:22.04
-      "24.04": ubuntu:24.04
+      "20.04": swr.cn-north-4.myhuaweicloud.com/pixiu-public/ubuntu:20.04
+      "22.04": swr.cn-north-4.myhuaweicloud.com/pixiu-public/ubuntu:22.04
+      "24.04": swr.cn-north-4.myhuaweicloud.com/pixiu-public/ubuntu:24.04
     codenames:
       "20.04": focal
       "22.04": jammy
@@ -25,7 +25,7 @@ oses:
     versions: ["9"]
     pkg_manager: dnf
     build_images:
-      "9": rockylinux:9
+      "9": swr.cn-north-4.myhuaweicloud.com/pixiu-public/rockylinux:9
     rpm_distro: rhel9
     archs: ["amd64", "arm64"]
 versions:
@@ -39,7 +39,7 @@ versions:
     runc: "1.1.7"
 addon_images:
   - name: flannel
-    image: "docker.io/flannel/flannel"
+    image: "swr.cn-north-4.myhuaweicloud.com/pixiu-public/flannel/flannel"
     tag: "v0.24.2"
 `
 
@@ -76,11 +76,11 @@ func TestLoad(t *testing.T) {
 	if len(cfg.AddonImages.Addons) != 1 {
 		t.Errorf("期望 1 个 addon，实际 %d", len(cfg.AddonImages.Addons))
 	}
-	if got := cfg.OSRegistry.OSes[0].BuildImages["22.04"]; got != "ubuntu:22.04" {
+	if got := cfg.OSRegistry.OSes[0].BuildImages["22.04"]; got != "swr.cn-north-4.myhuaweicloud.com/pixiu-public/ubuntu:22.04" {
 		t.Errorf("BuildImages[22.04] 解析错误: %q", got)
 	}
-	if img, err := cfg.OSRegistry.OSes[0].ImageFor("24.04"); err != nil || img != "ubuntu:24.04" {
-		t.Errorf("ImageFor(24.04) = %q, err=%v; want ubuntu:24.04", img, err)
+	if img, err := cfg.OSRegistry.OSes[0].ImageFor("24.04"); err != nil || img != "swr.cn-north-4.myhuaweicloud.com/pixiu-public/ubuntu:24.04" {
+		t.Errorf("ImageFor(24.04) = %q, err=%v; want swr.cn-north-4.myhuaweicloud.com/pixiu-public/ubuntu:24.04", img, err)
 	}
 }
 
@@ -147,7 +147,7 @@ func TestResolveOS(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !reg.FromRegistry || reg.BuildImage != "ubuntu:22.04" || reg.PkgManager != "apt" || reg.Codename != "jammy" {
+	if !reg.FromRegistry || reg.BuildImage != "swr.cn-north-4.myhuaweicloud.com/pixiu-public/ubuntu:22.04" || reg.PkgManager != "apt" || reg.Codename != "jammy" {
 		t.Errorf("注册表命中异常: %+v", reg)
 	}
 
@@ -156,7 +156,7 @@ func TestResolveOS(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ver.BuildImage != "ubuntu:18.04" || ver.Codename != "bionic" || ver.PkgManager != "apt" {
+	if ver.BuildImage != "swr.cn-north-4.myhuaweicloud.com/pixiu-public/ubuntu:18.04" || ver.Codename != "bionic" || ver.PkgManager != "apt" {
 		t.Errorf("未登记版本回退异常: %+v", ver)
 	}
 
@@ -165,7 +165,7 @@ func TestResolveOS(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if unk.FromRegistry || unk.PkgManager != "dnf" || unk.BuildImage != "centos:9" || unk.RPMDistro != "rhel9" {
+	if unk.FromRegistry || unk.PkgManager != "dnf" || unk.BuildImage != "swr.cn-north-4.myhuaweicloud.com/pixiu-public/centos:9" || unk.RPMDistro != "rhel9" {
 		t.Errorf("未登记 OS 推导异常: %+v", unk)
 	}
 
@@ -174,7 +174,7 @@ func TestResolveOS(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cent7.FromRegistry || cent7.PkgManager != "yum" || cent7.BuildImage != "centos:7" || cent7.RPMDistro != "rhel7" {
+	if cent7.FromRegistry || cent7.PkgManager != "yum" || cent7.BuildImage != "swr.cn-north-4.myhuaweicloud.com/pixiu-public/centos:7" || cent7.RPMDistro != "rhel7" {
 		t.Errorf("centos 7 推导异常: %+v", cent7)
 	}
 }
@@ -356,10 +356,10 @@ func TestImageFor(t *testing.T) {
 	cases := []struct {
 		ver, want string
 	}{
-		{"20.04", "ubuntu:20.04"},
-		{"22.04", "ubuntu:22.04"},
-		{"24.04", "ubuntu:24.04"},
-		{"18.04", "ubuntu:18.04"}, // 未在 build_images 声明时按约定回退
+		{"20.04", "swr.cn-north-4.myhuaweicloud.com/pixiu-public/ubuntu:20.04"},
+		{"22.04", "swr.cn-north-4.myhuaweicloud.com/pixiu-public/ubuntu:22.04"},
+		{"24.04", "swr.cn-north-4.myhuaweicloud.com/pixiu-public/ubuntu:24.04"},
+		{"18.04", "swr.cn-north-4.myhuaweicloud.com/pixiu-public/ubuntu:18.04"}, // 未在 build_images 声明时按约定回退
 	}
 	for _, c := range cases {
 		got, err := osDef.ImageFor(c.ver)
@@ -377,7 +377,7 @@ oses:
     versions: ["22.03"]
     pkg_manager: dnf
     build_images:
-      "22.03": openeuler/openeuler:22.03-lts-sp3
+      "22.03": swr.cn-north-4.myhuaweicloud.com/pixiu-public/openeuler/openeuler:22.03-lts-sp3
     rpm_distro: rhel7
     containerd_pkg: "containerd"
     containerd_repo: "none"
@@ -386,7 +386,7 @@ oses:
     versions: ["9"]
     pkg_manager: dnf
     build_images:
-      "9": rockylinux:9
+      "9": swr.cn-north-4.myhuaweicloud.com/pixiu-public/rockylinux:9
     rpm_distro: rhel9
     archs: ["amd64", "arm64"]
 versions:
@@ -417,14 +417,14 @@ versions:
 }
 
 func TestResolveOSContainerdDefaults(t *testing.T) {
-	// ResolveOS 透传注册表的 containerd_pkg/containerd_repo；未配置时默认 containerd.io + docker。
+	// ResolveOS 透传注册表的 containerd_pkg/containerd_repo；未配置时默认 containerd.io + aliyun（国内镜像）。
 	cfg, _ := Load(sampleFile(t))
 
 	reg, err := cfg.ResolveOS("ubuntu", "22.04")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if reg.ContainerdPkg != "containerd.io" || reg.ContainerdRepo != "docker" {
+	if reg.ContainerdPkg != "containerd.io" || reg.ContainerdRepo != "aliyun" {
 		t.Errorf("未配置 OS 默认值异常: %q/%q", reg.ContainerdPkg, reg.ContainerdRepo)
 	}
 }
@@ -437,7 +437,7 @@ oses:
     versions: ["22.03"]
     pkg_manager: dnf
     build_images:
-      "22.03": openeuler/openeuler:22.03-lts-sp3
+      "22.03": swr.cn-north-4.myhuaweicloud.com/pixiu-public/openeuler/openeuler:22.03-lts-sp3
     rpm_distro: rhel7
     containerd_pkg: "containerd"
     containerd_repo: "none"
@@ -465,16 +465,16 @@ versions:
 }
 
 func TestInferContainerd(t *testing.T) {
-	// 未显式配置时按发行版推断：openEuler → containerd + none；其他 → containerd.io + docker。
+	// 未显式配置时按发行版推断：openEuler → containerd + none；其他 → containerd.io + aliyun（国内镜像）。
 	cases := []struct {
 		os, wantPkg, wantRepo string
 	}{
 		{"openEuler", "containerd", "none"},
 		{"openeuler", "containerd", "none"}, // 大小写不敏感
 		{"OpenEuler", "containerd", "none"},
-		{"rocky", "containerd.io", "docker"},
-		{"ubuntu", "containerd.io", "docker"},
-		{"centos", "containerd.io", "docker"}, // 未登记 OS 同样走推断
+		{"rocky", "containerd.io", "aliyun"},
+		{"ubuntu", "containerd.io", "aliyun"},
+		{"centos", "containerd.io", "aliyun"}, // 未登记 OS 同样走推断
 	}
 	for _, c := range cases {
 		if got := InferContainerdPkg(c.os); got != c.wantPkg {
@@ -488,14 +488,14 @@ func TestInferContainerd(t *testing.T) {
 
 func TestResolveOSContainerdInferRegisteredOpenEuler(t *testing.T) {
 	// 注册表 openEuler 条目未配置 containerd_pkg/containerd_repo 时，ResolveOS 应按发行版
-	// 推断为 containerd（系统源包名）+ none（不配置 docker 源），修复旧版 builder.yaml 兼容。
+	// 推断为 containerd（系统源包名）+ none（不配置 docker-ce 源），修复旧版 builder.yaml 兼容。
 	content := `
 oses:
   - name: openEuler
     versions: ["22.03"]
     pkg_manager: dnf
     build_images:
-      "22.03": openeuler/openeuler:22.03-lts-sp3
+      "22.03": swr.cn-north-4.myhuaweicloud.com/pixiu-public/openeuler/openeuler:22.03-lts-sp3
     rpm_distro: rhel7
     archs: ["amd64", "arm64"]
 versions:
@@ -521,7 +521,7 @@ versions:
 }
 
 func TestResolveOSContainerdInferRegisteredDefault(t *testing.T) {
-	// 注册表 rocky 条目未配置 containerd 字段时，ResolveOS 应推断为 containerd.io + docker（默认 docker 源）。
+	// 注册表 rocky 条目未配置 containerd 字段时，ResolveOS 应推断为 containerd.io + aliyun（默认阿里云镜像）。
 	cfg, _ := Load(sampleFile(t)) // sampleContent 的 rocky 未配置 containerd 字段
 	reg, err := cfg.ResolveOS("rocky", "9")
 	if err != nil {
@@ -530,13 +530,13 @@ func TestResolveOSContainerdInferRegisteredDefault(t *testing.T) {
 	if reg.ContainerdPkg != "containerd.io" {
 		t.Errorf("rocky 未配置 ContainerdPkg = %q, want containerd.io", reg.ContainerdPkg)
 	}
-	if reg.ContainerdRepo != "docker" {
-		t.Errorf("rocky 未配置 ContainerdRepo = %q, want docker", reg.ContainerdRepo)
+	if reg.ContainerdRepo != "aliyun" {
+		t.Errorf("rocky 未配置 ContainerdRepo = %q, want aliyun", reg.ContainerdRepo)
 	}
 }
 
 func TestResolveOSContainerdInferUnregistered(t *testing.T) {
-	// 未登记 OS 分支：openEuler 也按发行版推断 containerd + none；其余推断 containerd.io + docker。
+	// 未登记 OS 分支：openEuler 也按发行版推断 containerd + none；其余推断 containerd.io + aliyun。
 	cfg, _ := Load(sampleFile(t))
 
 	oe, err := cfg.ResolveOS("openEuler", "22.03") // sampleContent 未登记 openEuler
@@ -554,8 +554,8 @@ func TestResolveOSContainerdInferUnregistered(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if centos.ContainerdPkg != "containerd.io" || centos.ContainerdRepo != "docker" {
-		t.Errorf("未登记 centos ContainerdPkg/Repo = %q/%q, want containerd.io/docker", centos.ContainerdPkg, centos.ContainerdRepo)
+	if centos.ContainerdPkg != "containerd.io" || centos.ContainerdRepo != "aliyun" {
+		t.Errorf("未登记 centos ContainerdPkg/Repo = %q/%q, want containerd.io/aliyun", centos.ContainerdPkg, centos.ContainerdRepo)
 	}
 }
 
@@ -649,38 +649,36 @@ func TestBuildOptionsZeroValue(t *testing.T) {
 	}
 }
 
-// TestCosOptionsParse 验证 cos 节能被 yaml 解析。
-func TestCosOptionsParse(t *testing.T) {
+// TestGitHubOptionsParse 验证 github 节能被 yaml 解析。
+func TestGitHubOptionsParse(t *testing.T) {
 	content := `
 oses:
   - name: ubuntu
     versions: ["22.04"]
     pkg_manager: apt
     build_images:
-      "22.04": ubuntu:22.04
+      "22.04": swr.cn-north-4.myhuaweicloud.com/pixiu-public/ubuntu:22.04
     archs: ["amd64"]
 versions:
   - version: v1.27.3
-cos:
-  bucket: mybucket-1250000000
-  region: ap-guangzhou
-  secret_id: AKIDEXAMPLE
-  secret_key: SECRETKEYEXAMPLE
-  prefix: releases/
+github:
+  owner: acme
+  repo: builder
+  tag: v1.27.3
+  token: ghp_example
 `
 	cfg, err := Load(writeSample(t, content))
 	if err != nil {
 		t.Fatalf("Load 失败: %v", err)
 	}
-	want := CosConfig{
-		Bucket:    "mybucket-1250000000",
-		Region:    "ap-guangzhou",
-		SecretID:  "AKIDEXAMPLE",
-		SecretKey: "SECRETKEYEXAMPLE",
-		Prefix:    "releases/",
+	want := GitHubConfig{
+		Owner: "acme",
+		Repo:  "builder",
+		Tag:   "v1.27.3",
+		Token: "ghp_example",
 	}
-	if cfg.Cos != want {
-		t.Errorf("CosConfig 解析异常:\n got %+v\nwant %+v", cfg.Cos, want)
+	if cfg.GitHub != want {
+		t.Errorf("GitHubConfig 解析异常:\n got %+v\nwant %+v", cfg.GitHub, want)
 	}
 }
 
@@ -692,7 +690,7 @@ oses:
     versions: ["22.04"]
     pkg_manager: apt
     build_images:
-      "22.04": ubuntu:22.04
+      "22.04": swr.cn-north-4.myhuaweicloud.com/pixiu-public/ubuntu:22.04
     archs: ["amd64"]
 versions:
   - version: v1.27.3
@@ -725,14 +723,14 @@ oses:
     versions: ["22.04"]
     pkg_manager: apt
     build_images:
-      "22.04": ubuntu:22.04
+      "22.04": swr.cn-north-4.myhuaweicloud.com/pixiu-public/ubuntu:22.04
     archs: ["amd64"]
 versions:
   - version: v1.27.3
     crictl: "1.27.1"
 addon_images:
   - name: flannel
-    image: "docker.io/flannel/flannel"
+    image: "swr.cn-north-4.myhuaweicloud.com/pixiu-public/flannel/flannel"
     tag: "v0.24.2"
 `
 	cfg, err := Load(writeSample(t, content))
@@ -743,7 +741,7 @@ addon_images:
 	if !ok {
 		t.Fatal("期望找到 flannel")
 	}
-	if flannel.Image != "docker.io/flannel/flannel" || flannel.Tag != "v0.24.2" {
+	if flannel.Image != "swr.cn-north-4.myhuaweicloud.com/pixiu-public/flannel/flannel" || flannel.Tag != "v0.24.2" {
 		t.Errorf("flannel 解析异常: %+v", flannel)
 	}
 	if len(cfg.AddonImages.Addons) != 1 {
@@ -762,13 +760,13 @@ oses:
     versions: ["22.04"]
     pkg_manager: apt
     build_images:
-      "22.04": ubuntu:22.04
+      "22.04": swr.cn-north-4.myhuaweicloud.com/pixiu-public/ubuntu:22.04
     archs: ["amd64"]
 versions:
   - version: v1.27.3
 addon_images:
   - name: flannel
-    image: "docker.io/flannel/flannel"
+    image: "swr.cn-north-4.myhuaweicloud.com/pixiu-public/flannel/flannel"
     tag: "v0.24.2"
 addon_packages:
   - name: conntrack
@@ -801,7 +799,7 @@ oses:
     versions: ["22.04"]
     pkg_manager: apt
     build_images:
-      "22.04": ubuntu:22.04
+      "22.04": swr.cn-north-4.myhuaweicloud.com/pixiu-public/ubuntu:22.04
     archs: ["amd64"]
 versions:
   - version: v1.27.3

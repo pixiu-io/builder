@@ -4,6 +4,8 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -17,7 +19,7 @@ import (
 
 	"builder/internal/builder"
 	"builder/internal/config"
-	"builder/internal/cosupload"
+	"builder/internal/ghupload"
 	"builder/internal/mirror"
 	"builder/internal/serve"
 )
@@ -27,23 +29,21 @@ var configFile string
 
 // build 子命令 flags
 var (
-	buildOS                string
-	buildOSVersion         string
-	buildK8sVersion        string // --kubernetes-version
-	buildArch              string
-	buildMirror            string
-	buildWorkDir           string
-	buildOutDir            string
-	buildMode              string
-	buildSkipAddons        bool
-	buildOnlyAddons        bool
-	buildDryRun            bool
-	buildKeepFiles         bool
-	buildVerbose           bool
-	buildKubeadmMode       string
-	buildKubeadmRemoteHost string
-	buildKubeadmRemotePath string
-	buildUpload            bool
+	buildOS         string
+	buildOSVersion  string
+	buildK8sVersion string // --kubernetes-version
+	buildArch       string
+	buildMirror     string
+	buildWorkDir    string
+	buildOutDir     string
+	buildMode       string
+	buildSkipAddons bool
+	buildOnlyAddons bool
+	buildDryRun     bool
+	buildKeepFiles  bool
+	buildVerbose    bool
+	buildKubeadmDir string
+	buildUpload     bool
 )
 
 // upload 子命令 flags
@@ -51,6 +51,13 @@ var (
 	uploadFiles []string
 	uploadDir   string
 	uploadSkips []string
+)
+
+// upload kubeadm 子命令 flags
+var (
+	uploadKubeadmVersion string
+	uploadKubeadmArch    string
+	uploadKubeadmOutDir  string
 )
 
 // verify 子命令 flags
@@ -68,13 +75,12 @@ var (
 	serveSkipPackages  bool
 )
 
-// cos 上传 flags（build --upload 与 upload 子命令共用）
+// github release 上传 flags（build --upload 与 upload 子命令共用）
 var (
-	cosBucket    string
-	cosRegion    string
-	cosSecretID  string
-	cosSecretKey string
-	cosPrefix    string
+	githubOwner string
+	githubRepo  string
+	githubTag   string
+	githubToken string
 )
 
 func main() {
@@ -114,6 +120,7 @@ func newRootCmd() *cobra.Command {
 
 	root.AddCommand(newBuildCmd())
 	root.AddCommand(newUploadCmd())
+	root.AddCommand(newUploadKubeadmCmd())
 	root.AddCommand(newServeCmd())
 	root.AddCommand(newListOSCmd())
 	root.AddCommand(newListK8sCmd())
@@ -149,81 +156,75 @@ func newBuildCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&buildDryRun, "dry-run", false, "仅演练管线，不执行真实下载/拉取")
 	cmd.Flags().BoolVar(&buildKeepFiles, "keep-files", false, "构建完成后保留中间文件（packages/images/bundle 目录；默认清理）")
 	cmd.Flags().BoolVarP(&buildVerbose, "verbose", "v", false, "打印详细过程日志（镜像下载/pull 进度等）")
-	cmd.Flags().StringVar(&buildKubeadmMode, "kubeadm-mode", "", "kubeadm 获取模式（local=本地下载，默认 / remote=ssh 远端下载+拷回）")
-	cmd.Flags().StringVar(&buildKubeadmRemoteHost, "kubeadm-remote-host", "", "remote 模式远端服务器（user@host，免密登录）")
-	cmd.Flags().StringVar(&buildKubeadmRemotePath, "kubeadm-remote-path", "", "remote 模式远端缓存目录（默认 ~/.builder-kubeadm，含 {version}/{arch} 子目录）")
-	cmd.Flags().BoolVar(&buildUpload, "upload", false, "构建完成后将产物 tar.gz 上传到腾讯云 COS（需配置 cos.bucket 或 --cos-bucket）")
-	// COS 上传 flags（build --upload 与 upload 子命令共用）
-	cmd.Flags().StringVar(&cosBucket, "cos-bucket", "", "COS bucket（含 appid，如 mybucket-1250000000；覆盖配置文件 cos.bucket）")
-	cmd.Flags().StringVar(&cosRegion, "cos-region", "", "COS 地域（如 ap-guangzhou；覆盖配置文件 cos.region）")
-	cmd.Flags().StringVar(&cosSecretID, "cos-secret-id", "", "COS SecretId（覆盖配置文件 cos.secret_id）")
-	cmd.Flags().StringVar(&cosSecretKey, "cos-secret-key", "", "COS SecretKey（覆盖配置文件 cos.secret_key）")
-	cmd.Flags().StringVar(&cosPrefix, "cos-prefix", "", "COS 对象键前缀（覆盖配置文件 cos.prefix）")
+	cmd.Flags().StringVar(&buildKubeadmDir, "kubeadm-dir", "./kube", "kubeadm 二进制缓存目录（按 kubeadm-{version}-linux-{arch} 命名）")
+	cmd.Flags().BoolVar(&buildUpload, "upload", false, "构建完成后将产物 tar.gz 上传到 GitHub Release（需配置 github.owner/repo 或 --github-owner/--github-repo）")
+	addGitHubFlags(cmd)
 	// 必填校验（os/os-version/kubernetes-version）改为手动判断：命令行或配置 build 节任一提供即可，
 	// 因此不使用 cobra 的 MarkFlagRequired（它只认命令行，会阻断配置兜底）。
 	// --only-addons 时 kubernetes-version 可省略（不构建 k8s 核心，无需推导 k8s 版本）。
 	return cmd
 }
 
+func addGitHubFlags(cmd *cobra.Command) {
+	cmd.Flags().StringVar(&githubOwner, "github-owner", "", "GitHub 仓库所有者（覆盖配置文件 github.owner）")
+	cmd.Flags().StringVar(&githubRepo, "github-repo", "", "GitHub 仓库名（覆盖配置文件 github.repo）")
+	cmd.Flags().StringVar(&githubTag, "github-tag", "", "GitHub Release tag（覆盖配置文件 github.tag；build 时默认用 --kubernetes-version）")
+	cmd.Flags().StringVar(&githubToken, "github-token", "", "GitHub token（覆盖配置文件 github.token；也可用环境变量 GITHUB_TOKEN/GH_TOKEN）")
+}
+
 // buildFlagValues 记录 build 子命令各 flag 的当前值（含 flag 内置默认值或命令行显式传入值）。
 type buildFlagValues struct {
-	OS                string
-	OSVersion         string
-	K8sVersion        string
-	Arch              string
-	Mirror            string
-	WorkDir           string
-	OutDir            string
-	Mode              string
-	SkipAddons        bool
-	OnlyAddons        bool
-	DryRun            bool
-	KeepFiles         bool
-	Verbose           bool
-	KubeadmMode       string
-	KubeadmRemoteHost string
-	KubeadmRemotePath string
+	OS         string
+	OSVersion  string
+	K8sVersion string
+	Arch       string
+	Mirror     string
+	WorkDir    string
+	OutDir     string
+	Mode       string
+	SkipAddons bool
+	OnlyAddons bool
+	DryRun     bool
+	KeepFiles  bool
+	Verbose    bool
+	KubeadmDir string
 }
 
 // buildFlagChanged 记录各 flag 是否被命令行显式设置（true 表示命令行值优先）。
 // K8sVersion 由 --kubernetes-version 被设置即视为显式。
 type buildFlagChanged struct {
-	OS                bool
-	OSVersion         bool
-	K8sVersion        bool
-	Arch              bool
-	Mirror            bool
-	WorkDir           bool
-	OutDir            bool
-	Mode              bool
-	SkipAddons        bool
-	OnlyAddons        bool
-	DryRun            bool
-	KeepFiles         bool
-	Verbose           bool
-	KubeadmMode       bool
-	KubeadmRemoteHost bool
-	KubeadmRemotePath bool
+	OS         bool
+	OSVersion  bool
+	K8sVersion bool
+	Arch       bool
+	Mirror     bool
+	WorkDir    bool
+	OutDir     bool
+	Mode       bool
+	SkipAddons bool
+	OnlyAddons bool
+	DryRun     bool
+	KeepFiles  bool
+	Verbose    bool
+	KubeadmDir bool
 }
 
 // buildOptions build 子命令合并后的生效参数（Mirror 保持字符串，由调用方解析为 mirror.Mirror）。
 type buildOptions struct {
-	OS                string
-	OSVersion         string
-	K8sVersion        string
-	Arch              string
-	Mirror            string
-	WorkDir           string
-	OutDir            string
-	Mode              string
-	SkipAddons        bool
-	OnlyAddons        bool
-	DryRun            bool
-	KeepFiles         bool
-	Verbose           bool
-	KubeadmMode       string
-	KubeadmRemoteHost string
-	KubeadmRemotePath string
+	OS         string
+	OSVersion  string
+	K8sVersion string
+	Arch       string
+	Mirror     string
+	WorkDir    string
+	OutDir     string
+	Mode       string
+	SkipAddons bool
+	OnlyAddons bool
+	DryRun     bool
+	KeepFiles  bool
+	Verbose    bool
+	KubeadmDir string
 }
 
 // resolveBuildOptions 按"命令行 > 配置文件 build 节 > flag 内置默认值"合并 build 参数。
@@ -231,22 +232,20 @@ type buildOptions struct {
 // cfg.Build 为配置文件 build 节（可为零值，表示未配置）。
 func resolveBuildOptions(cfg *config.Config, vals buildFlagValues, changed buildFlagChanged) buildOptions {
 	return buildOptions{
-		OS:                resolveString(changed.OS, vals.OS, cfg.Build.OS),
-		OSVersion:         resolveString(changed.OSVersion, vals.OSVersion, cfg.Build.OSVersion),
-		K8sVersion:        resolveString(changed.K8sVersion, vals.K8sVersion, cfg.Build.KubernetesVersion),
-		Arch:              resolveString(changed.Arch, vals.Arch, cfg.Build.Arch),
-		Mirror:            resolveString(changed.Mirror, vals.Mirror, cfg.Build.Mirror),
-		WorkDir:           resolveString(changed.WorkDir, vals.WorkDir, cfg.Build.WorkDir),
-		OutDir:            resolveString(changed.OutDir, vals.OutDir, cfg.Build.OutDir),
-		Mode:              resolveString(changed.Mode, vals.Mode, cfg.Build.Mode),
-		SkipAddons:        resolveBool(changed.SkipAddons, vals.SkipAddons, cfg.Build.SkipAddons),
-		OnlyAddons:        resolveBool(changed.OnlyAddons, vals.OnlyAddons, cfg.Build.OnlyAddons),
-		DryRun:            resolveBool(changed.DryRun, vals.DryRun, cfg.Build.DryRun),
-		KeepFiles:         resolveBool(changed.KeepFiles, vals.KeepFiles, cfg.Build.KeepFiles),
-		Verbose:           resolveBool(changed.Verbose, vals.Verbose, cfg.Build.Verbose),
-		KubeadmMode:       resolveString(changed.KubeadmMode, vals.KubeadmMode, cfg.Build.KubeadmMode),
-		KubeadmRemoteHost: resolveString(changed.KubeadmRemoteHost, vals.KubeadmRemoteHost, cfg.Build.KubeadmRemoteHost),
-		KubeadmRemotePath: resolveString(changed.KubeadmRemotePath, vals.KubeadmRemotePath, cfg.Build.KubeadmRemotePath),
+		OS:         resolveString(changed.OS, vals.OS, cfg.Build.OS),
+		OSVersion:  resolveString(changed.OSVersion, vals.OSVersion, cfg.Build.OSVersion),
+		K8sVersion: resolveString(changed.K8sVersion, vals.K8sVersion, cfg.Build.KubernetesVersion),
+		Arch:       resolveString(changed.Arch, vals.Arch, cfg.Build.Arch),
+		Mirror:     resolveString(changed.Mirror, vals.Mirror, cfg.Build.Mirror),
+		WorkDir:    resolveString(changed.WorkDir, vals.WorkDir, cfg.Build.WorkDir),
+		OutDir:     resolveString(changed.OutDir, vals.OutDir, cfg.Build.OutDir),
+		Mode:       resolveString(changed.Mode, vals.Mode, cfg.Build.Mode),
+		SkipAddons: resolveBool(changed.SkipAddons, vals.SkipAddons, cfg.Build.SkipAddons),
+		OnlyAddons: resolveBool(changed.OnlyAddons, vals.OnlyAddons, cfg.Build.OnlyAddons),
+		DryRun:     resolveBool(changed.DryRun, vals.DryRun, cfg.Build.DryRun),
+		KeepFiles:  resolveBool(changed.KeepFiles, vals.KeepFiles, cfg.Build.KeepFiles),
+		Verbose:    resolveBool(changed.Verbose, vals.Verbose, cfg.Build.Verbose),
+		KubeadmDir: resolveString(changed.KubeadmDir, vals.KubeadmDir, cfg.Build.KubeadmDir),
 	}
 }
 
@@ -299,39 +298,35 @@ func runBuild(cmd *cobra.Command, args []string) error {
 
 	// 合并命令行（显式优先）与配置 build 节：命令行 > 配置文件 > flag 内置默认值。
 	opts := resolveBuildOptions(cfg, buildFlagValues{
-		OS:                buildOS,
-		OSVersion:         buildOSVersion,
-		K8sVersion:        buildK8sVersion,
-		Arch:              buildArch,
-		Mirror:            buildMirror,
-		WorkDir:           buildWorkDir,
-		OutDir:            buildOutDir,
-		Mode:              buildMode,
-		SkipAddons:        buildSkipAddons,
-		OnlyAddons:        buildOnlyAddons,
-		DryRun:            buildDryRun,
-		KeepFiles:         buildKeepFiles,
-		Verbose:           buildVerbose,
-		KubeadmMode:       buildKubeadmMode,
-		KubeadmRemoteHost: buildKubeadmRemoteHost,
-		KubeadmRemotePath: buildKubeadmRemotePath,
+		OS:         buildOS,
+		OSVersion:  buildOSVersion,
+		K8sVersion: buildK8sVersion,
+		Arch:       buildArch,
+		Mirror:     buildMirror,
+		WorkDir:    buildWorkDir,
+		OutDir:     buildOutDir,
+		Mode:       buildMode,
+		SkipAddons: buildSkipAddons,
+		OnlyAddons: buildOnlyAddons,
+		DryRun:     buildDryRun,
+		KeepFiles:  buildKeepFiles,
+		Verbose:    buildVerbose,
+		KubeadmDir: buildKubeadmDir,
 	}, buildFlagChanged{
-		OS:                cmd.Flags().Changed("os"),
-		OSVersion:         cmd.Flags().Changed("os-version"),
-		K8sVersion:        cmd.Flags().Changed("kubernetes-version"),
-		Arch:              cmd.Flags().Changed("arch"),
-		Mirror:            cmd.Flags().Changed("mirror"),
-		WorkDir:           cmd.Flags().Changed("workdir"),
-		OutDir:            cmd.Flags().Changed("out"),
-		Mode:              cmd.Flags().Changed("mode"),
-		SkipAddons:        cmd.Flags().Changed("skip-addons"),
-		OnlyAddons:        cmd.Flags().Changed("only-addons"),
-		DryRun:            cmd.Flags().Changed("dry-run"),
-		KeepFiles:         cmd.Flags().Changed("keep-files"),
-		Verbose:           cmd.Flags().Changed("verbose"),
-		KubeadmMode:       cmd.Flags().Changed("kubeadm-mode"),
-		KubeadmRemoteHost: cmd.Flags().Changed("kubeadm-remote-host"),
-		KubeadmRemotePath: cmd.Flags().Changed("kubeadm-remote-path"),
+		OS:         cmd.Flags().Changed("os"),
+		OSVersion:  cmd.Flags().Changed("os-version"),
+		K8sVersion: cmd.Flags().Changed("kubernetes-version"),
+		Arch:       cmd.Flags().Changed("arch"),
+		Mirror:     cmd.Flags().Changed("mirror"),
+		WorkDir:    cmd.Flags().Changed("workdir"),
+		OutDir:     cmd.Flags().Changed("out"),
+		Mode:       cmd.Flags().Changed("mode"),
+		SkipAddons: cmd.Flags().Changed("skip-addons"),
+		OnlyAddons: cmd.Flags().Changed("only-addons"),
+		DryRun:     cmd.Flags().Changed("dry-run"),
+		KeepFiles:  cmd.Flags().Changed("keep-files"),
+		Verbose:    cmd.Flags().Changed("verbose"),
+		KubeadmDir: cmd.Flags().Changed("kubeadm-dir"),
 	})
 
 	mirrorVal, err := mirror.ParseMirror(opts.Mirror)
@@ -359,24 +354,32 @@ func runBuild(cmd *cobra.Command, args []string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	kubeadmBin := ""
+	if buildNeedsKubeadm(mode, opts) {
+		var cleanup func()
+		kubeadmBin, cleanup, err = prepareBuildKubeadm(ctx, cfg, opts.K8sVersion, opts.Arch, opts.KubeadmDir, opts.Verbose)
+		if err != nil {
+			return err
+		}
+		defer cleanup()
+	}
+
 	res, err := builder.Build(ctx, builder.Options{
-		Config:            cfg,
-		OS:                opts.OS,
-		OSVersion:         opts.OSVersion,
-		Arch:              opts.Arch,
-		K8sVersion:        opts.K8sVersion,
-		Mirror:            mirrorVal,
-		WorkDir:           opts.WorkDir,
-		OutDir:            opts.OutDir,
-		Mode:              mode,
-		SkipAddons:        opts.SkipAddons,
-		OnlyAddons:        opts.OnlyAddons,
-		DryRun:            opts.DryRun,
-		KeepFiles:         opts.KeepFiles,
-		Verbose:           opts.Verbose,
-		KubeadmMode:       opts.KubeadmMode,
-		KubeadmRemoteHost: opts.KubeadmRemoteHost,
-		KubeadmRemotePath: opts.KubeadmRemotePath,
+		Config:     cfg,
+		OS:         opts.OS,
+		OSVersion:  opts.OSVersion,
+		Arch:       opts.Arch,
+		K8sVersion: opts.K8sVersion,
+		Mirror:     mirrorVal,
+		WorkDir:    opts.WorkDir,
+		OutDir:     opts.OutDir,
+		Mode:       mode,
+		SkipAddons: opts.SkipAddons,
+		OnlyAddons: opts.OnlyAddons,
+		DryRun:     opts.DryRun,
+		KeepFiles:  opts.KeepFiles,
+		Verbose:    opts.Verbose,
+		KubeadmBin: kubeadmBin,
 	})
 	if err != nil {
 		return err
@@ -398,14 +401,14 @@ func runBuild(cmd *cobra.Command, args []string) error {
 
 	if buildUpload {
 		if opts.DryRun {
-			fmt.Println("[dry-run] 跳过 COS 上传")
+			fmt.Println("[dry-run] 跳过 GitHub Release 上传")
 			return nil
 		}
 		files := res.TarPaths
 		if len(files) == 0 && res.TarPath != "" {
 			files = []string{res.TarPath}
 		}
-		if err := uploadArtifacts(ctx, cfg, files); err != nil {
+		if err := uploadGitHubArtifacts(ctx, cfg, files, opts.K8sVersion); err != nil {
 			return err
 		}
 	}
@@ -415,10 +418,10 @@ func runBuild(cmd *cobra.Command, args []string) error {
 func newUploadCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "upload",
-		Short: "将离线包 tar.gz 或文件夹下所有文件上传到腾讯云 COS",
-		Example: `  builder upload --file ./dist/pixiu-offline-ubuntu-22.04-amd64-v1.27.3-packages.tar.gz
-  builder upload --file a.tar.gz --file b.tar.gz --cos-bucket mybucket-1250000000 --cos-prefix releases/
-  builder upload --dir ./dist --skip md5sum.txt --skip checksum.txt --cos-bucket mybucket-1250000000`,
+		Short: "将离线包 tar.gz 或文件夹下所有文件上传到 GitHub Release",
+		Example: `  builder upload --file ./dist/a.tar.gz --github-owner acme --github-repo builder --github-tag v1.27.3
+  builder upload --file a.tar.gz --file b.tar.gz --github-owner acme --github-repo builder --github-tag v1.27.3
+  builder upload --dir ./dist --skip md5sum.txt --skip checksum.txt --github-owner acme --github-repo builder --github-tag v1.27.3`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg, err := config.Load(configFile)
 			if err != nil {
@@ -439,20 +442,64 @@ func newUploadCmd() *cobra.Command {
 			}
 			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 			defer stop()
-			if err := uploadArtifacts(ctx, cfg, files); err != nil {
-				return err
-			}
-			return nil
+			return uploadGitHubArtifacts(ctx, cfg, files, "")
 		},
 	}
 	cmd.Flags().StringArrayVar(&uploadFiles, "file", nil, "待上传的本地文件（可重复）")
 	cmd.Flags().StringVar(&uploadDir, "dir", "", "指定文件夹，递归上传其下所有文件")
 	cmd.Flags().StringArrayVar(&uploadSkips, "skip", nil, "按文件名忽略的文件（可重复，对 --file 与 --dir 均生效）")
-	cmd.Flags().StringVar(&cosBucket, "cos-bucket", "", "COS bucket（含 appid，如 mybucket-1250000000；覆盖配置文件 cos.bucket）")
-	cmd.Flags().StringVar(&cosRegion, "cos-region", "", "COS 地域（如 ap-guangzhou；覆盖配置文件 cos.region）")
-	cmd.Flags().StringVar(&cosSecretID, "cos-secret-id", "", "COS SecretId（覆盖配置文件 cos.secret_id）")
-	cmd.Flags().StringVar(&cosSecretKey, "cos-secret-key", "", "COS SecretKey（覆盖配置文件 cos.secret_key）")
-	cmd.Flags().StringVar(&cosPrefix, "cos-prefix", "", "COS 对象键前缀（覆盖配置文件 cos.prefix）")
+	addGitHubFlags(cmd)
+	return cmd
+}
+
+func newUploadKubeadmCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "upload-kubeadm",
+		Short: "下载 kubeadm 二进制并上传到 GitHub Release",
+		Example: `  builder upload-kubeadm --kubernetes-version v1.31.6 --arch amd64 --github-owner acme --github-repo builder
+  builder upload-kubeadm --kubernetes-version v1.31.6 --arch amd64 --out-dir ./dist --github-tag v1.31.6`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg, err := config.Load(configFile)
+			if err != nil {
+				return err
+			}
+			if uploadKubeadmVersion == "" {
+				return fmt.Errorf("缺少 --kubernetes-version")
+			}
+			if !cfg.ValidK8s(uploadKubeadmVersion) {
+				return fmt.Errorf("非法的 k8s 版本格式: %s（期望形如 v1.31.6）", uploadKubeadmVersion)
+			}
+			if !config.ValidArch(uploadKubeadmArch) {
+				return fmt.Errorf("不支持的架构 %s（可选 amd64/arm64）", uploadKubeadmArch)
+			}
+
+			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+			defer stop()
+
+			githubOpts := mergeGitHubOptions(cfg.GitHub, githubOwner, githubRepo, githubTag, githubToken)
+			fmt.Printf("确保 GitHub Release 存在: %s/%s@%s\n", githubOpts.Owner, githubOpts.Repo, effectiveGitHubTag(cfg, uploadKubeadmVersion))
+			if err := ensureGitHubRelease(ctx, cfg, uploadKubeadmVersion); err != nil {
+				return err
+			}
+
+			if err := os.MkdirAll(uploadKubeadmOutDir, 0o755); err != nil {
+				return fmt.Errorf("创建输出目录失败 %s: %w", uploadKubeadmOutDir, err)
+			}
+			name := fmt.Sprintf("kubeadm-%s-linux-%s", uploadKubeadmVersion, uploadKubeadmArch)
+			path := filepath.Join(uploadKubeadmOutDir, name)
+			u := kubeadmDownloadURL(uploadKubeadmVersion, uploadKubeadmArch)
+			fmt.Printf("下载 kubeadm: %s → %s\n", u, path)
+			if err := downloadFile(ctx, u, path, 0o755); err != nil {
+				return err
+			}
+			fmt.Printf("下载完成: %s\n", path)
+			return uploadGitHubArtifacts(ctx, cfg, []string{path}, uploadKubeadmVersion)
+		},
+	}
+	cmd.Flags().StringVar(&uploadKubeadmVersion, "kubernetes-version", "", "k8s 版本（如 v1.31.6，必填）")
+	cmd.Flags().StringVar(&uploadKubeadmArch, "arch", "amd64", "目标架构（amd64/arm64）")
+	cmd.Flags().StringVar(&uploadKubeadmOutDir, "out-dir", "./dist", "kubeadm 下载输出目录")
+	addGitHubFlags(cmd)
 	return cmd
 }
 
@@ -491,20 +538,158 @@ func filterSkipped(files, skips []string) []string {
 	return out
 }
 
-// uploadArtifacts 合并配置与 CLI 覆盖后上传文件到腾讯云 COS。
-func uploadArtifacts(ctx context.Context, cfg *config.Config, files []string) error {
-	opts := mergeCosOptions(cfg.Cos, cosBucket, cosRegion, cosSecretID, cosSecretKey, cosPrefix)
-	if opts.Bucket == "" {
-		return fmt.Errorf("COS bucket 不能为空（配置 cos.bucket 或 --cos-bucket）")
+func kubeadmDownloadURL(version, arch string) string {
+	return fmt.Sprintf("https://dl.k8s.io/release/%s/bin/linux/%s/kubeadm", version, arch)
+}
+
+func downloadFile(ctx context.Context, rawURL, dst string, mode os.FileMode) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	if err != nil {
+		return fmt.Errorf("创建下载请求失败: %w", err)
 	}
-	fmt.Printf("上传到 COS %s/%s （共 %d 个文件）...\n", opts.Bucket, strings.TrimSuffix(opts.Prefix, "/"), len(files))
-	res, err := cosupload.UploadFiles(ctx, opts, files)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("下载失败 %s: %w", rawURL, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		data, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		msg := strings.TrimSpace(string(data))
+		if msg == "" {
+			msg = resp.Status
+		}
+		return fmt.Errorf("下载失败 %s: HTTP %d: %s", rawURL, resp.StatusCode, msg)
+	}
+
+	tmp := dst + ".tmp"
+	out, err := os.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
+	if err != nil {
+		return fmt.Errorf("创建下载文件失败 %s: %w", tmp, err)
+	}
+	_, copyErr := io.Copy(out, resp.Body)
+	closeErr := out.Close()
+	if copyErr != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("写入下载文件失败 %s: %w", tmp, copyErr)
+	}
+	if closeErr != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("关闭下载文件失败 %s: %w", tmp, closeErr)
+	}
+	if err := os.Chmod(tmp, mode); err != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("设置文件权限失败 %s: %w", tmp, err)
+	}
+	if err := os.Rename(tmp, dst); err != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("保存下载文件失败 %s: %w", dst, err)
+	}
+	return nil
+}
+
+func buildNeedsKubeadm(mode string, opts buildOptions) bool {
+	return mode != "packages" && !opts.OnlyAddons && !opts.DryRun
+}
+
+func kubeadmAssetName(version, arch string) string {
+	return fmt.Sprintf("kubeadm-%s-linux-%s", version, arch)
+}
+
+func prepareBuildKubeadm(ctx context.Context, cfg *config.Config, version, arch, dir string, verbose bool) (string, func(), error) {
+	if dir == "" {
+		dir = "./kube"
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", nil, fmt.Errorf("创建 kubeadm 缓存目录失败 %s: %w", dir, err)
+	}
+	path := filepath.Join(dir, kubeadmAssetName(version, arch))
+	if st, err := os.Stat(path); err == nil {
+		if st.IsDir() {
+			return "", nil, fmt.Errorf("kubeadm 缓存路径是目录: %s", path)
+		}
+		if err := os.Chmod(path, 0o755); err != nil {
+			return "", nil, fmt.Errorf("设置 kubeadm 可执行权限失败 %s: %w", path, err)
+		}
+		fmt.Printf("复用本地 kubeadm: %s\n", path)
+		return path, func() {}, nil
+	} else if !os.IsNotExist(err) {
+		return "", nil, fmt.Errorf("检查 kubeadm 缓存文件失败 %s: %w", path, err)
+	}
+	return downloadBuildKubeadmFromGitHub(ctx, cfg, version, arch, path, verbose)
+}
+
+func downloadBuildKubeadmFromGitHub(ctx context.Context, cfg *config.Config, version, arch, path string, verbose bool) (string, func(), error) {
+	opts := mergeGitHubOptions(cfg.GitHub, githubOwner, githubRepo, githubTag, githubToken)
+	if opts.Tag == "" {
+		opts.Tag = version
+	}
+	if verbose {
+		opts.Progress = os.Stdout
+	}
+	if opts.Owner == "" || opts.Repo == "" {
+		return "", nil, fmt.Errorf("github owner/repo 不能为空（配置 github.owner/github.repo 或 --github-owner/--github-repo）")
+	}
+	if opts.Tag == "" {
+		return "", nil, fmt.Errorf("github tag 不能为空（配置 github.tag、--github-tag，或提供 --kubernetes-version）")
+	}
+
+	assetName := kubeadmAssetName(version, arch)
+	fmt.Printf("从 GitHub Release 下载 kubeadm: %s/%s@%s/%s → %s\n", opts.Owner, opts.Repo, opts.Tag, assetName, path)
+	if err := ghupload.DownloadAsset(ctx, opts, assetName, path, 0o755); err != nil {
+		_ = os.Remove(path)
+		return "", nil, err
+	}
+	return path, func() {}, nil
+}
+
+func effectiveGitHubTag(cfg *config.Config, defaultTag string) string {
+	opts := mergeGitHubOptions(cfg.GitHub, githubOwner, githubRepo, githubTag, githubToken)
+	if opts.Tag != "" {
+		return opts.Tag
+	}
+	return defaultTag
+}
+
+func ensureGitHubRelease(ctx context.Context, cfg *config.Config, defaultTag string) error {
+	opts := mergeGitHubOptions(cfg.GitHub, githubOwner, githubRepo, githubTag, githubToken)
+	if opts.Tag == "" {
+		opts.Tag = defaultTag
+	}
+	if opts.Owner == "" || opts.Repo == "" {
+		return fmt.Errorf("github owner/repo 不能为空（配置 github.owner/github.repo 或 --github-owner/--github-repo）")
+	}
+	if opts.Tag == "" {
+		return fmt.Errorf("github tag 不能为空（配置 github.tag、--github-tag，或提供 --kubernetes-version）")
+	}
+	return ghupload.EnsureRelease(ctx, opts)
+}
+
+// uploadGitHubArtifacts 合并配置与 CLI 覆盖后上传文件到 GitHub Release。
+// defaultTag 在配置与 flag 均未指定 tag 时使用（build 场景一般为 kubernetes 版本）。
+func uploadGitHubArtifacts(ctx context.Context, cfg *config.Config, files []string, defaultTag string) error {
+	opts := mergeGitHubOptions(cfg.GitHub, githubOwner, githubRepo, githubTag, githubToken)
+	if opts.Tag == "" {
+		opts.Tag = defaultTag
+	}
+	if opts.Owner == "" || opts.Repo == "" {
+		return fmt.Errorf("github owner/repo 不能为空（配置 github.owner/github.repo 或 --github-owner/--github-repo）")
+	}
+	if opts.Tag == "" {
+		return fmt.Errorf("github tag 不能为空（配置 github.tag、--github-tag，或 build 时提供 --kubernetes-version）")
+	}
+	// 目标 tag 的 Release 不存在时自动创建（EnsureRelease GET 404 后创建）。
+	fmt.Printf("确保 GitHub Release 存在: %s/%s@%s\n", opts.Owner, opts.Repo, opts.Tag)
+	if err := ghupload.EnsureRelease(ctx, opts); err != nil {
+		return err
+	}
+	fmt.Printf("上传到 GitHub Release %s/%s@%s （共 %d 个文件）...\n", opts.Owner, opts.Repo, opts.Tag, len(files))
+	res, err := ghupload.UploadFiles(ctx, opts, files)
 	if err != nil {
 		return err
 	}
 	fmt.Println("上传完成：")
 	for _, u := range res {
-		fmt.Printf("  - %s → %s\n", u.LocalPath, u.URI)
+		fmt.Printf("  - %s → %s\n", u.LocalPath, u.BrowserURL)
 	}
 	return nil
 }
@@ -518,9 +703,9 @@ func newServeCmd() *cobra.Command {
   - HTTP 软件源：dnf/yum 使用 /rpm，apt 使用 /deb
 
 纯 Go 实现，不依赖 createrepo / apt-ftparchive 等外部工具。`,
-		Example: `  builder serve --bundle ./dist/pixiu-offline-centos-8-amd64-v1.27.3-packages.tar.gz \
-                --bundle ./dist/pixiu-offline-centos-8-amd64-v1.27.3-images.tar.gz
-  builder serve --bundle ./work/pixiu-offline-ubuntu-22.04-amd64-v1.27.3 --advertise-host 192.168.1.10`,
+		Example: `  builder serve --bundle ./dist/pixiu-packages-centos-8-amd64-v1.27.3.tar.gz \
+                --bundle ./dist/pixiu-images-centos-8-amd64-v1.27.3.tar.gz
+  builder serve --bundle ./work/pixiu-ubuntu-22.04-amd64-v1.27.3 --advertise-host 192.168.1.10`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(serveBundles) == 0 && serveDir == "" {
 				return fmt.Errorf("请通过 --bundle 指定离线包，或 --dir 指定离线包目录")
@@ -551,28 +736,24 @@ func newServeCmd() *cobra.Command {
 	return cmd
 }
 
-func mergeCosOptions(cfg config.CosConfig, bucket, region, secretID, secretKey, prefix string) cosupload.Options {
-	opts := cosupload.Options{
-		Bucket:    cfg.Bucket,
-		Region:    cfg.Region,
-		SecretID:  cfg.SecretID,
-		SecretKey: cfg.SecretKey,
-		Prefix:    cfg.Prefix,
+func mergeGitHubOptions(cfg config.GitHubConfig, owner, repo, tag, token string) ghupload.Options {
+	opts := ghupload.Options{
+		Owner: cfg.Owner,
+		Repo:  cfg.Repo,
+		Tag:   cfg.Tag,
+		Token: cfg.Token,
 	}
-	if bucket != "" {
-		opts.Bucket = bucket
+	if owner != "" {
+		opts.Owner = owner
 	}
-	if region != "" {
-		opts.Region = region
+	if repo != "" {
+		opts.Repo = repo
 	}
-	if secretID != "" {
-		opts.SecretID = secretID
+	if tag != "" {
+		opts.Tag = tag
 	}
-	if secretKey != "" {
-		opts.SecretKey = secretKey
-	}
-	if prefix != "" {
-		opts.Prefix = prefix
+	if token != "" {
+		opts.Token = token
 	}
 	return opts
 }
@@ -592,7 +773,7 @@ func newListOSCmd() *cobra.Command {
 					osDef.Name, osDef.PkgManager, strings.Join(osDef.Archs, "/"), strings.Join(osDef.Versions, ", "))
 			}
 			fmt.Println()
-			fmt.Println("示例: --os ubuntu --os-version 24.04（构建镜像默认 ubuntu:24.04）")
+			fmt.Println("示例: --os ubuntu --os-version 24.04（构建镜像默认 swr.cn-north-4.myhuaweicloud.com/pixiu-public/ubuntu:24.04）")
 			return nil
 		},
 	}
@@ -714,8 +895,8 @@ func newVerifyCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "verify",
 		Short: "校验离线安装包完整性（目录或 tar.gz）",
-		Example: `  builder verify --bundle ./dist/pixiu-offline-ubuntu-22.04-amd64-v1.27.3.tar.gz
-  builder verify --bundle ./work/pixiu-offline-ubuntu-22.04-amd64-v1.27.3`,
+		Example: `  builder verify --bundle ./dist/pixiu-images-ubuntu-22.04-amd64-v1.27.3.tar.gz
+  builder verify --bundle ./work/pixiu-ubuntu-22.04-amd64-v1.27.3`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if verifyBundle == "" {
 				return fmt.Errorf("--bundle 为必填参数")

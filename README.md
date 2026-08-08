@@ -4,17 +4,17 @@
 
 生成的离线包包含：
 - **k8s 软件包**：kubeadm / kubelet / kubectl（容器内通过 apt/dnf/yum 递归下载，依赖闭包交给包管理器）
-- **容器运行时软件包**：containerd / cri-tools（containerd 按 OS 配置获取：默认 docker 源包名 `containerd.io`，openEuler 等从系统源安装 `containerd`；runc 由 containerd 包内嵌提供，不单独安装；containerd 源 + 系统源）
+- **容器运行时软件包**：containerd / cri-tools（containerd 按 OS 配置获取：默认阿里云镜像 `mirrors.aliyun.com/docker-ce` 的 docker-ce 源包名 `containerd.io`，openEuler 等从系统源安装 `containerd`；runc 由 containerd 包内嵌提供，不单独安装；containerd 源 + 系统源）
 - **系统依赖软件包**：conntrack、ipvsadm、nfs-common(-utils)、socat、ebtables、chrony
 - **镜像**：核心镜像（容器内安装 kubeadm 后生成清单）+ 附加组件镜像（builder.yaml `addon_images` 节）
 - **附加安装包**：附加组件所需的宿主系统软件包（builder.yaml 顶层 `addon_packages` 节，name + 可选 version，mode ∈ packages/all 且未跳过附加时并入软件包清单；version 空不锁版本，非空按目标包管理器语法转译）
 - **安装脚本**：install.sh（包安装 + preflight）/ load-images.sh
 - **完整性清单**：manifest.yaml（可校验）
 
-> 软件源说明：k8s 组件来自官方 `pkgs.k8s.io`（仓库由 k8s 版本自动推导，v1.27.3 → v1.27）；
-> containerd 默认来自 docker 官方源 `download.docker.com`（包名 `containerd.io`）。原 `packages.containerd.io` 域名在当前网络与公共 DNS（223.5.5.5 / 8.8.8.8）均 NXDOMAIN 无法解析，已改用 docker 官方源提供 containerd.io 包。
+> 软件源说明：k8s 组件（apt 与 dnf/yum 系）均使用阿里云 `mirrors.aliyun.com/kubernetes-new`（仓库由 k8s 版本自动推导，v1.27.3 → v1.27）；
+> containerd 默认来自阿里云镜像 `mirrors.aliyun.com/docker-ce`（`containerd_repo=aliyun`，包名 `containerd.io`），可配置 `ustc`=中科大 `mirrors.ustc.edu.cn/docker-ce` / `docker`=官方 `download.docker.com` / `none`=系统源。原 `packages.containerd.io` 域名在当前网络与公共 DNS（223.5.5.5 / 8.8.8.8）均 NXDOMAIN 无法解析，已改用国内镜像提供 containerd.io 包。
 > 该源的 containerd.io 包内嵌 runc 二进制，故不再单独安装 runc 包，避免与独立 runc 包的 `Conflicts: runc` 冲突导致 apt 无法同时解析。
-> **openEuler 例外**：docker 官方无 `rhel/7` 仓库（`download.docker.com/linux/rhel/7/` 为 404），openEuler 改用系统源安装 containerd（`containerd_pkg: containerd` + `containerd_repo: none`，从 everything 仓库安装 `containerd` 包），不再配置 download.docker.com 源。
+> **openEuler 例外**：docker 官方无 `rhel/7` 仓库（`download.docker.com/linux/rhel/7/` 为 404），openEuler 改用系统源安装 containerd（`containerd_pkg: containerd` + `containerd_repo: none`，从 everything 仓库安装 `containerd` 包），不配置 docker-ce 源。
 
 ## 快速开始
 
@@ -39,7 +39,7 @@ go build -o builder ./cmd/builder
 ./builder build --mode images --kubernetes-version v1.27.3 --arch amd64 --out ./dist
 
 # 校验离线包（目录或 tar.gz）
-./builder verify --bundle ./dist/pixiu-offline-ubuntu-22.04-amd64-v1.27.3.tar.gz
+./builder verify --bundle ./dist/pixiu-images-ubuntu-22.04-amd64-v1.27.3.tar.gz
 ```
 
 `build` 执行时按 5 步管线实时输出 `[builder]` 前缀日志（步骤开始 / 完成 / 跳过 / 失败，dry-run 额外标注），便于跟踪长耗时构建；结束后打印构建步骤汇总表。
@@ -48,8 +48,9 @@ go build -o builder ./cmd/builder
 
 | 命令 | 说明 |
 |------|------|
-| `build` | 构建离线安装包。`--kubernetes-version` 必填（任意 vX.Y.Z；`--only-addons` 时可省略）。`--os` / `--os-version` 在 `--mode all` 或 `packages` 时必填（**任意**取值，不必在 list-os 中；未登记时构建镜像默认为 `{os}:{os-version}`）；`--mode images` 时可省略。可选：`--arch`（amd64/arm64，默认 amd64）、`--mirror`、`--mode`、`--workdir`、`--out`、`--skip-addons`、`--only-addons`、`--dry-run`、`--keep-files`（默认清理中间文件与 docker 中间镜像，置位保留）、`--upload`、`--cos-*` 等。核心软件包/镜像始终使用默认清单，自定义能力由配置 `addon_packages` / `addon_images` + `--mode` + `--only-addons` / `--skip-addons` 提供（见下文"自定义附加组件"）。所有 build 参数均可在配置文件 `build` 节预设（优先级：命令行 > 配置 > 内置默认值），见下文"build 参数配置化" |
-| `upload` | 将已有产物 tar.gz 上传到腾讯云 COS。`--file` 可重复；`--cos-*` 覆盖 `cos` 节 |
+| `build` | 构建离线安装包。`--kubernetes-version` 必填（任意 vX.Y.Z；`--only-addons` 时可省略）。`--os` / `--os-version` 在 `--mode all` 或 `packages` 时必填（**任意**取值，不必在 list-os 中；未登记时构建镜像默认为 `{os}:{os-version}`）；`--mode images` 时可省略。可选：`--arch`（amd64/arm64，默认 amd64）、`--mirror`、`--mode`、`--workdir`、`--out`、`--skip-addons`、`--only-addons`、`--dry-run`、`--keep-files`、`--upload`、`--github-*` 等。核心软件包/镜像始终使用默认清单，自定义能力由配置 `addon_packages` / `addon_images` + `--mode` + `--only-addons` / `--skip-addons` 提供（见下文"自定义附加组件"）。所有 build 参数均可在配置文件 `build` 节预设（优先级：命令行 > 配置 > 内置默认值），见下文"build 参数配置化" |
+| `upload` | 将已有产物 tar.gz 上传到 GitHub Release。`--file` 可重复；`--github-*` 覆盖配置节 |
+| `upload-kubeadm` | 下载指定版本/架构的 kubeadm 二进制，并上传到 GitHub Release |
 | `serve` | 加载离线产物，提供本地 OCI registry（`docker pull` 短名）与 yum/dnf/apt HTTP 软件源（纯 Go，无外部工具依赖） |
 | `list-os` | 列出参考 OS / 版本（builder.yaml；实际 build 不限于此列表） |
 | `list-k8s` | 列出支持的 k8s 版本（含记录用运行时版本） |
@@ -76,7 +77,7 @@ go build -o builder ./cmd/builder
 # 仅软件包（跳过镜像阶段）
 ./builder build --os ubuntu --os-version 22.04 --kubernetes-version v1.27.3 --arch amd64 --mode packages
 
-# 仅镜像（可省略 --os / --os-version；产物名为 pixiu-offline-images-{arch}-{k8sver}）
+# 仅镜像（可省略 --os / --os-version；产物名为 pixiu-images-{arch}-{k8sver}）
 ./builder build --mode images --kubernetes-version v1.27.3 --arch amd64
 
 # 仅镜像且仍绑定发行版（产物名仍含 os/osver）
@@ -85,7 +86,7 @@ go build -o builder ./cmd/builder
 
 ## 自定义附加组件（addon_packages / addon_images）
 
-核心软件包（kubeadm/kubelet/kubectl + containerd + cri-tools + 系统依赖）与核心镜像（kubeadm 生成）**始终使用默认清单**，不再支持按包/镜像覆盖或追加参数。containerd 包名与来源由 oses 节 `containerd_pkg` / `containerd_repo` 配置（默认 `containerd.io` + docker 源；openEuler 为 `containerd` + 系统源）；这两个字段**未配置时按发行版代码内推断**（openEuler → `containerd` + `none`，其他 → `containerd.io` + `docker`），因此旧版 builder.yaml 无需更新也能正确获取 openEuler 的 containerd。自定义能力完全由顶层 `addon_packages` / `addon_images` 与 `--mode` / `--only-addons` / `--skip-addons` 提供：
+核心软件包（kubeadm/kubelet/kubectl + containerd + cri-tools + 系统依赖）与核心镜像（kubeadm 生成）**始终使用默认清单**，不再支持按包/镜像覆盖或追加参数。containerd 包名与来源由 oses 节 `containerd_pkg` / `containerd_repo` 配置（默认 `containerd.io` + 阿里云镜像；openEuler 为 `containerd` + 系统源）；这两个字段**未配置时按发行版代码内推断**（openEuler → `containerd` + `none`，其他 → `containerd.io` + `aliyun`），因此旧版 builder.yaml 无需更新也能正确获取 openEuler 的 containerd。自定义能力完全由顶层 `addon_packages` / `addon_images` 与 `--mode` / `--only-addons` / `--skip-addons` 提供：
 
 | 参数 | 说明 | 示例 |
 |------|------|------|
@@ -113,7 +114,7 @@ go build -o builder ./cmd/builder
 # 附加组件镜像（仅镜像；不含软件包）
 addon_images:
   - name: flannel
-    image: "docker.io/flannel/flannel"
+    image: "swr.cn-north-4.myhuaweicloud.com/pixiu-public/flannel/flannel"
     tag: "v0.24.2"
   - name: metrics-server
     image: "registry.k8s.io/metrics-server/metrics-server"
@@ -156,8 +157,8 @@ addon_packages:
 ## 产物目录结构
 
 ```
-pixiu-offline-{os}-{osver}-{arch}-{k8sver}/   # 指定 OS 的镜像包（--mode images 且指定 OS）
-pixiu-offline-images-{arch}-{k8sver}/         # --mode images 且未指定 OS
+pixiu-images-{os}-{osver}-{arch}-{k8sver}/   # 指定 OS 的镜像包（--mode images 且指定 OS）
+pixiu-images-{arch}-{k8sver}/         # --mode images 且未指定 OS
 ├── packages/
 │   ├── *.deb / *.rpm    # k8s + 运行时 + 系统依赖（容器内 apt/dnf 递归下载）
 │   └── runtime/         # crictl 静态 tar（仅 cri-tools 包源不可用时的回退产物）
@@ -170,9 +171,9 @@ pixiu-offline-images-{arch}-{k8sver}/         # --mode images 且未指定 OS
 └── manifest.yaml        # 完整性清单（path/size/sha256）
 ```
 
-构建完成后会在 `--out` 目录生成同名 `.tar.gz`。软件包产物统一为 `pixiu-offline-packages-{os}-{osver}-{arch}-{k8sver}.tar.gz`（单模式 packages 与 `--mode all` 拆分一致）；`--mode all` 时拆成两个独立产物：
-- `pixiu-offline-packages-{os}-{osver}-{arch}-{k8sver}.tar.gz`
-- `pixiu-offline-{os}-{osver}-{arch}-{k8sver}-images.tar.gz`
+构建完成后会在 `--out` 目录生成同名 `.tar.gz`。软件包产物统一为 `pixiu-packages-{os}-{osver}-{arch}-{k8sver}.tar.gz`（单模式 packages 与 `--mode all` 拆分一致）；`--mode all` 时拆成两个独立产物：
+- `pixiu-packages-{os}-{osver}-{arch}-{k8sver}.tar.gz`
+- `pixiu-images-{os}-{osver}-{arch}-{k8sver}.tar.gz`
 
 ## 配置文件
 
@@ -185,7 +186,7 @@ pixiu-offline-images-{arch}-{k8sver}/         # --mode images 且未指定 OS
 | `versions` | k8s 版本定义；containerd/runc 为记录用，crictl 用于 cri-tools 包缺失时的静态回退 |
 | `addon_images` | 附加组件镜像清单（name → image:tag；仅镜像，不含软件包） |
 | `addon_packages` | 附加安装包列表（对象格式：name + 可选 version；version 空不锁版本、非空按目标包管理器语法转译 name=version / name-version；mode ∈ packages/all 且未跳过附加时并入软件包清单） |
-| `cos` | 可选：产物上传到腾讯云 COS（bucket 含 appid/region/secret_id/secret_key/prefix） |
+| `github` | 可选：产物上传到 GitHub Release（owner/repo/tag/token 等；token 建议用环境变量） |
 
 > `versions` / `build_images` 为初始值，加载器不验证镜像可用性，生产使用请按需核对。
 
@@ -214,45 +215,46 @@ build:
   dry_run: false
   keep_files: false      # 默认 false=构建完成后清理中间文件与 docker 中间镜像；true=保留
   verbose: false         # 默认 false=精简输出；true=打印详细过程日志（镜像下载/pull 进度等）
-  kubeadm_mode: "local"  # kubeadm 获取模式：local=本地下载（默认）/ remote=ssh 远端下载+拷回
-  kubeadm_remote_host: ""   # remote 模式远端服务器（user@host，免密登录）
-  kubeadm_remote_path: ""   # remote 模式远端缓存目录（默认 ~/.builder-kubeadm，含 {version}/{arch} 子目录）
+  kubeadm_dir: "./kube"  # kubeadm 二进制缓存目录；文件名 kubeadm-{version}-linux-{arch}
 ```
 
 例如配置 `arch: "arm64"` 后执行 `builder build ...`（不传 `--arch`）会构建 arm64 产物；命令行传 `--arch amd64` 则仍以命令行优先。
 
-## 上传产物（腾讯云 COS）
+## 上传产物（GitHub Release）
 
-构建完成后可用 `--upload` 自动上传产物，或用 `upload` 子命令上传已有 tar.gz。需在 `builder.yaml` 配置 `cos` 节，或通过 `--cos-*` flag 覆盖。
+构建完成后可用 `--upload` 自动上传产物，或用 `upload` 上传已有 tar.gz。需在 `builder.yaml` 配置 `github` 节，或通过 `--github-*` flag 覆盖。Token 优先顺序：`--github-token` > 配置 `github.token` > 环境变量 `GITHUB_TOKEN` / `GH_TOKEN`。
 
 ```yaml
-cos:
-  bucket: mybucket-1250000000   # 桶名-appid
-  region: ap-guangzhou
-  secret_id: xxx
-  secret_key: yyy
-  prefix: pixiu-offline/
+github:
+  owner: acme
+  repo: builder
+  tag: ""            # 可空：build --upload 时默认用 --kubernetes-version
+  token: ""          # 建议用环境变量，勿明文提交
 ```
-
-> ⚠️ SecretId/SecretKey 明文写入配置文件有泄露风险，建议 `chmod 600 builder.yaml`。
 
 ```bash
-# 配置文件填写 cos 节后，构建并上传
-./builder build --os ubuntu --os-version 22.04 --kubernetes-version v1.27.3 --upload
+export GITHUB_TOKEN=ghp_xxx
 
-# 覆盖 bucket / 前缀
-./builder build ... --upload --cos-bucket mybucket-1250000000 --cos-prefix releases/v1.27.3/
+# 构建并上传到 GitHub Release（tag 默认 = kubernetes 版本）
+./builder build --os ubuntu --os-version 22.04 --kubernetes-version v1.27.3 --upload \
+  --github-owner acme --github-repo builder
 
-# 仅上传已有产物
-./builder upload --file ./dist/pixiu-offline-packages-ubuntu-22.04-amd64-v1.27.3.tar.gz
+# 指定 tag
+./builder build ... --upload --github-tag v1.27.3-offline
 
-# 上传整个目录（递归子目录），并按文件名忽略部分文件（--skip 可重复）
-./builder upload --dir ./dist --skip md5sum.txt --skip checksum.txt \
-  --cos-bucket mybucket-1250000000 --cos-region ap-guangzhou \
-  --cos-secret-id xxx --cos-secret-key yyy
+# 上传已有产物到 Release
+./builder upload --file ./dist/a.tar.gz \
+  --github-owner acme --github-repo builder --github-tag v1.27.3
+
+# 下载 kubeadm 并上传到 Release（tag 默认 = kubernetes 版本）
+./builder upload-kubeadm --kubernetes-version v1.31.6 --arch amd64 \
+  --github-owner acme --github-repo builder
+
+# build 生成核心镜像清单时会从 GitHub Release asset 获取 kubeadm
+./builder build --os ubuntu --os-version 22.04 --kubernetes-version v1.31.6 --arch amd64
 ```
 
-对象键为 `{prefix}{文件名}`，例如 `pixiu-offline/pixiu-offline-packages-ubuntu-22.04-amd64-v1.27.3.tar.gz`。
+行为说明：`build --upload` 与 `upload` 会在目标 tag 的 Release 不存在时自动创建；`upload-kubeadm` 在下载前先确保 Release 存在。上传同名 asset 已存在时会先删除再上传。Token 需具备 `contents: write`（经典 PAT 用 `repo`）权限。
 
 ## 离线源服务（`serve`）
 
@@ -261,12 +263,12 @@ cos:
 ```bash
 # packages + images 两个 tar 一起加载
 ./builder serve \
-  --bundle ./dist/pixiu-offline-packages-centos-8-amd64-v1.27.3.tar.gz \
-  --bundle ./dist/pixiu-offline-centos-8-amd64-v1.27.3-images.tar.gz \
+  --bundle ./dist/pixiu-packages-centos-8-amd64-v1.27.3.tar.gz \
+  --bundle ./dist/pixiu-images-centos-8-amd64-v1.27.3.tar.gz \
   --advertise-host 192.168.1.10
 
 # 已解压目录
-./builder serve --bundle ./work/pixiu-offline-ubuntu-22.04-amd64-v1.27.3
+./builder serve --bundle ./work/pixiu-ubuntu-22.04-amd64-v1.27.3
 
 # 指定离线包目录：自动加载其中所有 *.tar.gz，并每 3s 轮询热加载新放入的包
 ./builder serve --dir ./offline-packages --advertise-host 192.168.1.10
@@ -289,7 +291,7 @@ kubeadm init --image-repository 192.168.1.10:5000 ...
 dnf install --repofrompath=pixiu,http://192.168.1.10:8080/rpm kubeadm
 
 # apt
-echo 'deb [trusted=yes] http://192.168.1.10:8080/deb ./' > /etc/apt/sources.list.d/pixiu-offline.list
+echo 'deb [trusted=yes] http://192.168.1.10:8080/deb ./' > /etc/apt/sources.list.d/pixiu.list
 apt-get update && apt-get install kubeadm
 ```
 
@@ -299,15 +301,15 @@ apt-get update && apt-get install kubeadm
 
 | 组件 | apt | dnf（yum 复用同一列） |
 |------|-----|-----|
-| k8s | 包仓库 `.../stable:/{minor}/deb/`；GPG 密钥固定取自 `v1.31` 的 `Release.key`（规避旧版密钥过期） | baseurl 指向目标 `{minor}`；`gpgkey` 取自 `v1.31` |
-| containerd | `deb [signed-by=/etc/apt/keyrings/containerd-apt-keyring.gpg] https://download.docker.com/linux/{ubuntu\|debian} {codename} stable` | `[docker-ce-stable]`，baseurl `https://download.docker.com/linux/rhel/{9\|7}/$basearch/stable`，gpgkey `https://download.docker.com/linux/rhel/gpg`；openEuler（`containerd_repo: none`）不配置该源，containerd 由系统源提供 |
+| k8s | 阿里云 `mirrors.aliyun.com/kubernetes-new/core/stable/{minor}/deb/`；GPG 密钥固定取自阿里云 `v1.31` 的 `Release.key`（规避旧版密钥过期与官方源访问不稳定） | 阿里云 `mirrors.aliyun.com/kubernetes-new/core/stable/{minor}/rpm/`；`gpgkey` 固定取自阿里云 `v1.31` 的 `repomd.xml.key` |
+| containerd | `deb [signed-by=/etc/apt/keyrings/containerd-apt-keyring.gpg] https://mirrors.aliyun.com/docker-ce/linux/{ubuntu\|debian} {codename} stable`（默认 aliyun；ustc→`mirrors.ustc.edu.cn/docker-ce`，docker→`download.docker.com`） | `[docker-ce-stable]`，baseurl `https://mirrors.aliyun.com/docker-ce/linux/centos/{9\|7}/$basearch/stable`，gpgkey `https://mirrors.aliyun.com/docker-ce/linux/centos/gpg`（官方 docker 段为 `rhel`；openEuler（`containerd_repo: none`）不配置该源，containerd 由系统源提供） |
 
 - k8s 大版本（如 v1.27）由 k8s 版本自动推导；签名密钥统一使用较新仓库（v1.31）的已续期密钥，避免 `EXPKEYSIG 234654DA9A296436`。codename / rpm_distro 在 `builder.yaml` 的 `oses` 节配置或按约定推导。
-- containerd 源已实测：apt（ubuntu noble/jammy、debian bookworm Release）与 rhel/9 repomd.xml、rhel gpg key 均 HTTP 200；gpg key 路径不带版本号（`rhel/gpg`，`rhel/9/gpg` 为 404）。
+- containerd 源默认阿里云镜像（`containerd_repo=aliyun`，`mirrors.aliyun.com/docker-ce`），可选 ustc 中科大 / docker 官方；apt 的 gpg key 路径为 `{os}/gpg`，dnf 的 gpg key 路径固定为 `centos/gpg`（官方为 `rhel/gpg`，不带版本号）。国内镜像（aliyun/ustc）已实测可达：apt（ubuntu noble/jammy、debian bookworm）与 centos/9 repomd.xml、centos gpg key 均 HTTP 200。
 - **CentOS 7 使用 yum**：`--os centos --os-version 7` 时自动选择 yum 下载（dnf 是 CentOS 8+/Fedora 才有）；yum 的源配置与 dnf 相同（`/etc/yum.repos.d/` + `rpm --import`），下载依赖 downloadonly 插件，失败自动回退 `yumdownloader`。CentOS 8/9 等仍走 dnf。
 - **CentOS 7 默认源已自动切换 vault**：CentOS 7 已于 2024-06 停止维护（EOL），官方 `mirrorlist.centos.org` 域名 DNS 已不可解析，容器内 `yum makecache` 必然失败。yum 分支脚本开头会检测 `/etc/centos-release` 的 `release 7.`，命中时移走默认 `CentOS-Base.repo`（其 base/extras/updates 块只配 mirrorlist 无 baseurl，保留会造成 repo 重复且无有效源）并写入 `centos-vault.repo`，将 base/extras/updates 指向 vault.centos.org 归档源（7.9.2009），保证 yum makecache / install 能拉取系统依赖包（vim/conntrack 等）。非 CentOS 7 不受影响。
-- **`--only-addons` 不配置 k8s/containerd 源**：只打包附加软件包（addon_packages，全部来自系统源）时，容器内仅配置系统源，不再写入 pkgs.k8s.io / download.docker.com 源，避免失效源（如 CentOS 7 的 download.docker.com rhel/7 已 404）导致 `yum makecache` 失败。CentOS 7 的 vault 系统源修复始终生效（非 only-addons 同样保留）。
-- **containerd 按系统配置**：默认 docker 源（`containerd.io` 包，`containerd_repo` 默认 `docker`）；openEuler 等 `containerd_repo: none` 的发行版不配置 download.docker.com 源，containerd 改由系统源（everything 仓库，含 `containerd-1.2.0-315.oe2203sp3`）安装，软件包名为 `containerd`（`containerd_pkg`）。因 docker 官方已停止发布 RHEL7 仓库，`download.docker.com/linux/rhel/7/` 为 404（CentOS 7 走 yum 时同样受该 rhel/7 源限制；`--only-addons` 与 openEuler 系统源场景不配置该源，不受影响）。
+- **`--only-addons` 不配置 k8s/containerd 源**：只打包附加软件包（addon_packages，全部来自系统源）时，容器内仅配置系统源，不再写入 Kubernetes apt/dnf 源 / docker-ce 源，避免失效源（如 CentOS 7 的官方 download.docker.com rhel/7 已 404）导致 `yum makecache` 失败。CentOS 7 的 vault 系统源修复始终生效（非 only-addons 同样保留）。
+- **containerd 按系统配置**：默认阿里云镜像（`containerd.io` 包，`containerd_repo` 默认 `aliyun`，可配置 `ustc`=中科大 / `docker`=官方）；openEuler 等 `containerd_repo: none` 的发行版不配置 docker-ce 源，containerd 改由系统源（everything 仓库，含 `containerd-1.2.0-315.oe2203sp3`）安装，软件包名为 `containerd`（`containerd_pkg`）。因 docker 官方已停止发布 RHEL7 仓库，官方 `download.docker.com/linux/rhel/7/` 为 404（CentOS 7 走 yum 时同样受该 rhel/7 源限制；`--only-addons` 与 openEuler 系统源场景不配置该源，不受影响）。
 
 ### 包下载（容器内一次完成）
 
@@ -318,34 +320,26 @@ apt-get update && apt-get install kubeadm
 3. 递归下载：apt `apt-get install -y --download-only --no-install-recommends <pkgs> -o Dir::Cache::archives=/out`；dnf `dnf install -y --downloadonly --downloaddir=/out <pkgs>`（插件缺失回退 `dnf download --resolve --destdir=/out`）；yum `yum install -y --downloadonly --downloaddir=/out <pkgs>`（downloadonly 插件安装失败回退 `yumdownloader --resolve --destdir=/out`）；
 4. 依赖闭包验证：`apt-get install --dry-run <pkgs>` / `dnf install --assumeno <pkgs>`；yum 无 `--assumeno`，`--downloadonly` 下载成功即表示依赖可解析。
 
-**cri-tools 例外**：pkgs.k8s.io / download.docker.com 源内通常不存在 `cri-tools` 包，此时容器脚本会写 `cri-tools-missing` 标记，builder 回退从 GitHub release 下载 crictl 静态 tar 并放入 `packages/runtime/`（install.sh 检测到该 tar 时以 `install -m 0755` 安装）。
+**cri-tools 例外**：Kubernetes 源 / docker-ce 源内通常不存在 `cri-tools` 包，此时容器脚本会写 `cri-tools-missing` 标记，builder 回退从 GitHub release 下载 crictl 静态 tar 并放入 `packages/runtime/`（install.sh 检测到该 tar 时以 `install -m 0755` 安装）。
 
 ## 镜像源（mirror）
 
-包模式下 k8s 组件与运行时均走官方包源，因此 `--mirror`（或配置文件 `build.mirror`）仅作用于**镜像阶段**的镜像仓库（`kubeadm config images list --image-repository`）。核心镜像清单、拉取/保存的镜像引用及 manifest 中的 `source_image` 均带该镜像仓库地址：
+包模式下 k8s 组件与运行时均走包源（不经 `--mirror` 调整），因此 `--mirror`（或配置文件 `build.mirror`）仅作用于**镜像阶段**的镜像仓库（`kubeadm config images list --image-repository`）。核心镜像清单、拉取/保存的镜像引用及 manifest 中的 `source_image` 均带该镜像仓库地址：
 
 - `aliyun`（默认）：镜像仓库 `registry.aliyuncs.com/google_containers`。
 - `official`：镜像仓库 `registry.k8s.io`。
 - `tencent`：镜像仓库 `mirror.cc.tencentyun.com/kubernetes`。
 
-仓库地址需保证可访问且存在对应版本的 k8s 镜像；软件包源始终走官方源，不受 mirror 影响。
+仓库地址需保证可访问且存在对应版本的 k8s 镜像；软件包源不受 `--mirror` 影响（k8s 组件源与 containerd 源由各自配置决定，见上文"软件源与包下载"）。
 
-**kubeadm 二进制获取**（生成核心镜像清单用）：支持 `local`（默认，本机从 dl.k8s.io/CDN 下载）与 `remote`（ssh 到**免密登录**服务器下载并 scp 拷回）两种模式。remote 模式远端按 `{缓存目录}/{k8s版本}/{架构}/kubeadm` 缓存，已存在则直接拷回，否则在远端下载：
-
-```bash
-./builder build --os ubuntu --os-version 22.04 --kubernetes-version v1.27.3 \
-  --kubeadm-mode remote --kubeadm-remote-host root@192.168.1.10
-```
-
-- 远端默认缓存目录 `~/.builder-kubeadm`，可用 `--kubeadm-remote-path` / 配置 `kubeadm_remote_path` 覆盖
-- 远端下载 `curl` 优先、`wget` 兜底；远端服务器需已配置免密登录（ssh-key）
+**kubeadm 二进制获取**（生成核心镜像清单用）：`build` 会先检查 `--kubeadm-dir`（默认 `./kube`）下是否存在 `kubeadm-{k8s版本}-linux-{架构}`。若存在则直接 `chmod 755` 后复用；若不存在，再按同名规则从配置的 GitHub Release assets 下载并保存到该目录。例如 `--kubernetes-version v1.31.6 --arch amd64` 对应本地文件 / asset `kubeadm-v1.31.6-linux-amd64`。请先执行 `upload-kubeadm` 上传该资产；若 Release 或 asset 不存在，build 会在镜像阶段前报错。
 
 ## 安装（目标机使用）
 
 将离线包传到目标机后：
 
 ```bash
-cd pixiu-offline-ubuntu-22.04-amd64-v1.27.3
+cd pixiu-ubuntu-22.04-amd64-v1.27.3
 sudo bash install/install.sh
 ```
 
@@ -369,10 +363,10 @@ go test ./...    # 单元测试
 
 - 镜像阶段按本机架构拉取（容器内 `docker pull`，经挂载的 docker.sock 操作宿主机 daemon）；若 `--arch` 与本机不同会打印 warning，无法交叉拉取。
 - 依赖本机 docker；docker 不可用时 build 直接失败中断，不产出离线包；可用 `--mode packages` 显式跳过镜像阶段。
-- 附加组件镜像 flannel 与 dashboard 位于 docker.io（`docker.io/flannel/flannel:v0.24.2`、`docker.io/kubernetesui/dashboard:v2.7.0`，registry.k8s.io 上无可用 tag）；metrics-server 仍为 `registry.k8s.io/metrics-server/metrics-server:v0.6.4`。网络不支持 docker.io 时可用 `--skip-addons` 跳过附加组件（addon_images 与 addon_packages 均不进产物，核心镜像 + 核心软件包仍完整），未显式跳过时附加组件拉取失败仍中断。
+- 附加组件镜像 flannel 已切换到华为云 SWR pixiu-public 仓库（`swr.cn-north-4.myhuaweicloud.com/pixiu-public/flannel/flannel:v0.24.2`）；metrics-server 等镜像使用当前 builder.yaml 中配置的 pixiucloud 仓库。网络不支持外部仓库时可用 `--skip-addons` 跳过附加组件（addon_images 与 addon_packages 均不进产物，核心镜像 + 核心软件包仍完整），未显式跳过时附加组件拉取失败仍中断。
 - 核心镜像清单通过官方 kubeadm 静态二进制生成（`kubeadm config images list`，Linux 宿主机直跑；其它平台挂载进构建容器）。
-- 镜像打包在 `docker:24-cli` 容器内执行（`--name builder-images-<id>`，挂载 `/var/run/docker.sock` 与输出目录）；软件包下载容器名为 `builder-packages-<id>`，便于 `docker ps` 区分阶段。
-- 容器内真实执行依赖 docker，本机无 docker 时仅 dry-run 演练 + 单测；k8s 源（pkgs.k8s.io）未实测，containerd 源（download.docker.com）已用 curl 实测可达，openEuler 系统源（everything 仓库）的 containerd 包已确认 repomd 200 可达。
-- CentOS 7（yum）依赖 downloadonly 插件与 yumdownloader；CentOS 7 已 EOL，默认源已由脚本自动切换 vault.centos.org（见上文软件源说明），且 containerd 源对应 rhel/7 在 download.docker.com 为 404，非 only-addons 场景的 containerd 包下载存在兼容性风险（系统依赖包经 vault 可正常下载，containerd.io 需 docker 源提供）；`--only-addons` 不配置 k8s/containerd 源，不受该 rhel/7 源限制。
-- openEuler 已通过 `containerd_pkg: containerd` + `containerd_repo: none` 从系统源安装 containerd，规避 download.docker.com 无 rhel/7 仓库导致的 `dnf makecache` 失败；即使配置未显式声明这两个字段，也会按发行版自动推断为系统源（containerd + none），旧配置兼容；其他 dnf 系（rocky 等）仍走 docker 源 `containerd.io` 包。
+- 镜像打包在 `swr.cn-north-4.myhuaweicloud.com/pixiu-public/pixiukit/docker:24-cli` 容器内执行（`--name builder-images-<id>`，挂载 `/var/run/docker.sock` 与输出目录）；软件包下载容器名为 `builder-packages-<id>`，便于 `docker ps` 区分阶段。
+- 容器内真实执行依赖 docker，本机无 docker 时仅 dry-run 演练 + 单测；apt 系 k8s 源使用阿里云 `mirrors.aliyun.com/kubernetes-new`，containerd 源默认阿里云镜像（`mirrors.aliyun.com/docker-ce`）已用 curl 实测可达，openEuler 系统源（everything 仓库）的 containerd 包已确认 repomd 200 可达。
+- CentOS 7（yum）依赖 downloadonly 插件与 yumdownloader；CentOS 7 已 EOL，默认源已由脚本自动切换 vault.centos.org（见上文软件源说明），且官方 docker 源对应 rhel/7 在 download.docker.com 为 404（默认阿里云镜像路径段为 centos/7），非 only-addons 场景的 containerd 包下载存在兼容性风险（系统依赖包经 vault 可正常下载，containerd.io 需 docker-ce 源提供）；`--only-addons` 不配置 k8s/containerd 源，不受该 rhel/7 源限制。
+- openEuler 已通过 `containerd_pkg: containerd` + `containerd_repo: none` 从系统源安装 containerd，规避官方 download.docker.com 无 rhel/7 仓库导致的 `dnf makecache` 失败；即使配置未显式声明这两个字段，也会按发行版自动推断为系统源（containerd + none），旧配置兼容；其他 dnf 系（rocky 等）默认走阿里云镜像 `containerd.io` 包。
 - aliyun / tencent 镜像仓库已支持，仓库地址可用性需按网络环境验证（见上文"镜像源（mirror）"）。
