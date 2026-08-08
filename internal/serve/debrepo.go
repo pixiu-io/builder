@@ -47,6 +47,11 @@ func writeDebRepo(debDir string, debFiles []string) error {
 }
 
 func upsertControlField(control, key, value string) string {
+	// 真实 deb 的 control 文件总以换行符结尾，strings.Split 会在末尾产生
+	// 空字符串；若不先去掉尾部换行，append 后 join 会在原内容与新字段之间
+	// 插入空行，把该包的 stanza 拆成两段（后段无 Package: 头），导致
+	// apt-get update 报 E: Encountered a section with no Package: header。
+	control = strings.TrimRight(control, "\n")
 	prefix := key + ": "
 	lines := strings.Split(control, "\n")
 	found := false

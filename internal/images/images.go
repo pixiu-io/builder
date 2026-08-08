@@ -24,7 +24,7 @@ import (
 )
 
 // 默认镜像打包容器（仅含 docker CLI，通过挂载的 sock 操作宿主机 daemon）。
-const defaultPackImage = "docker:24-cli"
+const defaultPackImage = "swr.cn-north-4.myhuaweicloud.com/pixiu-public/pixiukit/docker:24-cli"
 
 // 容器名前缀：docker run --name，便于 docker ps 区分阶段。
 const (
@@ -43,10 +43,10 @@ type Options struct {
 	DockerBin string
 	// DockerSock 宿主机 docker socket，默认 /var/run/docker.sock；挂入打包容器。
 	DockerSock string
-	// BuildImage 构建容器镜像（如 ubuntu:22.04），仅在宿主机无法直接执行 kubeadm
+	// BuildImage 构建容器镜像（如 swr.cn-north-4.myhuaweicloud.com/pixiu-public/ubuntu:22.04），仅在宿主机无法直接执行 kubeadm
 	// （非 Linux 或架构不一致）时，用于挂载二进制跑 images list。
 	BuildImage string
-	// PackImage 镜像打包容器（含 docker CLI），默认 docker:24-cli。
+	// PackImage 镜像打包容器（含 docker CLI），默认 swr.cn-north-4.myhuaweicloud.com/pixiu-public/pixiukit/docker:24-cli。
 	PackImage string
 	// PkgManager 包管理器：apt 或 dnf（保留字段，镜像清单阶段已不再使用）。
 	PkgManager string

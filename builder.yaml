@@ -10,13 +10,20 @@
 # 核心软件包/镜像始终使用默认清单（BuildPackageList / kubeadm 生成），不再提供覆盖/追加参数；
 # 自定义能力完全由顶层 addon_packages / addon_images + --mode + --only-addons / --skip-addons 提供。
 build:
-  os: "ubuntu"                    # 对应 --os：目标系统（如 ubuntu）
-  os_version: "22.04"              # 对应 --os-version：系统版本（如 22.04）
-  kubernetes_version: "v1.31.1"    # 对应 --kubernetes-version：k8s 版本（如 v1.31.1）
-  workdir: "./work"                # 对应 --workdir：工作目录（bundle 构建于此）
-  out: "./dist"                    # 对应 --out：产物输出目录（tar.gz 输出到此）
-  mode: "images"                    # 对应 --mode：构建模式（all=两者 / packages=仅软件包 / images=仅镜像；镜像阶段由 --mode packages 跳过）
-  mirror: "official"             # 对应 --mirror：镜像源（official/aliyun/tencent，默认阿里云 registry.aliyuncs.com/google_containers）
+  os: ""                    # 对应 --os：目标系统（如 ubuntu）
+  os_version: ""            # 对应 --os-version：系统版本（如 22.04）
+  kubernetes_version: ""    # 对应 --kubernetes-version：k8s 版本（如 v1.31.1）
+  arch: "amd64"             # 对应 --arch：目标架构（amd64/arm64）
+  mirror: "aliyun"         # 对应 --mirror：镜像源（official/aliyun/tencent，默认阿里云 registry.aliyuncs.com/google_containers）
+  workdir: "./work"         # 对应 --workdir：工作目录（bundle 构建于此）
+  out: "./dist"             # 对应 --out：产物输出目录（tar.gz 输出到此）
+  mode: "all"               # 对应 --mode：构建模式（all=两者 / packages=仅软件包 / images=仅镜像；镜像阶段由 --mode packages 跳过）
+  skip_addons: false        # 对应 --skip-addons：跳过附加组件（addon_images 与 addon_packages 均不并入）
+  only_addons: false        # 对应 --only-addons：只打包附加（核心软件包/镜像全去）
+  dry_run: false            # 对应 --dry-run：仅演练管线，不真实下载/拉取
+  keep_files: false         # 对应 --keep-files：默认 false=构建完成后清理中间文件与 docker 中间镜像；true=保留
+  verbose: false            # 对应 --verbose/-v：默认 false=精简输出；true=打印详细过程日志（镜像下载/pull 进度等）
+  kubeadm_dir: "./kube"      # 对应 --kubeadm-dir：kubeadm 二进制缓存目录，文件名 kubeadm-{version}-linux-{arch}
 
 
 # ========== OS 注册表 ==========
@@ -25,31 +32,34 @@ build:
 # pkg_manager 支持 apt / dnf / yum；留空时按 OS+版本自动推导（如 centos 7 → yum、centos 8/9 → dnf、ubuntu → apt）。
 # 提示：versions/build_images 为参考初始值；build 支持任意 OS/版本（未登记时构建镜像默认为 {name}:{version}）。
 # 包源说明：
-#   - k8s 组件（kubeadm/kubelet/kubectl）来自官方 pkgs.k8s.io，仓库由 k8s 版本自动推导（v1.27.3 → v1.27）
-#   - containerd.io 来自 docker 官方源 download.docker.com（原 packages.containerd.io 域名 NXDOMAIN 不可达）；
-#     apt 源需要 codename，dnf 源需要 rpm_distro（rocky→rhel9、openEuler→rhel7，代码内转换为 rhel/9、rhel/7）
-#   - containerd 源已实测可达；openEuler 对应 rhel/7 在 download.docker.com 为 404（docker 官方已停止发布 RHEL7 仓库），
+#   - apt 系 k8s 组件（kubeadm/kubelet/kubectl）来自阿里云 kubernetes-new，仓库由 k8s 版本自动推导（v1.27.3 → v1.27）
+#   - containerd.io 来自 docker-ce 源，默认阿里云镜像 mirrors.aliyun.com/docker-ce（containerd_repo=aliyun），
+#     本项目 ubuntu 配置为中科大 mirrors.ustc.edu.cn/docker-ce（containerd_repo=ustc）；官方 download.docker.com 可选（containerd_repo=docker）；
+#     apt 源需要 codename，dnf 源需要 rpm_distro（rocky→rhel9、openEuler→rhel7，国内镜像路径段为 centos/{大版本}、centos/gpg）
+#   - 原 packages.containerd.io 域名 NXDOMAIN 不可达，已改用 docker-ce 源（默认阿里云镜像）；
+#     openEuler 对应 rhel/7 在官方 download.docker.com 为 404（docker 官方已停止发布 RHEL7 仓库），
 #     因此 openEuler 配置 containerd_pkg: containerd + containerd_repo: none，从系统源（everything 仓库）安装 containerd，
-#     不再配置 download.docker.com 源；其他 dnf 系（rocky 等）默认 containerd.io + docker 源不变
+#     不再配置 docker-ce 源；其他 dnf 系（rocky 等）默认 containerd.io + 阿里云镜像（containerd_repo=aliyun）
 oses:
   - name: ubuntu
     versions: ["20.04", "22.04", "24.04"]
     pkg_manager: apt
     build_images:
-      "20.04": ubuntu:20.04
-      "22.04": ubuntu:22.04
-      "24.04": ubuntu:24.04
+      "20.04": swr.cn-north-4.myhuaweicloud.com/pixiu-public/ubuntu:20.04
+      "22.04": swr.cn-north-4.myhuaweicloud.com/pixiu-public/ubuntu:22.04
+      "24.04": swr.cn-north-4.myhuaweicloud.com/pixiu-public/ubuntu:24.04
     codenames:
       "20.04": focal
       "22.04": jammy
       "24.04": noble
+    containerd_repo: ustc    # 中科大镜像 mirrors.ustc.edu.cn/docker-ce（默认 aliyun，可配置 ustc/docker/none）
     archs: ["amd64", "arm64"]
   - name: debian
     versions: ["11", "12"]
     pkg_manager: apt
     build_images:
-      "11": debian:11
-      "12": debian:12
+      "11": swr.cn-north-4.myhuaweicloud.com/pixiu-public/debian:11
+      "12": swr.cn-north-4.myhuaweicloud.com/pixiu-public/debian:12
     codenames:
       "11": bullseye
       "12": bookworm
@@ -58,18 +68,18 @@ oses:
     versions: ["9"]
     pkg_manager: dnf
     build_images:
-      "9": rockylinux:9
+      "9": swr.cn-north-4.myhuaweicloud.com/pixiu-public/rockylinux:9
     rpm_distro: rhel9
     archs: ["amd64", "arm64"]
   - name: openEuler
     versions: ["22.03"]
     pkg_manager: dnf
     build_images:
-      "22.03": openeuler/openeuler:22.03-lts-sp3
+      "22.03": swr.cn-north-4.myhuaweicloud.com/pixiu-public/openeuler:22.03-lts-sp3
     rpm_distro: rhel7
     # openEuler 对应 download.docker.com/linux/rhel/7/ 为 404（docker 官方已停止发布 RHEL7 仓库），
     # 因此 containerd 改为从系统源（everything 仓库，含 containerd-1.2.0-315.oe2203sp3）安装：
-    #   containerd_pkg: "containerd"（系统源包名，非 docker 源的 containerd.io）
+    #   containerd_pkg: "containerd"（系统源包名，非 docker-ce 源的 containerd.io）
     #   containerd_repo: "none"（不配置 download.docker.com 源，避免 dnf makecache 失败）
     containerd_pkg: "containerd"
     containerd_repo: "none"
@@ -81,7 +91,7 @@ oses:
 # 本清单仅用于：
 #   1) list-k8s 展示常见参考版本；
 #   2) 已知版本的 crictl 回退版本覆盖（cri-tools 包缺失时使用清单中的 crictl 值）。
-# 包源仓库由 version 自动推导（v1.27.3 → pkgs.k8s.io v1.27），无需额外字段。
+# apt 包源仓库由 version 自动推导（v1.27.3 → 阿里云 kubernetes-new v1.27），无需额外字段。
 # containerd / runc 以包管理器源内软件包为准（此处的版本字段仅供记录参考）；
 # 未注册版本的 crictl 回退版本自动推导为与 k8s 版本对齐（v1.29.5 → 1.29.5）。
 versions:
@@ -101,12 +111,12 @@ versions:
 # ========== 附加组件镜像 ==========
 # 附加组件镜像清单：name → image:tag（仅镜像，不含软件包；附加安装包见下方 addon_packages 节）。
 # name 用作镜像保存文件名（images/addons/{name}.tar）。
-# CNI 附加组件镜像：flannel（默认 CNI，docker.io + pixiucloud 仓库）与 calico（v3.31.3，pixiucloud 仓库）。
+# CNI 附加组件镜像：flannel（默认 CNI，华为云 SWR pixiu-public 仓库）与 calico（v3.31.3，pixiucloud 仓库）。
 # 仓库不可达时可用 build --skip-addons 跳过附加组件。
 addon_images:
   - name: flannel
-    image: "docker.io/flannel/flannel"
-    tag: "v0.24.2"
+    image: "ccr.ccs.tencentyun.com/pixiucloud/flannel"
+    tag: "v0.25.4"
   - name: flannel-cni-plugin
     image: "ccr.ccs.tencentyun.com/pixiucloud/flannel-cni-plugin"
     tag: "v1.4.1-flannel1"
@@ -134,6 +144,7 @@ addon_images:
     image: "ccr.ccs.tencentyun.com/pixiucloud/nginx"
     tag: "1.25-pixiu"
 
+
 # ========== 附加安装包 ==========
 # 附加安装包列表（与 addon_images 平级），mode ∈ {packages, all} 且未 --skip-addons 时
 # 并入软件包下载清单（与核心清单按包名去重合并）；--only-addons 时为其软件包主体。
@@ -145,18 +156,15 @@ addon_images:
 #     版本需与目标系统源匹配，不匹配时由容器内包管理器报错，请自行调整。
 addon_packages:
   - name: conntrack
-    version: ""
   - name: vim
-    version: "9.0"
+  - name: docker-ce
 
-
-# 产物上传到腾讯云 COS（对象存储）。build --upload / upload 子命令使用。
-# bucket 必须为「桶名-appid」格式（如 mybucket-1250000000）；region 如 ap-guangzhou。
-# 凭证为腾讯云 API 密钥 SecretId / SecretKey（https://console.cloud.tencent.com/cam/capi）。
-# ⚠️ 明文写在配置文件有泄露风险：建议将 builder.yaml 权限设为 600。
-cos:
-  bucket: ""                  # 必填，含 appid，如 mybucket-1250000000（或通过 --cos-bucket 覆盖）
-  region: ""                  # 必填，如 ap-guangzhou（或通过 --cos-region 覆盖）
-  secret_id: ""               # 腾讯云 API SecretId（或通过 --cos-secret-id 覆盖）
-  secret_key: ""              # 腾讯云 API SecretKey（或通过 --cos-secret-key 覆盖）
-  prefix: ""                  # 对象键前缀，最终 key = {prefix}{文件名}
+# 产物上传到 GitHub Release。build --upload / upload 使用。
+# token 建议用环境变量 GITHUB_TOKEN 或 GH_TOKEN（也可配置 github.token / --github-token）。
+# tag 为空时，build --upload 默认使用 --kubernetes-version。
+# 对应 Release 必须已存在；上传不会自动创建 Release。
+github:
+  owner: ""                   # 仓库所有者（或通过 --github-owner 覆盖）
+  repo: ""                    # 仓库名（或通过 --github-repo 覆盖）
+  tag: ""                     # Release tag，如 v1.27.3（或通过 --github-tag 覆盖）
+  token: ""                   # GitHub PAT（建议用环境变量 GITHUB_TOKEN / GH_TOKEN，勿明文写入）

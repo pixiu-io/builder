@@ -305,12 +305,12 @@ func printReady(res *Result) {
 		if res.RPMPackages > 0 {
 			fmt.Printf("  dnf:\n")
 			fmt.Printf("    dnf install --repofrompath=pixiu,%s/rpm kubeadm\n", res.RepoURL)
-			fmt.Printf("  或写入 /etc/yum.repos.d/pixiu-offline.repo:\n")
-			fmt.Printf("    [pixiu-offline]\n    name=Pixiu Offline\n    baseurl=%s/rpm\n    enabled=1\n    gpgcheck=0\n", res.RepoURL)
+			fmt.Printf("  或写入 /etc/yum.repos.d/pixiu.repo:\n")
+			fmt.Printf("    [pixiu]\n    name=Pixiu\n    baseurl=%s/rpm\n    enabled=1\n    gpgcheck=0\n", res.RepoURL)
 		}
 		if res.DebPackages > 0 {
 			fmt.Printf("  apt:\n")
-			fmt.Printf("    echo 'deb [trusted=yes] %s/deb ./' > /etc/apt/sources.list.d/pixiu-offline.list\n", res.RepoURL)
+			fmt.Printf("    echo 'deb [trusted=yes] %s/deb ./' > /etc/apt/sources.list.d/pixiu.list\n", res.RepoURL)
 			fmt.Printf("    apt-get update && apt-get install kubeadm\n")
 		}
 	}
