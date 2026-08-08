@@ -3,7 +3,7 @@ name: sync kubeadm command
 on:
   push:
     branches:
-      - "*"
+      - "caoyingjunz-patch-1"
 
 env:
   GO_VERSION: '1.25.0'
@@ -16,4 +16,4 @@ jobs:
       - uses: actions/checkout@v3
 
       - name: sync kubeadm command
-        run: go run cmd/builder/main.go sync-kubeadm --kubernetes-version v1.31.6 --configFile builder.yaml --github-owner ${{ secrets.OWNER }} --github-repo ${{ secrets.REPO }}  --github-token ${{ secrets.TOKEN }}
+        run: go run cmd/builder/main.go sync-kubeadm --kubernetes-version v1.31.8 --configFile builder.yaml --github-owner ${{ secrets.OWNER }} --github-repo ${{ secrets.REPO }}  --github-token ${{ secrets.TOKEN }}
