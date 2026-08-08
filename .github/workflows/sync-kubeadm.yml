@@ -1,9 +1,10 @@
 name: sync kubeadm command
 
 on:
-  push:
-    branches:
-      - "*"
+  schedule:
+    # 每天北京时间 01:00（UTC 17:00）执行一次
+    - cron: '0 17 * * *'
+  workflow_dispatch: # 保留手动触发
 
 env:
   GO_VERSION: '1.25.0'
