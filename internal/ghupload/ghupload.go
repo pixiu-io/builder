@@ -62,21 +62,46 @@ type asset struct {
 	BrowserDownloadURL string `json:"browser_download_url"`
 }
 
-// Validate 校验上传必要参数。
-func (o Options) Validate() error {
+// ValidateRepo 校验仓库与 token（不要求 Tag）。
+func (o Options) ValidateRepo() error {
 	if strings.TrimSpace(o.Owner) == "" {
 		return fmt.Errorf("github owner 不能为空（配置 github.owner 或 --github-owner）")
 	}
 	if strings.TrimSpace(o.Repo) == "" {
 		return fmt.Errorf("github repo 不能为空（配置 github.repo 或 --github-repo）")
 	}
-	if strings.TrimSpace(o.Tag) == "" {
-		return fmt.Errorf("github tag 不能为空（配置 github.tag 或 --github-tag）")
-	}
 	if strings.TrimSpace(ResolveToken(o.Token)) == "" {
 		return fmt.Errorf("github token 不能为空（配置 github.token、--github-token 或环境变量 GITHUB_TOKEN/GH_TOKEN）")
 	}
 	return nil
+}
+
+// Validate 校验上传必要参数。
+func (o Options) Validate() error {
+	if err := o.ValidateRepo(); err != nil {
+		return err
+	}
+	if strings.TrimSpace(o.Tag) == "" {
+		return fmt.Errorf("github tag 不能为空（配置 github.tag 或 --github-tag）")
+	}
+	return nil
+}
+
+// ReleaseInfo 单个 Release 摘要（用于列表对比）。
+type ReleaseInfo struct {
+	ID     int64
+	Tag    string
+	Assets []string // asset 文件名列表
+}
+
+// HasAsset 判断 Release 是否已有指定 asset。
+func (r ReleaseInfo) HasAsset(name string) bool {
+	for _, a := range r.Assets {
+		if a == name {
+			return true
+		}
+	}
+	return false
 }
 
 // ResolveToken 返回非空 token：显式值优先，否则读 GITHUB_TOKEN / GH_TOKEN。
@@ -119,12 +144,13 @@ func DownloadAsset(ctx context.Context, opts Options, assetName, dst string, mod
 		}
 	}
 	if found == nil {
-		return fmt.Errorf("github release %s/%s@%s 缺少 asset %q，请先执行 upload-kubeadm 上传", opts.Owner, opts.Repo, opts.Tag, assetName)
+		return fmt.Errorf("github release %s/%s@%s 缺少 asset %q，请先执行 sync-kubeadm 上传", opts.Owner, opts.Repo, opts.Tag, assetName)
 	}
 	return c.downloadAsset(ctx, found.ID, dst, mode)
 }
 
 // EnsureRelease 确保指定 tag 的 GitHub Release 存在；不存在时自动创建。
+// 创建时 Release 名与 tag_name 均为 opts.Tag（通常为 k8s 版本号）。
 func EnsureRelease(ctx context.Context, opts Options) error {
 	if err := opts.Validate(); err != nil {
 		return err
@@ -132,6 +158,73 @@ func EnsureRelease(ctx context.Context, opts Options) error {
 	c := newClient(opts)
 	_, err := c.getOrCreateRelease(ctx)
 	return err
+}
+
+// ListReleases 分页列出仓库全部 Release（含 asset 名）。
+func ListReleases(ctx context.Context, opts Options) ([]ReleaseInfo, error) {
+	if err := opts.ValidateRepo(); err != nil {
+		return nil, err
+	}
+	c := newClient(opts)
+	var out []ReleaseInfo
+	for page := 1; ; page++ {
+		u := fmt.Sprintf("%s/repos/%s/%s/releases?per_page=100&page=%d", c.api, opts.Owner, opts.Repo, page)
+		var pageRels []struct {
+			ID      int64   `json:"id"`
+			TagName string  `json:"tag_name"`
+			Assets  []asset `json:"assets"`
+		}
+		_, err := c.doJSON(ctx, http.MethodGet, u, nil, "", &pageRels)
+		if err != nil {
+			return nil, fmt.Errorf("列出 release %s/%s 失败: %w", opts.Owner, opts.Repo, err)
+		}
+		if len(pageRels) == 0 {
+			break
+		}
+		for _, r := range pageRels {
+			names := make([]string, 0, len(r.Assets))
+			for _, a := range r.Assets {
+				names = append(names, a.Name)
+			}
+			out = append(out, ReleaseInfo{ID: r.ID, Tag: r.TagName, Assets: names})
+		}
+		if len(pageRels) < 100 {
+			break
+		}
+	}
+	return out, nil
+}
+
+// ListTags 分页列出指定仓库的全部 git tag 名（owner/repo 可与 opts 不同，例如 kubernetes/kubernetes）。
+func ListTags(ctx context.Context, opts Options, owner, repo string) ([]string, error) {
+	if strings.TrimSpace(owner) == "" || strings.TrimSpace(repo) == "" {
+		return nil, fmt.Errorf("列出 tag 时 owner/repo 不能为空")
+	}
+	if strings.TrimSpace(ResolveToken(opts.Token)) == "" {
+		return nil, fmt.Errorf("github token 不能为空（配置 github.token、--github-token 或环境变量 GITHUB_TOKEN/GH_TOKEN）")
+	}
+	c := newClient(opts)
+	var out []string
+	for page := 1; ; page++ {
+		u := fmt.Sprintf("%s/repos/%s/%s/tags?per_page=100&page=%d", c.api, owner, repo, page)
+		var pageTags []struct {
+			Name string `json:"name"`
+		}
+		_, err := c.doJSON(ctx, http.MethodGet, u, nil, "", &pageTags)
+		if err != nil {
+			return nil, fmt.Errorf("列出 tag %s/%s 失败: %w", owner, repo, err)
+		}
+		if len(pageTags) == 0 {
+			break
+		}
+		for _, t := range pageTags {
+			out = append(out, t.Name)
+		}
+		if len(pageTags) < 100 {
+			break
+		}
+	}
+	return out, nil
 }
 
 // UploadFiles 将本地文件上传到指定 tag 的 GitHub Release。
