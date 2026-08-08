@@ -24,7 +24,7 @@ func TestTagFromImageRef(t *testing.T) {
 		in, want string
 	}{
 		{"registry.k8s.io/kube-apiserver:v1.27.3", "v1.27.3"},
-		{"docker.io/flannel/flannel:v0.24.2", "v0.24.2"},
+		{"swr.cn-north-4.myhuaweicloud.com/pixiu-public/flannel/flannel:v0.24.2", "v0.24.2"},
 		{"registry.k8s.io/coredns/coredns:v1.10.1", "v1.10.1"},
 		{"kube-apiserver", ""},
 		{"registry.k8s.io/pause@sha256:abc", ""},
@@ -100,6 +100,86 @@ func TestWriteDebRepo(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(repo, "Packages.gz")); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// TestWriteDebRepoStanzaStructure 按 stanza 结构校验 Packages 生成结果，
+// 而不是 strings.Contains：真实 deb 的 control 以 \n 结尾，若
+// upsertControlField 产生空行，会把单个包的 stanza 拆成两段（后段只有
+// Filename/Size/SHA256 无 Package:），apt 解析时报
+// "E: Encountered a section with no Package: header"。此测试在修复前会 FAIL、
+// 修复后 PASS。
+func TestWriteDebRepoStanzaStructure(t *testing.T) {
+	dir := t.TempDir()
+	repo := filepath.Join(dir, "repo")
+	if err := os.MkdirAll(repo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	pkgs := []struct{ name, file string }{
+		{"kubeadm", "kubeadm_1.27.3_amd64.deb"},
+		{"chrony", "chrony_4.5_amd64.deb"},
+	}
+	var debFiles []string
+	for _, p := range pkgs {
+		debPath := filepath.Join(dir, p.file)
+		control := fmt.Sprintf("Package: %s\nVersion: 1.0\nArchitecture: amd64\nDescription: test\n", p.name)
+		if err := writeMinimalDeb(debPath, control); err != nil {
+			t.Fatal(err)
+		}
+		dst := filepath.Join(repo, p.file)
+		if err := linkOrCopy(debPath, dst); err != nil {
+			t.Fatal(err)
+		}
+		debFiles = append(debFiles, dst)
+	}
+	if err := writeDebRepo(repo, debFiles); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(repo, "Packages"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	stanzas := strings.Split(string(data), "\n\n")
+	var nonEmpty int
+	for _, st := range stanzas {
+		st = strings.TrimSpace(st)
+		if st == "" {
+			continue
+		}
+		nonEmpty++
+		// 每个非空 stanza 必须以 Package: 开头，不允许存在只含
+		// Filename/Size/SHA256 的孤立段。
+		if !strings.HasPrefix(st, "Package:") {
+			t.Fatalf("存在不以 Package: 开头的孤立 stanza（apt 会报 no Package: header）:\n%s", st)
+		}
+	}
+	if nonEmpty != len(pkgs) {
+		t.Fatalf("stanza 数量=%d 期望=%d，说明有包的 stanza 被拆段:\n%s", nonEmpty, len(pkgs), data)
+	}
+
+	// 每个包的 Filename/Size/SHA256 必须与其 Package: 同处一个 stanza 块。
+	for _, p := range pkgs {
+		block := ""
+		for _, st := range stanzas {
+			if strings.HasPrefix(strings.TrimSpace(st), "Package: "+p.name+"\n") {
+				block = st
+				break
+			}
+		}
+		if block == "" {
+			t.Fatalf("未找到包 %s 的 stanza:\n%s", p.name, data)
+		}
+		for _, field := range []string{"Filename:", "Size:", "SHA256:"} {
+			if !strings.Contains(block, field) {
+				t.Fatalf("包 %s 的 stanza 缺少 %s（字段被拆到其他段）:\n%s", p.name, field, block)
+			}
+		}
+	}
+
+	// Packages.gz 应同步生成。
+	if _, err := os.Stat(filepath.Join(repo, "Packages.gz")); err != nil {
+		t.Fatalf("Packages.gz 缺失: %v", err)
 	}
 }
 

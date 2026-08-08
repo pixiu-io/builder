@@ -17,7 +17,7 @@ func TestShortName(t *testing.T) {
 	}{
 		{"registry.k8s.io/kube-apiserver:v1.27.3", "kube-apiserver"},
 		{"registry.k8s.io/kube-proxy:v1.27.3", "kube-proxy"},
-		{"docker.io/flannel/flannel:v0.24.2", "flannel"},
+		{"swr.cn-north-4.myhuaweicloud.com/pixiu-public/flannel/flannel:v0.24.2", "flannel"},
 		{"registry.k8s.io/pause:3.9", "pause"},
 		{"kube-apiserver:v1.27.3", "kube-apiserver"},
 		{"registry.k8s.io/coredns/coredns:v1.10.1", "coredns"},
@@ -134,7 +134,7 @@ exit 1
 func TestFetchSkippedNoDocker(t *testing.T) {
 	res, err := Fetch(context.Background(), Options{
 		DockerBin:       "/nonexistent/docker-xyz",
-		BuildImage:      "ubuntu:22.04",
+		BuildImage:      "swr.cn-north-4.myhuaweicloud.com/pixiu-public/ubuntu:22.04",
 		PkgManager:      "apt",
 		K8sMinor:        "v1.27",
 		Codename:        "jammy",
@@ -166,17 +166,17 @@ func TestNormalizeArch(t *testing.T) {
 func TestBuildPullSaveScript(t *testing.T) {
 	s := buildPullSaveScript([]saveJob{
 		{Name: "kube-apiserver", Image: "registry.k8s.io/kube-apiserver:v1.27.3", SubDir: "core"},
-		{Name: "flannel", Image: "docker.io/flannel/flannel:v0.24.2", SubDir: "addons"},
+		{Name: "flannel", Image: "swr.cn-north-4.myhuaweicloud.com/pixiu-public/flannel/flannel:v0.24.2", SubDir: "addons"},
 	})
 	for _, want := range []string{
 		"set -e",
 		"mkdir -p /out/core /out/addons",
 		`echo "[images] 1/2 pull registry.k8s.io/kube-apiserver:v1.27.3"`,
-		`echo "[images] 2/2 save docker.io/flannel/flannel:v0.24.2"`,
+		`echo "[images] 2/2 save swr.cn-north-4.myhuaweicloud.com/pixiu-public/flannel/flannel:v0.24.2"`,
 		"docker pull 'registry.k8s.io/kube-apiserver:v1.27.3'",
 		"docker save -o '/out/core/kube-apiserver.tar' 'registry.k8s.io/kube-apiserver:v1.27.3'",
-		"docker pull 'docker.io/flannel/flannel:v0.24.2'",
-		"docker save -o '/out/addons/flannel.tar' 'docker.io/flannel/flannel:v0.24.2'",
+		"docker pull 'swr.cn-north-4.myhuaweicloud.com/pixiu-public/flannel/flannel:v0.24.2'",
+		"docker save -o '/out/addons/flannel.tar' 'swr.cn-north-4.myhuaweicloud.com/pixiu-public/flannel/flannel:v0.24.2'",
 	} {
 		if !strings.Contains(s, want) {
 			t.Errorf("脚本缺少 %q:\n%s", want, s)
@@ -224,8 +224,8 @@ func TestFetchWithFakes(t *testing.T) {
 	outDir := t.TempDir()
 	res, err := Fetch(context.Background(), Options{
 		DockerBin:       dockerPath,
-		BuildImage:      "ubuntu:22.04",
-		PackImage:       "docker:24-cli",
+		BuildImage:      "swr.cn-north-4.myhuaweicloud.com/pixiu-public/ubuntu:22.04",
+		PackImage:       defaultPackImage,
 		PkgManager:      "apt",
 		K8sMinor:        "v1.27",
 		Codename:        "jammy",
@@ -234,7 +234,7 @@ func TestFetchWithFakes(t *testing.T) {
 		ImageRepository: "registry.k8s.io",
 		Arch:            runtime.GOARCH,
 		KubeadmBin:      kubeadmPath,
-		Addons:          []config.Addon{{Name: "flannel", Image: "docker.io/flannel/flannel", Tag: "v0.24.2"}},
+		Addons:          []config.Addon{{Name: "flannel", Image: "swr.cn-north-4.myhuaweicloud.com/pixiu-public/flannel/flannel", Tag: "v0.24.2"}},
 		ImagesOutDir:    outDir,
 	})
 	if err != nil {
@@ -270,8 +270,8 @@ func TestFetchSkipAddons(t *testing.T) {
 	outDir := t.TempDir()
 	res, err := Fetch(context.Background(), Options{
 		DockerBin:       dockerPath,
-		BuildImage:      "ubuntu:22.04",
-		PackImage:       "docker:24-cli",
+		BuildImage:      "swr.cn-north-4.myhuaweicloud.com/pixiu-public/ubuntu:22.04",
+		PackImage:       defaultPackImage,
 		PkgManager:      "apt",
 		K8sMinor:        "v1.27",
 		Codename:        "jammy",
@@ -281,8 +281,8 @@ func TestFetchSkipAddons(t *testing.T) {
 		Arch:            runtime.GOARCH,
 		KubeadmBin:      kubeadmPath,
 		Addons: []config.Addon{
-			{Name: "flannel", Image: "docker.io/flannel/flannel", Tag: "v0.24.2"},
-			{Name: "dashboard", Image: "docker.io/kubernetesui/dashboard", Tag: "v2.7.0"},
+			{Name: "flannel", Image: "swr.cn-north-4.myhuaweicloud.com/pixiu-public/flannel/flannel", Tag: "v0.24.2"},
+			{Name: "dashboard", Image: "swr.cn-north-4.myhuaweicloud.com/pixiu-public/kubernetesui/dashboard", Tag: "v2.7.0"},
 		},
 		ImagesOutDir: outDir,
 		SkipAddons:   true,
@@ -314,13 +314,13 @@ func TestFetchSkipAddons(t *testing.T) {
 
 func TestFetchDryRun(t *testing.T) {
 	res, err := Fetch(context.Background(), Options{
-		BuildImage:      "ubuntu:22.04",
+		BuildImage:      "swr.cn-north-4.myhuaweicloud.com/pixiu-public/ubuntu:22.04",
 		PkgManager:      "apt",
 		K8sMinor:        "v1.27",
 		Codename:        "jammy",
 		K8sVersion:      "v1.27.3",
 		ImageRepository: "registry.k8s.io",
-		Addons:          []config.Addon{{Name: "flannel", Image: "docker.io/flannel/flannel", Tag: "v0.24.2"}},
+		Addons:          []config.Addon{{Name: "flannel", Image: "swr.cn-north-4.myhuaweicloud.com/pixiu-public/flannel/flannel", Tag: "v0.24.2"}},
 		ImagesOutDir:    t.TempDir(),
 		DryRun:          true,
 	})
@@ -333,7 +333,7 @@ func TestFetchDryRun(t *testing.T) {
 }
 
 func TestSafeTarNameAddonFlannel(t *testing.T) {
-	if got := SafeTarName("docker.io/flannel/flannel:v0.24.2"); got != "flannel" {
+	if got := SafeTarName("swr.cn-north-4.myhuaweicloud.com/pixiu-public/flannel/flannel:v0.24.2"); got != "flannel" {
 		t.Errorf("flannel tar 名异常: %q", got)
 	}
 }
@@ -347,7 +347,7 @@ func TestListCoreImagesUsesKubeadmBin(t *testing.T) {
 
 	got, err := listCoreImages(context.Background(), Options{
 		DockerBin:       dockerPath,
-		BuildImage:      "ubuntu:22.04",
+		BuildImage:      "swr.cn-north-4.myhuaweicloud.com/pixiu-public/ubuntu:22.04",
 		K8sVersion:      "v1.27.3",
 		ImageRepository: "registry.k8s.io",
 		Arch:            runtime.GOARCH,
@@ -399,13 +399,13 @@ func TestFetchWithExternalCoreImages(t *testing.T) {
 	outDir := t.TempDir()
 	res, err := Fetch(context.Background(), Options{
 		DockerBin:       dockerPath,
-		BuildImage:      "ubuntu:22.04",
-		PackImage:       "docker:24-cli",
+		BuildImage:      "swr.cn-north-4.myhuaweicloud.com/pixiu-public/ubuntu:22.04",
+		PackImage:       defaultPackImage,
 		K8sVersion:      "v1.27.3",
 		ImageRepository: "registry.k8s.io",
 		Arch:            runtime.GOARCH,
 		CoreImages:      []string{"registry.k8s.io/kube-apiserver:v1.27.3"},
-		Addons:          []config.Addon{{Name: "flannel", Image: "docker.io/flannel/flannel", Tag: "v0.24.2"}},
+		Addons:          []config.Addon{{Name: "flannel", Image: "swr.cn-north-4.myhuaweicloud.com/pixiu-public/flannel/flannel", Tag: "v0.24.2"}},
 		ImagesOutDir:    outDir,
 	})
 	if err != nil {
@@ -438,13 +438,13 @@ func TestFetchWithEmptyCoreImagesNoKubeadm(t *testing.T) {
 	outDir := t.TempDir()
 	res, err := Fetch(context.Background(), Options{
 		DockerBin:       dockerPath,
-		BuildImage:      "ubuntu:22.04",
-		PackImage:       "docker:24-cli",
+		BuildImage:      "swr.cn-north-4.myhuaweicloud.com/pixiu-public/ubuntu:22.04",
+		PackImage:       defaultPackImage,
 		K8sVersion:      "v1.27.3",
 		ImageRepository: "registry.k8s.io",
 		Arch:            runtime.GOARCH,
 		CoreImages:      []string{},
-		Addons:          []config.Addon{{Name: "flannel", Image: "docker.io/flannel/flannel", Tag: "v0.24.2"}},
+		Addons:          []config.Addon{{Name: "flannel", Image: "swr.cn-north-4.myhuaweicloud.com/pixiu-public/flannel/flannel", Tag: "v0.24.2"}},
 		ImagesOutDir:    outDir,
 	})
 	if err != nil {
@@ -468,14 +468,14 @@ func TestFetchOnlyAddons(t *testing.T) {
 	outDir := t.TempDir()
 	res, err := Fetch(context.Background(), Options{
 		DockerBin:       dockerPath,
-		BuildImage:      "ubuntu:22.04",
-		PackImage:       "docker:24-cli",
+		BuildImage:      "swr.cn-north-4.myhuaweicloud.com/pixiu-public/ubuntu:22.04",
+		PackImage:       defaultPackImage,
 		K8sVersion:      "v1.27.3",
 		ImageRepository: "registry.k8s.io",
 		Arch:            runtime.GOARCH,
 		CoreImages:      []string{}, // only-addons：核心镜像置空，不拉核心
 		Addons: []config.Addon{
-			{Name: "flannel", Image: "docker.io/flannel/flannel", Tag: "v0.24.2"},
+			{Name: "flannel", Image: "swr.cn-north-4.myhuaweicloud.com/pixiu-public/flannel/flannel", Tag: "v0.24.2"},
 			{Name: "metrics-server", Image: "registry.k8s.io/metrics-server/metrics-server", Tag: "v0.6.4"},
 		},
 		ImagesOutDir: outDir,
@@ -514,8 +514,8 @@ func TestFetchWithCoreFilter(t *testing.T) {
 	outDir := t.TempDir()
 	res, err := Fetch(context.Background(), Options{
 		DockerBin:       dockerPath,
-		BuildImage:      "ubuntu:22.04",
-		PackImage:       "docker:24-cli",
+		BuildImage:      "swr.cn-north-4.myhuaweicloud.com/pixiu-public/ubuntu:22.04",
+		PackImage:       defaultPackImage,
 		K8sVersion:      "v1.27.3",
 		ImageRepository: "registry.k8s.io",
 		Arch:            runtime.GOARCH,

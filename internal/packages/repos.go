@@ -1,5 +1,6 @@
 // Package packages 在目标系统容器内通过包管理器（apt/dnf）递归下载
-// k8s 组件、容器运行时与系统依赖包，并生成对应的软件源（pkgs.k8s.io / download.docker.com）。
+// k8s 组件、容器运行时与系统依赖包，并生成对应的软件源（apt 系 k8s 源使用阿里云 kubernetes-new 镜像；
+// dnf/yum 与 containerd 源默认使用国内镜像，containerd 默认阿里云）。
 // 依赖闭包交由包管理器处理；docker 不可用时该步骤标记为 skipped。
 package packages
 
@@ -9,7 +10,7 @@ import (
 )
 
 // Repo 描述一个需要配置的软件源。apt 与 dnf 二选一（按目标 OS 包管理器使用）。
-// 注意：源 URL 以 pkgs.k8s.io / download.docker.com 官方结构为准，下载前已用 curl 实测可达。
+// 注意：apt 系 k8s 源使用阿里云 kubernetes-new；containerd 源按配置的国内镜像（默认阿里云）生成。
 type Repo struct {
 	// Name 源标识，用于 apt sources.list.d 文件名与 dnf repo 文件名。
 	Name string
@@ -30,12 +31,13 @@ type Repo struct {
 //
 //	EXPKEYSIG 234654DA9A296436 isv:kubernetes OBS Project
 //
-// 官方建议改用较新仓库（≥v1.31）的密钥校验所有 pkgs.k8s.io 仓库。
+// 官方建议改用较新仓库（≥v1.31）的密钥校验所有 k8s 软件仓库。
 // 参见 https://github.com/kubernetes/release/issues/3818
 const k8sSigningKeyMinor = "v1.31"
 
-// K8sRepos 返回 k8s 组件源（pkgs.k8s.io）。
+// K8sRepos 返回 k8s 组件源。
 // k8sMinor 形如 v1.27，由 k8s 版本前两段推导（决定软件包仓库路径）。
+// apt 系与 dnf/yum 系均使用阿里云 kubernetes-new 镜像，避免构建环境访问 pkgs.k8s.io 不稳定。
 // GPG/RPM 签名密钥固定从 k8sSigningKeyMinor 仓库拉取，避免旧版仓库密钥过期。
 func K8sRepos(k8sMinor string) []Repo {
 	if k8sMinor == "" {
@@ -46,61 +48,74 @@ func K8sRepos(k8sMinor string) []Repo {
 	return []Repo{{
 		Name: "kubernetes",
 		AptLine: fmt.Sprintf(
-			"deb [signed-by=%s] https://pkgs.k8s.io/core:/stable:/%s/deb/ /",
+			"deb [signed-by=%s] https://mirrors.aliyun.com/kubernetes-new/core/stable/%s/deb/ /",
 			keyDest, k8sMinor),
-		AptKeyURL:  fmt.Sprintf("https://pkgs.k8s.io/core:/stable:/%s/deb/Release.key", keyMinor),
+		AptKeyURL:  fmt.Sprintf("https://mirrors.aliyun.com/kubernetes-new/core/stable/%s/deb/Release.key", keyMinor),
 		AptKeyDest: keyDest,
 		DnfRepoBlock: fmt.Sprintf(`[kubernetes]
 name=Kubernetes (stable %s)
-baseurl=https://pkgs.k8s.io/core:/stable:/%s/rpm/
+baseurl=https://mirrors.aliyun.com/kubernetes-new/core/stable/%s/rpm/
 enabled=1
 gpgcheck=1
-gpgkey=https://pkgs.k8s.io/core:/stable:/%s/rpm/repodata/repomd.xml.key`, k8sMinor, k8sMinor, keyMinor),
-		DnfKeyURL: fmt.Sprintf("https://pkgs.k8s.io/core:/stable:/%s/rpm/repodata/repomd.xml.key", keyMinor),
+gpgkey=https://mirrors.aliyun.com/kubernetes-new/core/stable/%s/rpm/repodata/repomd.xml.key`, k8sMinor, k8sMinor, keyMinor),
+		DnfKeyURL: fmt.Sprintf("https://mirrors.aliyun.com/kubernetes-new/core/stable/%s/rpm/repodata/repomd.xml.key", keyMinor),
 	}}
 }
 
-// ContainerdRepos 返回 containerd 源（docker 官方源 download.docker.com）。
-// 注：containerd.io 包改由 docker 官方源提供。原 packages.containerd.io 域名在当前网络与
-// 公共 DNS（223.5.5.5 / 8.8.8.8）均 NXDOMAIN 无法解析；download.docker.com 各发行版实测可达
-// （ubuntu noble / rhel9 / containerd.io 包均 HTTP 200）。
+// containerdMirror 描述 containerd（docker-ce）软件源镜像：URL 前缀与 dnf rpm 路径段。
+type containerdMirror struct {
+	// host URL 前缀（含 /docker-ce 段；官方 download.docker.com 无该段）。
+	host string
+	// rpmDir dnf baseurl/gpgkey 的发行版段（国内镜像 centos；官方 rhel）。
+	rpmDir string
+}
+
+// containerdMirrors 按 repoType 映射 containerd 源镜像。
+// aliyun=阿里云（默认）、ustc=中科大、docker=官方（保留选项）。
+// openEuler 使用系统源（repoType=none），不落入本映射。
+var containerdMirrors = map[string]containerdMirror{
+	"aliyun": {host: "mirrors.aliyun.com/docker-ce", rpmDir: "centos"},
+	"ustc":   {host: "mirrors.ustc.edu.cn/docker-ce", rpmDir: "centos"},
+	"docker": {host: "download.docker.com", rpmDir: "rhel"},
+}
+
+// ContainerdRepos 返回 containerd 源（docker-ce 源）。
+// repoType 决定源镜像：aliyun=阿里云 mirrors.aliyun.com/docker-ce（默认，空值同）；
+// ustc=中科大 mirrors.ustc.edu.cn/docker-ce；docker=官方 download.docker.com（保留选项）。
+// 注：containerd.io 包由 docker-ce 源提供。原 packages.containerd.io 域名在当前网络与
+// 公共 DNS（223.5.5.5 / 8.8.8.8）均 NXDOMAIN 无法解析，已改用国内镜像（默认阿里云）提供 containerd.io 包。
 // aptOS 为 apt 发行版家族（ubuntu/debian）；codename 为 apt 版本代号（jammy/bookworm 等）；
 // rpmDistro 为 dnf 发行版标识（rhel9/rhel7 等，rocky→rhel9、openEuler→rhel7），
-// 代码内按 download.docker.com 路径规则转换为 rhel/{大版本}。
-func ContainerdRepos(aptOS, codename, rpmDistro string) []Repo {
+// baseurl 段由 {rpmDir}/{大版本} 组成（rhel9→centos/9 或 rhel/9），gpg 段固定用 rpmDir（不带版本号）。
+func ContainerdRepos(aptOS, codename, rpmDistro, repoType string) []Repo {
 	if aptOS == "" {
 		aptOS = "ubuntu"
 	}
+	m, ok := containerdMirrors[repoType]
+	if !ok {
+		m = containerdMirrors["aliyun"] // 默认阿里云（含空串/未知值）
+	}
+	// major 由 rpmDistro 去掉 rhel 前缀得到（rhel9→9、rhel7→7）；非 rhel 前缀原样保留。
+	major := rpmDistro
+	if strings.HasPrefix(rpmDistro, "rhel") {
+		major = strings.TrimPrefix(rpmDistro, "rhel")
+	}
 	keyDest := "/etc/apt/keyrings/containerd-apt-keyring.gpg"
-	// basePath 为 dnf baseurl 发行版段（rhel9→rhel/9）；gpgPath 为 gpg key 发行版段（rhel）。
-	basePath, gpgPath := dockerRPMBase(rpmDistro)
 	return []Repo{{
 		Name: "containerd",
 		AptLine: fmt.Sprintf(
-			"deb [signed-by=%s] https://download.docker.com/linux/%s %s stable",
-			keyDest, aptOS, codename),
-		AptKeyURL:  fmt.Sprintf("https://download.docker.com/linux/%s/gpg", aptOS),
+			"deb [signed-by=%s] https://%s/linux/%s %s stable",
+			keyDest, m.host, aptOS, codename),
+		AptKeyURL:  fmt.Sprintf("https://%s/linux/%s/gpg", m.host, aptOS),
 		AptKeyDest: keyDest,
 		DnfRepoBlock: fmt.Sprintf(`[docker-ce-stable]
 name=docker-ce-stable
-baseurl=https://download.docker.com/linux/%s/$basearch/stable
+baseurl=https://%s/linux/%s/%s/$basearch/stable
 enabled=1
 gpgcheck=1
-gpgkey=https://download.docker.com/linux/%s/gpg`, basePath, gpgPath),
-		DnfKeyURL: fmt.Sprintf("https://download.docker.com/linux/%s/gpg", gpgPath),
+gpgkey=https://%s/linux/%s/gpg`, m.host, m.rpmDir, major, m.host, m.rpmDir),
+		DnfKeyURL: fmt.Sprintf("https://%s/linux/%s/gpg", m.host, m.rpmDir),
 	}}
-}
-
-// dockerRPMBase 把 dnf 发行版标识转换为 download.docker.com rpm 源的发行版段：
-// baseurl 用 rhel/{大版本}（rhel9→rhel/9），gpg key 用 rhel（download.docker.com 的 gpg
-// key 路径不带版本号，rhel/9/gpg 实测 404，rhel/gpg 实测 200）。非 rhel 前缀原样返回。
-// 注：openEuler 对应 rhel7，download.docker.com/linux/rhel/7/ 实测 404（docker 官方已停止
-// 发布 RHEL7 仓库），openEuler 场景 containerd dnf 源存在兼容性风险。
-func dockerRPMBase(rpmDistro string) (basePath, gpgPath string) {
-	if rpmDistro != "" && strings.HasPrefix(rpmDistro, "rhel") {
-		return "rhel/" + strings.TrimPrefix(rpmDistro, "rhel"), "rhel"
-	}
-	return rpmDistro, rpmDistro
 }
 
 // AptSourceScript 生成容器内配置 apt 源的 shell 片段：
@@ -142,10 +157,10 @@ func DnfSourceScript(repos []Repo) string {
 // BuildPackageList 按包管理器生成容器内下载的软件包清单：
 // k8s 三件套（kubeadm/kubelet/kubectl） + 运行时（containerdPkg/cri-tools） + 系统依赖。
 // 注：runc 由 containerd 包（containerd.io 或系统源 containerd）内嵌提供，不单独安装，
-// 避免 download.docker.com 的 containerd.io 与独立 runc 包存在 Conflicts: runc 冲突导致 apt 无法同时解析。
+// 避免 docker-ce 源的 containerd.io 与独立 runc 包存在 Conflicts: runc 冲突导致 apt 无法同时解析。
 // pinK8s=true 时对 k8s 组件做精确版本约束（apt: pkg=<ver>；dnf/yum: pkg-<ver>），
 // 默认 false 使用源内 stable 最新版本。
-// containerdPkg 为空时默认 "containerd.io"（docker 源包名）；openEuler 等系统源场景传 "containerd"。
+// containerdPkg 为空时默认 "containerd.io"（docker-ce 源包名）；openEuler 等系统源场景传 "containerd"。
 func BuildPackageList(pkgManager, k8sVersion string, deps []string, pinK8s bool, containerdPkg string) []string {
 	if containerdPkg == "" {
 		containerdPkg = "containerd.io"

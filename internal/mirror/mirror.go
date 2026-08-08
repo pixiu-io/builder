@@ -1,5 +1,5 @@
 // Package mirror 定义镜像仓库源（Mirror）。
-// 包模式下 k8s 组件与运行时均走官方包源（pkgs.k8s.io / download.docker.com），
+// 包模式下 k8s 组件与运行时均走包源（阿里云 kubernetes-new / docker-ce 源），
 // 因此 Mirror 仅作用于"镜像阶段"的镜像仓库（kubeadm config images list --image-repository）。
 package mirror
 

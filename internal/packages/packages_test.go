@@ -13,7 +13,7 @@ import (
 func TestBuildDownloadScriptAPT(t *testing.T) {
 	s := BuildDownloadScript(DownloadScriptOpts{
 		PkgManager:  "apt",
-		Repos:       append(K8sRepos("v1.27"), ContainerdRepos("ubuntu", "jammy", "")...),
+		Repos:       append(K8sRepos("v1.27"), ContainerdRepos("ubuntu", "jammy", "", "")...),
 		Pkgs:        []string{"kubeadm", "kubelet", "containerd.io", "conntrack"},
 		ArchiveDir:  "/out",
 		CheckCrictl: true,
@@ -24,8 +24,8 @@ func TestBuildDownloadScriptAPT(t *testing.T) {
 		"apt-get update",
 		"apt-get install -y --no-install-recommends curl ca-certificates gnupg apt-transport-https",
 		"curl -fsSL", "gpg --dearmor",
-		"https://pkgs.k8s.io/core:/stable:/v1.27/deb/",
-		"https://download.docker.com/linux/ubuntu jammy stable",
+		"https://mirrors.aliyun.com/kubernetes-new/core/stable/v1.27/deb/",
+		"https://mirrors.aliyun.com/docker-ce/linux/ubuntu jammy stable",
 		"apt-get install -y --download-only --no-install-recommends",
 		"Dir::Cache::archives=/out",
 		"apt-get install --dry-run",
@@ -40,7 +40,7 @@ func TestBuildDownloadScriptAPT(t *testing.T) {
 func TestBuildDownloadScriptDNF(t *testing.T) {
 	s := BuildDownloadScript(DownloadScriptOpts{
 		PkgManager:  "dnf",
-		Repos:       append(K8sRepos("v1.28"), ContainerdRepos("", "", "rhel9")...),
+		Repos:       append(K8sRepos("v1.28"), ContainerdRepos("", "", "rhel9", "")...),
 		Pkgs:        []string{"kubeadm", "containerd.io", "nfs-utils"},
 		ArchiveDir:  "/out",
 		CheckCrictl: true,
@@ -51,8 +51,8 @@ func TestBuildDownloadScriptDNF(t *testing.T) {
 		"dnf -y install dnf-plugins-core",
 		"[kubernetes]", "[docker-ce-stable]",
 		"rpm --import",
-		"https://pkgs.k8s.io/core:/stable:/v1.28/rpm/",
-		"https://download.docker.com/linux/rhel/9/$basearch/stable",
+		"https://mirrors.aliyun.com/kubernetes-new/core/stable/v1.28/rpm/",
+		"https://mirrors.aliyun.com/docker-ce/linux/centos/9/$basearch/stable",
 		"dnf install -y --downloadonly --downloaddir=/out",
 		"dnf download --resolve --destdir=/out",
 		"dnf install --assumeno",
@@ -74,7 +74,7 @@ func TestBuildDownloadScriptDNF(t *testing.T) {
 func TestBuildDownloadScriptYUM(t *testing.T) {
 	s := BuildDownloadScript(DownloadScriptOpts{
 		PkgManager:  "yum",
-		Repos:       append(K8sRepos("v1.32"), ContainerdRepos("", "", "rhel7")...),
+		Repos:       append(K8sRepos("v1.32"), ContainerdRepos("", "", "rhel7", "")...),
 		Pkgs:        []string{"kubeadm", "containerd.io", "nfs-utils"},
 		ArchiveDir:  "/out",
 		CheckCrictl: true,
@@ -87,8 +87,8 @@ func TestBuildDownloadScriptYUM(t *testing.T) {
 		"[kubernetes]", "[docker-ce-stable]",
 		"rpm --import",
 		"/etc/yum.repos.d/kubernetes.repo",
-		"https://pkgs.k8s.io/core:/stable:/v1.32/rpm/",
-		"https://download.docker.com/linux/rhel/7/$basearch/stable",
+		"https://mirrors.aliyun.com/kubernetes-new/core/stable/v1.32/rpm/",
+		"https://mirrors.aliyun.com/docker-ce/linux/centos/7/$basearch/stable",
 		"yum install -y --downloadonly --downloaddir=/out",
 		"yumdownloader --resolve --destdir=/out",
 		"yum list --available cri-tools",
@@ -116,7 +116,7 @@ func TestBuildDownloadScriptYUM(t *testing.T) {
 func TestFetchDockerUnavailable(t *testing.T) {
 	res, err := Fetch(context.Background(), Options{
 		OutDir:     t.TempDir(),
-		BuildImage: "ubuntu:22.04",
+		BuildImage: "swr.cn-north-4.myhuaweicloud.com/pixiu-public/ubuntu:22.04",
 		PkgManager: "apt",
 		K8sMinor:   "v1.27",
 		Codename:   "jammy",
@@ -137,7 +137,7 @@ func TestFetchDockerUnavailable(t *testing.T) {
 func TestFetchDryRun(t *testing.T) {
 	res, err := Fetch(context.Background(), Options{
 		OutDir:     t.TempDir(),
-		BuildImage: "ubuntu:22.04",
+		BuildImage: "swr.cn-north-4.myhuaweicloud.com/pixiu-public/ubuntu:22.04",
 		PkgManager: "apt",
 		K8sMinor:   "v1.27",
 		Codename:   "jammy",
@@ -163,7 +163,7 @@ func TestFetchSkipK8sContainerdReposYUM(t *testing.T) {
 	// 但 CentOS 7 vault 系统源修复必须保留（否则 yum makecache 仍失败）。
 	res, err := Fetch(context.Background(), Options{
 		OutDir:                 t.TempDir(),
-		BuildImage:             "centos:7",
+		BuildImage:             "swr.cn-north-4.myhuaweicloud.com/pixiu-public/centos:7",
 		PkgManager:             "yum",
 		K8sMinor:               "v1.32",
 		RPMDistro:              "rhel7",
@@ -191,7 +191,7 @@ func TestFetchSkipK8sContainerdReposYUM(t *testing.T) {
 		"/etc/yum.repos.d/kubernetes.repo",
 		"/etc/yum.repos.d/containerd.repo",
 		"[kubernetes]", "[docker-ce-stable]",
-		"pkgs.k8s.io", "download.docker.com",
+		"mirrors.aliyun.com/kubernetes-new", "download.docker.com",
 	} {
 		if strings.Contains(script, forbid) {
 			t.Errorf("only-addons yum 脚本不应含 %q:\n%s", forbid, script)
@@ -203,7 +203,7 @@ func TestFetchSkipK8sContainerdReposAPT(t *testing.T) {
 	// --only-addons（apt）：同样跳过 k8s/containerd 源，仅保留系统源配置逻辑。
 	res, err := Fetch(context.Background(), Options{
 		OutDir:                 t.TempDir(),
-		BuildImage:             "ubuntu:22.04",
+		BuildImage:             "swr.cn-north-4.myhuaweicloud.com/pixiu-public/ubuntu:22.04",
 		PkgManager:             "apt",
 		K8sMinor:               "v1.27",
 		Codename:               "jammy",
@@ -224,7 +224,7 @@ func TestFetchSkipK8sContainerdReposAPT(t *testing.T) {
 	for _, forbid := range []string{
 		"/etc/apt/keyrings/kubernetes-apt-keyring.gpg",
 		"/etc/apt/keyrings/containerd-apt-keyring.gpg",
-		"pkgs.k8s.io", "download.docker.com",
+		"mirrors.aliyun.com/kubernetes-new", "download.docker.com",
 	} {
 		if strings.Contains(script, forbid) {
 			t.Errorf("only-addons apt 脚本不应含 %q:\n%s", forbid, script)
@@ -237,7 +237,7 @@ func TestFetchDefaultIncludesK8sContainerdRepos(t *testing.T) {
 	// 且 CentOS 7 vault 修复同样保留。
 	res, err := Fetch(context.Background(), Options{
 		OutDir:     t.TempDir(),
-		BuildImage: "centos:7",
+		BuildImage: "swr.cn-north-4.myhuaweicloud.com/pixiu-public/centos:7",
 		PkgManager: "yum",
 		K8sMinor:   "v1.32",
 		RPMDistro:  "rhel7",
@@ -251,8 +251,8 @@ func TestFetchDefaultIncludesK8sContainerdRepos(t *testing.T) {
 	for _, want := range []string{
 		"/etc/yum.repos.d/kubernetes.repo",
 		"/etc/yum.repos.d/containerd.repo",
-		"pkgs.k8s.io",
-		"download.docker.com",
+		"mirrors.aliyun.com/kubernetes-new",
+		"mirrors.aliyun.com/docker-ce",
 		"https://vault.centos.org/7.9.2009/os/$basearch/",
 	} {
 		if !strings.Contains(script, want) {
@@ -266,7 +266,7 @@ func TestFetchContainerdRepoNoneDNF(t *testing.T) {
 	// 避免 rhel/7 仓库 404 导致 dnf makecache 失败。
 	res, err := Fetch(context.Background(), Options{
 		OutDir:         t.TempDir(),
-		BuildImage:     "openeuler/openeuler:22.03-lts-sp3",
+		BuildImage:     "swr.cn-north-4.myhuaweicloud.com/pixiu-public/openeuler/openeuler:22.03-lts-sp3",
 		PkgManager:     "dnf",
 		K8sMinor:       "v1.35",
 		RPMDistro:      "rhel7",
@@ -281,7 +281,7 @@ func TestFetchContainerdRepoNoneDNF(t *testing.T) {
 	// k8s 源保留
 	for _, want := range []string{
 		"/etc/yum.repos.d/kubernetes.repo",
-		"pkgs.k8s.io",
+		"mirrors.aliyun.com/kubernetes-new",
 		"dnf makecache",
 	} {
 		if !strings.Contains(script, want) {
@@ -301,15 +301,15 @@ func TestFetchContainerdRepoNoneDNF(t *testing.T) {
 	}
 }
 
-func TestFetchContainerdRepoDefaultDockerDNF(t *testing.T) {
-	// 回归：rocky 等默认（ContainerdRepo 为空/未配置）仍配置 docker containerd 源（rhel/9）。
+func TestFetchContainerdRepoDefaultAliyunDNF(t *testing.T) {
+	// 回归：rocky 等默认（ContainerdRepo 为空/未配置）仍配置 containerd 源（默认阿里云镜像 centos/9）。
 	res, err := Fetch(context.Background(), Options{
 		OutDir:         t.TempDir(),
-		BuildImage:     "rockylinux:9",
+		BuildImage:     "swr.cn-north-4.myhuaweicloud.com/pixiu-public/rockylinux:9",
 		PkgManager:     "dnf",
 		K8sMinor:       "v1.35",
 		RPMDistro:      "rhel9",
-		ContainerdRepo: "", // 默认 docker
+		ContainerdRepo: "", // 默认 aliyun
 		Pkgs:           []string{"kubeadm", "containerd.io", "cri-tools"},
 		DryRun:         true,
 	})
@@ -320,8 +320,8 @@ func TestFetchContainerdRepoDefaultDockerDNF(t *testing.T) {
 	for _, want := range []string{
 		"/etc/yum.repos.d/containerd.repo",
 		"[docker-ce-stable]",
-		"https://download.docker.com/linux/rhel/9/$basearch/stable",
-		"pkgs.k8s.io",
+		"https://mirrors.aliyun.com/docker-ce/linux/centos/9/$basearch/stable",
+		"mirrors.aliyun.com/kubernetes-new",
 	} {
 		if !strings.Contains(script, want) {
 			t.Errorf("默认 dnf 脚本应含 %q:\n%s", want, script)
@@ -371,7 +371,7 @@ func TestFetchWithFakeDocker(t *testing.T) {
 	outDir := t.TempDir()
 	res, err := Fetch(context.Background(), Options{
 		OutDir:     outDir,
-		BuildImage: "ubuntu:22.04",
+		BuildImage: "swr.cn-north-4.myhuaweicloud.com/pixiu-public/ubuntu:22.04",
 		PkgManager: "apt",
 		K8sMinor:   "v1.27",
 		Codename:   "jammy",
@@ -435,7 +435,7 @@ func TestFetchMountUsesAbsolutePath(t *testing.T) {
 	// （docker 将相对路径当 volume 名校验，含 "/" 非法）。防御性 Abs 应生效。
 	work := t.TempDir()
 	t.Chdir(work)
-	relOut := filepath.Join("work", "pixiu-offline-ubuntu-22.04-amd64-v1.27.3", "packages")
+	relOut := filepath.Join("work", "pixiu-ubuntu-22.04-amd64-v1.27.3", "packages")
 
 	binDir := t.TempDir()
 	writeFakeDockerLog(t, binDir)
@@ -443,7 +443,7 @@ func TestFetchMountUsesAbsolutePath(t *testing.T) {
 
 	res, err := Fetch(context.Background(), Options{
 		OutDir:     relOut,
-		BuildImage: "ubuntu:22.04",
+		BuildImage: "swr.cn-north-4.myhuaweicloud.com/pixiu-public/ubuntu:22.04",
 		PkgManager: "apt",
 		K8sMinor:   "v1.27",
 		Codename:   "jammy",
@@ -480,7 +480,7 @@ func TestFetchMountUsesAbsolutePath(t *testing.T) {
 	if !filepath.IsAbs(hostDir) {
 		t.Errorf("-v 挂载宿主机路径应为绝对路径，实际 %q（命令: %s）", hostDir, res.Command)
 	}
-	if strings.Contains(hostDir, "work/pixiu-offline-") && !filepath.IsAbs(hostDir) {
+	if strings.Contains(hostDir, "work/pixiu-") && !filepath.IsAbs(hostDir) {
 		t.Errorf("挂载路径仍为相对形式: %q", hostDir)
 	}
 }
@@ -503,7 +503,7 @@ func TestFetchCrictlMissingFallback(t *testing.T) {
 	outDir := t.TempDir()
 	res, err := Fetch(context.Background(), Options{
 		OutDir:        outDir,
-		BuildImage:    "ubuntu:22.04",
+		BuildImage:    "swr.cn-north-4.myhuaweicloud.com/pixiu-public/ubuntu:22.04",
 		PkgManager:    "apt",
 		K8sMinor:      "v1.27",
 		Codename:      "jammy",
@@ -545,7 +545,7 @@ func TestFetchCrictlMissingNoVersion(t *testing.T) {
 	outDir := t.TempDir()
 	_, err := Fetch(context.Background(), Options{
 		OutDir:     outDir,
-		BuildImage: "ubuntu:22.04",
+		BuildImage: "swr.cn-north-4.myhuaweicloud.com/pixiu-public/ubuntu:22.04",
 		PkgManager: "apt",
 		K8sMinor:   "v1.27",
 		Codename:   "jammy",

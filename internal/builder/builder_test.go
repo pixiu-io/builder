@@ -26,9 +26,9 @@ oses:
     versions: ["20.04", "22.04", "24.04"]
     pkg_manager: apt
     build_images:
-      "20.04": ubuntu:20.04
-      "22.04": ubuntu:22.04
-      "24.04": ubuntu:24.04
+      "20.04": swr.cn-north-4.myhuaweicloud.com/pixiu-public/ubuntu:20.04
+      "22.04": swr.cn-north-4.myhuaweicloud.com/pixiu-public/ubuntu:22.04
+      "24.04": swr.cn-north-4.myhuaweicloud.com/pixiu-public/ubuntu:24.04
     codenames:
       "22.04": jammy
     archs: ["amd64", "arm64"]
@@ -36,7 +36,7 @@ oses:
     versions: ["9"]
     pkg_manager: dnf
     build_images:
-      "9": rockylinux:9
+      "9": swr.cn-north-4.myhuaweicloud.com/pixiu-public/rockylinux:9
     rpm_distro: rhel9
     archs: ["amd64", "arm64"]
 versions:
@@ -50,7 +50,7 @@ versions:
     runc: "1.1.7"
 addon_images:
   - name: flannel
-    image: "docker.io/flannel/flannel"
+    image: "swr.cn-north-4.myhuaweicloud.com/pixiu-public/flannel/flannel"
     tag: "v0.24.2"
 `
 	if err := os.WriteFile(filepath.Join(dir, config.FileName), []byte(content), 0o644); err != nil {
@@ -63,7 +63,7 @@ addon_images:
 	return cfg
 }
 
-// loadOpenEulerConfig 构造含 openEuler（系统源 containerd）与 rocky（默认 docker 源）的样例配置。
+// loadOpenEulerConfig 构造含 openEuler（系统源 containerd）与 rocky（默认阿里云源）的样例配置。
 func loadOpenEulerConfig(t *testing.T) *config.Config {
 	t.Helper()
 	dir := t.TempDir()
@@ -74,7 +74,7 @@ oses:
     versions: ["22.03"]
     pkg_manager: dnf
     build_images:
-      "22.03": openeuler/openeuler:22.03-lts-sp3
+      "22.03": swr.cn-north-4.myhuaweicloud.com/pixiu-public/openeuler/openeuler:22.03-lts-sp3
     rpm_distro: rhel7
     containerd_pkg: "containerd"
     containerd_repo: "none"
@@ -83,7 +83,7 @@ oses:
     versions: ["9"]
     pkg_manager: dnf
     build_images:
-      "9": rockylinux:9
+      "9": swr.cn-north-4.myhuaweicloud.com/pixiu-public/rockylinux:9
     rpm_distro: rhel9
     archs: ["amd64", "arm64"]
 versions:
@@ -103,17 +103,17 @@ versions:
 }
 
 func TestBundleName(t *testing.T) {
-	if got := BundleName("ubuntu", "22.04", "amd64", "v1.27.3"); got != "pixiu-offline-ubuntu-22.04-amd64-v1.27.3" {
+	if got := BundleName("ubuntu", "22.04", "amd64", "v1.27.3"); got != "pixiu-ubuntu-22.04-amd64-v1.27.3" {
 		t.Errorf("BundleName = %q", got)
 	}
-	if got := ImagesBundleName("amd64", "v1.27.3"); got != "pixiu-offline-images-amd64-v1.27.3" {
+	if got := ImagesBundleName("amd64", "v1.27.3"); got != "pixiu-images-amd64-v1.27.3" {
 		t.Errorf("ImagesBundleName = %q", got)
 	}
-	if got := PackagesBundleName("ubuntu", "22.04", "amd64", "v1.27.3"); got != "pixiu-offline-packages-ubuntu-22.04-amd64-v1.27.3" {
+	if got := PackagesBundleName("ubuntu", "22.04", "amd64", "v1.27.3"); got != "pixiu-packages-ubuntu-22.04-amd64-v1.27.3" {
 		t.Errorf("PackagesBundleName = %q", got)
 	}
-	if got := ImagesOfflineBundleName("ubuntu", "22.04", "amd64", "v1.27.3"); got != "pixiu-offline-ubuntu-22.04-amd64-v1.27.3-images" {
-		t.Errorf("ImagesOfflineBundleName = %q", got)
+	if got := ImagesOSBundleName("ubuntu", "22.04", "amd64", "v1.27.3"); got != "pixiu-images-ubuntu-22.04-amd64-v1.27.3" {
+		t.Errorf("ImagesOSBundleName = %q", got)
 	}
 }
 
@@ -216,8 +216,8 @@ func TestBuildDryRun(t *testing.T) {
 			t.Errorf("独立 tar 缺失: %s (%v)", p, err)
 		}
 	}
-	wantPkg := filepath.Join(outDir, "pixiu-offline-packages-ubuntu-22.04-amd64-v1.27.3.tar.gz")
-	wantImg := filepath.Join(outDir, "pixiu-offline-ubuntu-22.04-amd64-v1.27.3-images.tar.gz")
+	wantPkg := filepath.Join(outDir, "pixiu-packages-ubuntu-22.04-amd64-v1.27.3.tar.gz")
+	wantImg := filepath.Join(outDir, "pixiu-images-ubuntu-22.04-amd64-v1.27.3.tar.gz")
 	if res.TarPaths[0] != wantPkg || res.TarPaths[1] != wantImg {
 		t.Errorf("TarPaths = %v, want [%s %s]", res.TarPaths, wantPkg, wantImg)
 	}
@@ -286,7 +286,7 @@ func TestBuildDryRunArbitraryK8sVersion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Build dry-run（任意版本）失败: %v", err)
 	}
-	if res.BundleName != "pixiu-offline-ubuntu-22.04-amd64-v1.29.5" {
+	if res.BundleName != "pixiu-ubuntu-22.04-amd64-v1.29.5" {
 		t.Errorf("BundleName = %q", res.BundleName)
 	}
 	if len(res.Steps) != 5 {
@@ -307,7 +307,7 @@ func TestBuildInvalidParams(t *testing.T) {
 }
 
 func TestBuildArbitraryOSDryRun(t *testing.T) {
-	// 未在 oses 注册表中的 OS/版本应可 dry-run 构建（约定构建镜像 centos:7）
+	// 未在 oses 注册表中的 OS/版本应可 dry-run 构建（约定构建镜像 swr.cn-north-4.myhuaweicloud.com/pixiu-public/centos:7）
 	cfg := loadSampleConfig(t)
 	res, err := Build(context.Background(), Options{
 		Config: cfg, OS: "centos", OSVersion: "7", Arch: "amd64",
@@ -318,7 +318,7 @@ func TestBuildArbitraryOSDryRun(t *testing.T) {
 	if err != nil {
 		t.Fatalf("任意 OS dry-run 应成功: %v", err)
 	}
-	if res.BundleName != "pixiu-offline-centos-7-amd64-v1.27.3" {
+	if res.BundleName != "pixiu-centos-7-amd64-v1.27.3" {
 		t.Errorf("BundleName = %q", res.BundleName)
 	}
 }
@@ -372,7 +372,7 @@ func TestBuildDryRunCentos9UsesDnf(t *testing.T) {
 
 func TestBuildOpenEulerDryRunUsesSystemContainerd(t *testing.T) {
 	// openEuler（containerd_pkg=containerd + containerd_repo=none）：软件包清单应含
-	// containerd（系统源包名），而非 containerd.io（docker 源包名）。
+	// containerd（系统源包名），而非 containerd.io（docker-ce 源包名）。
 	cfg := loadOpenEulerConfig(t)
 	var buf bytes.Buffer
 	res, err := Build(context.Background(), Options{
@@ -420,7 +420,7 @@ func TestBuildOpenEulerPackagesNoDockerRepo(t *testing.T) {
 	script := string(data)
 	// k8s 源 + containerd 包（系统源）保留
 	for _, want := range []string{
-		"pkgs.k8s.io",
+		"mirrors.aliyun.com/kubernetes-new",
 		"dnf makecache",
 		"kubectl containerd cri-tools",
 	} {
@@ -453,14 +453,14 @@ oses:
     versions: ["22.03"]
     pkg_manager: dnf
     build_images:
-      "22.03": openeuler/openeuler:22.03-lts-sp3
+      "22.03": swr.cn-north-4.myhuaweicloud.com/pixiu-public/openeuler/openeuler:22.03-lts-sp3
     rpm_distro: rhel7
     archs: ["amd64", "arm64"]
   - name: rocky
     versions: ["9"]
     pkg_manager: dnf
     build_images:
-      "9": rockylinux:9
+      "9": swr.cn-north-4.myhuaweicloud.com/pixiu-public/rockylinux:9
     rpm_distro: rhel9
     archs: ["amd64", "arm64"]
 versions:
@@ -505,7 +505,7 @@ func TestBuildOpenEulerInferPackagesNoDockerRepo(t *testing.T) {
 	script := string(data)
 	// k8s 源 + 系统源 containerd 包保留
 	for _, want := range []string{
-		"pkgs.k8s.io",
+		"mirrors.aliyun.com/kubernetes-new",
 		"dnf makecache",
 		"kubectl containerd cri-tools",
 	} {
@@ -550,7 +550,7 @@ func TestBuildOpenEulerInferDryRunUsesSystemContainerd(t *testing.T) {
 }
 
 func TestBuildRockyDryRunDefaultContainerd(t *testing.T) {
-	// 回归：rocky 等默认（未配置 containerd_repo）软件包清单仍为 containerd.io（docker 源包名）。
+	// 回归：rocky 等默认（未配置 containerd_repo）软件包清单仍为 containerd.io（docker-ce 源包名，默认阿里云镜像）。
 	cfg := loadOpenEulerConfig(t)
 	var buf bytes.Buffer
 	res, err := Build(context.Background(), Options{
@@ -564,7 +564,7 @@ func TestBuildRockyDryRunDefaultContainerd(t *testing.T) {
 	}
 	logs := buf.String()
 	if !strings.Contains(logs, "containerd.io") {
-		t.Errorf("rocky 软件包清单应含 containerd.io（默认 docker 源）:\n%s", logs)
+		t.Errorf("rocky 软件包清单应含 containerd.io（默认阿里云源）:\n%s", logs)
 	}
 	if strings.Contains(logs, "kubeadm, kubelet, kubectl, containerd, cri-tools") {
 		t.Errorf("rocky 软件包清单不应含系统源包名 containerd:\n%s", logs)
@@ -717,7 +717,7 @@ func TestBuildKeepFilesCleanup(t *testing.T) {
 		return err
 	}
 
-	bundleName := "pixiu-offline-packages-ubuntu-22.04-amd64-v1.27.3"
+	bundleName := "pixiu-packages-ubuntu-22.04-amd64-v1.27.3"
 
 	// 默认清理
 	workDir := filepath.Join(t.TempDir(), "work")
@@ -764,7 +764,7 @@ func TestBuildModeImages(t *testing.T) {
 	if err != nil {
 		t.Fatalf("--mode images 构建失败: %v", err)
 	}
-	if res.BundleName != "pixiu-offline-ubuntu-22.04-amd64-v1.27.3" {
+	if res.BundleName != "pixiu-images-ubuntu-22.04-amd64-v1.27.3" {
 		t.Errorf("指定 OS 时 BundleName = %q", res.BundleName)
 	}
 	if _, err := os.Stat(res.TarPath); err != nil {
@@ -779,7 +779,7 @@ func TestBuildModeImages(t *testing.T) {
 }
 
 func TestBuildModeImagesWithoutOS(t *testing.T) {
-	// --mode images 未指定 OS：使用默认构建容器，产物名为 pixiu-offline-images-{arch}-{k8s}。
+	// --mode images 未指定 OS：使用默认构建容器，产物名为 pixiu-images-{arch}-{k8s}。
 	cfg := loadSampleConfig(t)
 	binDir := t.TempDir()
 	binPath := filepath.Join(binDir, "docker")
@@ -801,7 +801,7 @@ func TestBuildModeImagesWithoutOS(t *testing.T) {
 	if err != nil {
 		t.Fatalf("--mode images 无 OS 构建失败: %v", err)
 	}
-	if res.BundleName != "pixiu-offline-images-amd64-v1.27.3" {
+	if res.BundleName != "pixiu-images-amd64-v1.27.3" {
 		t.Errorf("未指定 OS 时 BundleName = %q", res.BundleName)
 	}
 	if _, err := os.Stat(res.TarPath); err != nil {
@@ -907,7 +907,7 @@ func TestBuildDefaultWorkDirUsesAbsoluteMountPath(t *testing.T) {
 	if !filepath.IsAbs(hostDir) {
 		t.Errorf("-v 挂载宿主机路径应为绝对路径，实际 %q（命令: %s）", hostDir, res.Steps[0].Message)
 	}
-	if strings.Contains(hostDir, "work/pixiu-offline-") && !filepath.IsAbs(hostDir) {
+	if strings.Contains(hostDir, "work/pixiu-") && !filepath.IsAbs(hostDir) {
 		t.Errorf("挂载路径仍为相对形式: %q", hostDir)
 	}
 	if !strings.HasPrefix(hostDir, cwd+string(os.PathSeparator)) {
@@ -1231,7 +1231,7 @@ func loadAddonConfig(t *testing.T) *config.Config {
 	t.Helper()
 	cfg := loadSampleConfig(t)
 	cfg.AddonImages.Addons = append(cfg.AddonImages.Addons, config.Addon{
-		Name: "dashboard", Image: "docker.io/kubernetesui/dashboard", Tag: "v2.7.0",
+		Name: "dashboard", Image: "swr.cn-north-4.myhuaweicloud.com/pixiu-public/kubernetesui/dashboard", Tag: "v2.7.0",
 	})
 	cfg.AddonPackages = []config.AddonPackage{{Name: "conntrack"}, {Name: "ipset"}}
 	return cfg
@@ -1469,7 +1469,7 @@ func TestBuildOnlyAddonsNoK8sVersionFakeDocker(t *testing.T) {
 
 func TestBuildOnlyAddonsPackagesSkipsK8sContainerdRepos(t *testing.T) {
 	// --only-addons（非 dry-run，--mode packages）：容器内脚本应只配置系统源，
-	// 不配置 k8s（pkgs.k8s.io）与 containerd（download.docker.com）源。
+	// 不配置 k8s（mirrors.aliyun.com/kubernetes-new）与 containerd（download.docker.com）源。
 	cfg := loadAddonConfig(t)
 	binDir := t.TempDir()
 	binPath := filepath.Join(binDir, "docker")
@@ -1493,7 +1493,7 @@ func TestBuildOnlyAddonsPackagesSkipsK8sContainerdRepos(t *testing.T) {
 	script := string(data)
 	for _, forbid := range []string{
 		"kubernetes.repo", "containerd.repo",
-		"pkgs.k8s.io", "download.docker.com",
+		"mirrors.aliyun.com/kubernetes-new", "download.docker.com",
 		"[kubernetes]", "[docker-ce-stable]",
 	} {
 		if strings.Contains(script, forbid) {
@@ -1533,7 +1533,7 @@ func TestBuildDefaultPackagesIncludesK8sContainerdRepos(t *testing.T) {
 	for _, want := range []string{
 		"/etc/apt/keyrings/kubernetes-apt-keyring.gpg",
 		"/etc/apt/keyrings/containerd-apt-keyring.gpg",
-		"pkgs.k8s.io", "download.docker.com",
+		"mirrors.aliyun.com/kubernetes-new", "mirrors.aliyun.com/docker-ce/linux/ubuntu",
 	} {
 		if !strings.Contains(script, want) {
 			t.Errorf("默认 packages 脚本应含 %q:\n%s", want, script)
