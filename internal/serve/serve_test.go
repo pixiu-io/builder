@@ -781,3 +781,69 @@ func tarGzDir(srcDir, outPath string) error {
 		return err
 	})
 }
+
+func TestEnsureServeDirCreatesMissing(t *testing.T) {
+	base := t.TempDir()
+	dir := filepath.Join(base, "missing", "offline")
+	dataDir := filepath.Join(base, "data")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := Run(ctx, Options{
+			Dir:          dir,
+			DataDir:      dataDir,
+			RepoAddr:     "127.0.0.1:0",
+			SkipImages:   true, // 空目录仍可启动软件源，等待热加载
+			AdvertiseHost: "127.0.0.1",
+		})
+		errCh <- err
+	}()
+
+	// 等待 --dir 被创建（Run 开头 MkdirAll）。
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if st, err := os.Stat(dir); err == nil && st.IsDir() {
+			cancel()
+			break
+		}
+		if time.Now().After(deadline) {
+			cancel()
+			t.Fatal("--dir 未被自动创建")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if err := <-errCh; err != nil {
+		t.Fatalf("Run 退出异常: %v", err)
+	}
+}
+
+func TestPrintReadyConfigDemo(t *testing.T) {
+	var buf bytes.Buffer
+	printReadyTo(&buf, &Result{
+		RegistryEnabled: true,
+		RepoEnabled:     true,
+		RegistryURL:     "192.168.1.10:5000",
+		RepoURL:         "http://192.168.1.10:8080",
+		Images:          []string{"192.168.1.10:5000/pause:3.10"},
+		RPMPackages:     1,
+		DebPackages:     1,
+	})
+	out := buf.String()
+	if strings.Contains(out, "Ctrl+C") {
+		t.Fatal("就绪提示不应包含 Ctrl+C")
+	}
+	for _, want := range []string{
+		"镜像配置 demo",
+		"自定义安装包配置 demo",
+		"addon_images:",
+		"addon_packages:",
+		"kubeadm init --image-repository 192.168.1.10:5000",
+		"baseurl=http://192.168.1.10:8080/rpm",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("就绪输出缺少 %q\n%s", want, out)
+		}
+	}
+}

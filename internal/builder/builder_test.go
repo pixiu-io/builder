@@ -110,6 +110,9 @@ func TestBundleName(t *testing.T) {
 	if got := ImagesBundleName("amd64", "v1.27.3"); got != "pixiu-images-amd64-v1.27.3" {
 		t.Errorf("ImagesBundleName = %q", got)
 	}
+	if got := ServerImagesBundleName("amd64"); got != "pixiu-server-images-amd64" {
+		t.Errorf("ServerImagesBundleName = %q", got)
+	}
 	if got := PackagesBundleName("ubuntu", "22.04", "amd64", "v1.27.3"); got != "pixiu-packages-ubuntu-22.04-amd64-v1.27.3" {
 		t.Errorf("PackagesBundleName = %q", got)
 	}
@@ -148,8 +151,10 @@ func TestValidateOptions(t *testing.T) {
 		{"非法构建模式", func(o *Options) { o.Mode = "bogus" }, "非法的构建模式"},
 		{"仅软件包模式", func(o *Options) { o.Mode = "packages" }, ""},
 		{"仅镜像模式", func(o *Options) { o.Mode = "images" }, ""},
+		{"servers 模式（无 k8s）", func(o *Options) { o.Mode = "servers"; o.K8sVersion = "" }, ""},
 		{"packages 缺 OS", func(o *Options) { o.Mode = "packages"; o.OS = ""; o.OSVersion = "" }, "缺少 OS/版本"},
 		{"images 缺 OS（Build 会补默认；validate 单独调用时也允许空）", func(o *Options) { o.Mode = "images"; o.OS = ""; o.OSVersion = "" }, ""},
+		{"servers 缺 OS（允许空）", func(o *Options) { o.Mode = "servers"; o.OS = ""; o.OSVersion = ""; o.K8sVersion = "" }, ""},
 		{"仅附加组件模式", func(o *Options) { o.OnlyAddons = true }, ""},
 		{"仅附加组件 + 跳过附加组件互斥", func(o *Options) { o.OnlyAddons = true; o.SkipAddons = true }, "--only-addons 与 --skip-addons 不能同时使用"},
 	}
@@ -1462,6 +1467,55 @@ func TestResolvePackageListAddonVersions(t *testing.T) {
 	if !equalStrings(gotOnly, wantOnly) {
 		t.Errorf("only-addons 版本转译异常:\n got %v\nwant %v", gotOnly, wantOnly)
 	}
+}
+
+func TestResolveImagesServers(t *testing.T) {
+	cfg := loadSampleConfig(t)
+	cfg.ServerImages.Addons = []config.Addon{
+		{Name: "pixiu", Image: "example.com/pixiu", Tag: "v1"},
+		{Name: "mysql", Image: "example.com/mysql", Tag: "5.7"},
+		{Name: "pixiu", Image: "example.com/pixiu-dup", Tag: "v2"}, // 同名去重
+	}
+	p, err := resolveImages(Options{Config: cfg, Mode: "servers", Arch: "amd64"}, cfg)
+	if err != nil {
+		t.Fatalf("resolveImages(servers): %v", err)
+	}
+	if p.CoreImages == nil || len(p.CoreImages) != 0 {
+		t.Fatalf("servers 核心镜像应为空非 nil，实际 %#v", p.CoreImages)
+	}
+	if len(p.Addons) != 2 || p.Addons[0].Name != "pixiu" || p.Addons[1].Name != "mysql" {
+		t.Fatalf("servers addons = %+v", p.Addons)
+	}
+	// 忽略 skip/only-addons
+	p2, err := resolveImages(Options{Config: cfg, Mode: "servers", SkipAddons: true, OnlyAddons: true}, cfg)
+	if err != nil || len(p2.Addons) != 2 {
+		t.Fatalf("servers 应忽略 skip/only-addons: err=%v addons=%+v", err, p2.Addons)
+	}
+	cfg.ServerImages.Addons = nil
+	if _, err := resolveImages(Options{Config: cfg, Mode: "servers"}, cfg); err == nil || !strings.Contains(err.Error(), "server_images 配置为空") {
+		t.Fatalf("空 server_images 应报错，实际 %v", err)
+	}
+}
+
+func TestBuildDryRunServers(t *testing.T) {
+	cfg := loadSampleConfig(t)
+	cfg.ServerImages.Addons = []config.Addon{
+		{Name: "pixiu", Image: "example.com/pixiu", Tag: "v1"},
+	}
+	var buf bytes.Buffer
+	res, err := Build(context.Background(), Options{
+		Config: cfg, Arch: "amd64", Mirror: mirror.Official,
+		WorkDir: filepath.Join(t.TempDir(), "work"), OutDir: filepath.Join(t.TempDir(), "dist"),
+		Mode: "servers", DryRun: true, Out: &buf,
+	})
+	if err != nil {
+		t.Fatalf("build servers dry-run 失败: %v", err)
+	}
+	if res.BundleName != "pixiu-server-images-amd64" {
+		t.Errorf("BundleName = %q", res.BundleName)
+	}
+	checkStep(t, res, "容器内软件包下载", "skipped", "servers 构建跳过软件包")
+	checkStep(t, res, "镜像清单与保存", "ok", "")
 }
 
 func TestResolveImagesOnlyAddons(t *testing.T) {

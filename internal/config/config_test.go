@@ -789,6 +789,52 @@ addon_images:
 	}
 }
 
+// TestServerImagesTopLevel 验证顶层 server_images 节格式与 addon_images 一致。
+func TestServerImagesTopLevel(t *testing.T) {
+	content := `
+oses:
+  - name: ubuntu
+    versions: ["22.04"]
+    pkg_manager: apt
+    build_images:
+      "22.04": swr.cn-north-4.myhuaweicloud.com/pixiu-public/ubuntu:22.04
+    archs: ["amd64"]
+versions:
+  - version: v1.27.3
+addon_images:
+  - name: flannel
+    image: "swr.cn-north-4.myhuaweicloud.com/pixiu-public/flannel/flannel"
+    tag: "v0.24.2"
+server_images:
+  - name: pixiu
+    image: "example.com/pixiu"
+    tag: "v1.0.0"
+  - name: mysql
+    image: "example.com/mysql"
+    tag: "5.7"
+`
+	cfg, err := Load(writeSample(t, content))
+	if err != nil {
+		t.Fatalf("Load 失败: %v", err)
+	}
+	if len(cfg.ServerImages.Addons) != 2 {
+		t.Fatalf("server_images 应解析 2 项，实际 %d", len(cfg.ServerImages.Addons))
+	}
+	if cfg.ServerImages.Addons[0].Name != "pixiu" || cfg.ServerImages.Addons[0].Tag != "v1.0.0" {
+		t.Errorf("server_images[0] = %+v", cfg.ServerImages.Addons[0])
+	}
+	if a, ok := cfg.FindServerImage("mysql"); !ok || a.Image != "example.com/mysql" {
+		t.Errorf("FindServerImage(mysql) = %+v ok=%v", a, ok)
+	}
+	if _, ok := cfg.FindServerImage("missing"); ok {
+		t.Error("FindServerImage(missing) 应失败")
+	}
+	// addon_images 不受影响
+	if len(cfg.AddonImages.Addons) != 1 || cfg.AddonImages.Addons[0].Name != "flannel" {
+		t.Errorf("addon_images 被破坏: %+v", cfg.AddonImages.Addons)
+	}
+}
+
 // TestAddonPackagesTopLevel 验证顶层 addon_packages 节（对象列表：name + 可选 version）能被 yaml 解析。
 func TestAddonPackagesTopLevel(t *testing.T) {
 	content := `

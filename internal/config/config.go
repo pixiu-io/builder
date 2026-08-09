@@ -13,13 +13,15 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// Config 聚合清单配置（oses / versions / addon_images / addon_packages）、
+// Config 聚合清单配置（oses / versions / addon_images / server_images / addon_packages）、
 // 可选 GitHub Release 上传配置与 build 默认参数。
-// OSRegistry / K8sVersions / AddonImages 以 inline 展开，使单文件顶层键直接映射。
+// OSRegistry / K8sVersions / AddonImages / ServerImages 以 inline 展开，使单文件顶层键直接映射。
 type Config struct {
 	OSRegistry  OSRegistry  `yaml:",inline"`
 	K8sVersions K8sVersions `yaml:",inline"`
 	AddonImages AddonImages `yaml:",inline"`
+	// ServerImages 平台/服务端镜像清单（与 addon_images 平级；仅 build servers 读取）。
+	ServerImages ServerImages `yaml:",inline"`
 	// AddonPackages 附加安装包列表（与 addon_images 平级的顶层节）。
 	// mode ∈ {packages, all} 且未 --skip-addons 时并入软件包下载清单；--only-addons 时为其软件包主体。
 	// 每项为 {name, version} 对象；version 为空 = 不锁版本（透传纯包名），
@@ -139,6 +141,12 @@ type AddonImages struct {
 	Addons []Addon `yaml:"addon_images"`
 }
 
+// ServerImages 平台/服务端镜像清单（顶层 server_images 节；格式与 addon_images 一致）。
+// 仅 build servers 使用；不与 addon_images / 核心镜像混入。
+type ServerImages struct {
+	Addons []Addon `yaml:"server_images"`
+}
+
 // Addon 单个附加组件镜像。
 type Addon struct {
 	Name  string `yaml:"name"`
@@ -159,6 +167,16 @@ func (c *Config) FindAddon(name string) (*Addon, bool) {
 	for i := range c.AddonImages.Addons {
 		if c.AddonImages.Addons[i].Name == name {
 			return &c.AddonImages.Addons[i], true
+		}
+	}
+	return nil, false
+}
+
+// FindServerImage 按 name 查找 server_images 条目，返回引用（nil, false 表示不存在）。
+func (c *Config) FindServerImage(name string) (*Addon, bool) {
+	for i := range c.ServerImages.Addons {
+		if c.ServerImages.Addons[i].Name == name {
+			return &c.ServerImages.Addons[i], true
 		}
 	}
 	return nil, false

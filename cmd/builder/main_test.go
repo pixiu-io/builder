@@ -160,6 +160,12 @@ func TestRequiredParamsMissing(t *testing.T) {
 	if strings.Join(missing, ",") != "kubernetes-version" {
 		t.Errorf("images 模式缺失项异常: %v", missing)
 	}
+
+	// servers 模式：无需 os / kubernetes-version。
+	missing = requiredMissing(opts, "servers")
+	if len(missing) != 0 {
+		t.Errorf("servers 模式不应有必填缺失，实际 %v", missing)
+	}
 }
 
 // TestRequiredParamsMissingOnlyAddons 验证 --only-addons 时 kubernetes-version 不再必填：

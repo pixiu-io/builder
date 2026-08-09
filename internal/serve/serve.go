@@ -4,6 +4,7 @@ package serve
 import (
 	"context"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -62,6 +63,10 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 	// 初始 bundle：--bundle 与 --dir 下所有 *.tar.gz 合并。
 	initial := append([]string{}, opts.Bundles...)
 	if opts.Dir != "" {
+		// --dir 不存在时自动创建，便于空目录启动后热加载。
+		if err := os.MkdirAll(opts.Dir, 0o755); err != nil {
+			return nil, fmt.Errorf("创建离线包目录 %s 失败: %w", opts.Dir, err)
+		}
 		dirBundles, err := scanTarGz(opts.Dir)
 		if err != nil {
 			return nil, fmt.Errorf("扫描离线包目录 %s 失败: %w", opts.Dir, err)
@@ -287,35 +292,64 @@ func waitHTTP(ctx context.Context, url string) error {
 }
 
 func printReady(res *Result) {
-	fmt.Println()
-	fmt.Println("========== builder serve 就绪 ==========")
+	printReadyTo(os.Stdout, res)
+}
+
+func printReadyTo(w io.Writer, res *Result) {
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "========== builder serve 就绪 ==========")
 	if res.RegistryEnabled {
-		fmt.Printf("Registry:  %s\n", res.RegistryURL)
-		fmt.Println("  示例:")
-		if len(res.Images) > 0 {
-			fmt.Printf("    docker pull %s\n", res.Images[0])
-			fmt.Printf("    kubeadm init --image-repository %s ...\n", res.RegistryURL)
-		} else {
-			fmt.Printf("    docker pull %s/<name>:<tag>\n", res.RegistryURL)
-		}
-		fmt.Printf("  Docker insecure-registries 需包含: %q\n", res.RegistryURL)
+		fmt.Fprintf(w, "Registry:  %s（已导入 %d 个镜像）\n", res.RegistryURL, len(res.Images))
 	}
 	if res.RepoEnabled {
-		fmt.Printf("Packages:  %s\n", res.RepoURL)
-		if res.RPMPackages > 0 {
-			fmt.Printf("  dnf:\n")
-			fmt.Printf("    dnf install --repofrompath=pixiu,%s/rpm kubeadm\n", res.RepoURL)
-			fmt.Printf("  或写入 /etc/yum.repos.d/pixiu.repo:\n")
-			fmt.Printf("    [pixiu]\n    name=Pixiu\n    baseurl=%s/rpm\n    enabled=1\n    gpgcheck=0\n", res.RepoURL)
-		}
-		if res.DebPackages > 0 {
-			fmt.Printf("  apt:\n")
-			fmt.Printf("    echo 'deb [trusted=yes] %s/deb ./' > /etc/apt/sources.list.d/pixiu.list\n", res.RepoURL)
-			fmt.Printf("    apt-get update && apt-get install kubeadm\n")
-		}
+		fmt.Fprintf(w, "Packages:  %s（rpm=%d deb=%d）\n", res.RepoURL, res.RPMPackages, res.DebPackages)
 	}
-	fmt.Println("按 Ctrl+C 停止")
-	fmt.Println("========================================")
+	printConfigDemo(w, res)
+	fmt.Fprintln(w, "========================================")
+}
+
+// printConfigDemo 在离线包加载完成后输出镜像与自定义安装包的配置示例。
+func printConfigDemo(w io.Writer, res *Result) {
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "---------- 镜像配置 demo ----------")
+	if res.RegistryEnabled {
+		pullRef := res.RegistryURL + "/<name>:<tag>"
+		if len(res.Images) > 0 {
+			pullRef = res.Images[0]
+		}
+		fmt.Fprintln(w, "# 1) 节点 Docker / containerd 将 registry 加入 insecure-registries:")
+		fmt.Fprintf(w, "#    %q\n", res.RegistryURL)
+		fmt.Fprintln(w, "# 2) 拉取 / 初始化:")
+		fmt.Fprintf(w, "docker pull %s\n", pullRef)
+		fmt.Fprintf(w, "kubeadm init --image-repository %s ...\n", res.RegistryURL)
+	} else {
+		fmt.Fprintln(w, "# 当前未启用 registry（--skip-images 或产物无镜像）")
+	}
+	fmt.Fprintln(w, "# 3) 构建时自定义附加镜像（builder.yaml）:")
+	fmt.Fprintln(w, `addon_images:
+  - name: my-addon
+    image: "example.com/my-org/my-addon"
+    tag: "v1.0.0"`)
+
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "---------- 自定义安装包配置 demo ----------")
+	if res.RepoEnabled {
+		fmt.Fprintln(w, "# 1) 节点使用离线软件源安装（按系统选择其一）:")
+		fmt.Fprintln(w, "# dnf / yum:")
+		fmt.Fprintf(w, "dnf install --repofrompath=pixiu,%s/rpm kubeadm\n", res.RepoURL)
+		fmt.Fprintln(w, "# 或写入 /etc/yum.repos.d/pixiu.repo:")
+		fmt.Fprintf(w, "[pixiu]\nname=Pixiu\nbaseurl=%s/rpm\nenabled=1\ngpgcheck=0\n", res.RepoURL)
+		fmt.Fprintln(w, "# apt:")
+		fmt.Fprintf(w, "echo 'deb [trusted=yes] %s/deb ./' > /etc/apt/sources.list.d/pixiu.list\n", res.RepoURL)
+		fmt.Fprintln(w, "apt-get update && apt-get install kubeadm")
+	} else {
+		fmt.Fprintln(w, "# 当前未启用软件源（--skip-packages 或产物无软件包）")
+	}
+	fmt.Fprintln(w, "# 2) 构建时自定义附加安装包（builder.yaml）:")
+	fmt.Fprintln(w, `addon_packages:
+  - name: conntrack
+  - name: vim
+    version: "9.0"   # 可选；空则不锁版本`)
 }
 
 // scanTarGz 扫描目录下所有 *.tar.gz 文件（顶层）。
@@ -442,6 +476,10 @@ func hotLoad(ctx context.Context, newBundles []string, bundleRoot string, loaded
 			}
 		}
 		fmt.Printf("热加载完成: %s\n", b)
+	}
+	if success {
+		// 热加载成功后再次给出配置 demo（空目录启动后首次有包时尤其有用）。
+		printReady(res)
 	}
 	return success
 }
