@@ -685,7 +685,7 @@ func TestBuildModePackages(t *testing.T) {
 		t.Errorf("tar.gz 未生成: %v", err)
 	}
 	checkStep(t, res, "容器内软件包下载", "ok", "")
-	checkStep(t, res, "镜像清单与保存", "skipped", "按 --mode packages 跳过镜像")
+	checkStep(t, res, "镜像清单与保存", "skipped", "packages 构建跳过镜像")
 	// packages 模式不调用 images.Fetch：addons 目录不应生成 flannel.tar
 	if _, err := os.Stat(filepath.Join(res.BundleDir, "images", "addons", "flannel.tar")); err == nil {
 		t.Error("--mode packages 时不应生成附加组件镜像 tar")
@@ -770,7 +770,7 @@ func TestBuildModeImages(t *testing.T) {
 	if _, err := os.Stat(res.TarPath); err != nil {
 		t.Errorf("tar.gz 未生成: %v", err)
 	}
-	checkStep(t, res, "容器内软件包下载", "skipped", "按 --mode images 跳过软件包")
+	checkStep(t, res, "容器内软件包下载", "skipped", "images 构建跳过软件包")
 	checkStep(t, res, "镜像清单与保存", "ok", "")
 	// 核心镜像 tar 应存在
 	if _, err := os.Stat(filepath.Join(res.BundleDir, "images", "core", "kube-apiserver.tar")); err != nil {
@@ -807,7 +807,7 @@ func TestBuildModeImagesWithoutOS(t *testing.T) {
 	if _, err := os.Stat(res.TarPath); err != nil {
 		t.Errorf("tar.gz 未生成: %v", err)
 	}
-	checkStep(t, res, "容器内软件包下载", "skipped", "按 --mode images 跳过软件包")
+	checkStep(t, res, "容器内软件包下载", "skipped", "images 构建跳过软件包")
 	checkStep(t, res, "镜像清单与保存", "ok", "")
 }
 
@@ -1461,7 +1461,7 @@ func TestBuildOnlyAddonsNoK8sVersionFakeDocker(t *testing.T) {
 		t.Fatalf("only-addons 缺 k8s 版本（fake docker）构建失败: %v", err)
 	}
 	checkStep(t, res, "容器内软件包下载", "ok", "")
-	checkStep(t, res, "镜像清单与保存", "skipped", "按 --mode packages 跳过镜像")
+	checkStep(t, res, "镜像清单与保存", "skipped", "packages 构建跳过镜像")
 	if _, err := os.Stat(res.TarPath); err != nil {
 		t.Errorf("tar.gz 未生成: %v", err)
 	}

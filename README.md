@@ -38,6 +38,13 @@ go build -o builder ./cmd/builder
 # 构建镜像（无需 --os；产物 pixiu-images-{arch}-{k8s}.tar.gz）
 ./builder build images --kubernetes-version v1.31.6 --arch amd64 --out ./dist
 
+# 多版本并发构建镜像并上传到 images Release
+./builder build images \
+  --kubernetes-version v1.31.7 \
+  --kubernetes-version v1.31.8 \
+  --kubernetes-version v1.31.9 \
+  --arch amd64 --upload
+
 # 校验离线包（目录或 tar.gz）
 ./builder verify --bundle ./dist/pixiu-images-amd64-v1.31.6.tar.gz
 ```
@@ -49,7 +56,7 @@ go build -o builder ./cmd/builder
 | 命令 | 说明 |
 |------|------|
 | `build packages` | 构建软件包离线包。需 `--os` / `--os-version` / `--kubernetes-version`（`--only-addons` 时可省略 k8s 版本）。产物：`pixiu-packages-{os}-{osver}-{arch}-{k8s}.tar.gz`。`--upload` 上传到以 k8s 版本为名的 Release |
-| `build images` | 构建镜像离线包（**无需**操作系统）。需 `--kubernetes-version`。产物：`pixiu-images-{arch}-{k8s}.tar.gz`。`--upload` 上传到名为 `images` 的 Release（不存在则创建） |
+| `build images` | 构建镜像离线包（**无需**操作系统）。需 `--kubernetes-version`（可重复；多版本时并发构建与上传，上限 10）。产物：`pixiu-images-{arch}-{k8s}.tar.gz`。`--upload` 上传到名为 `images` 的 Release（不存在则创建） |
 | `upload` | 将已有产物 tar.gz 上传到 GitHub Release。`--file` 可重复；`--github-*` 覆盖配置节 |
 | `sync-kubeadm` | 创建以 k8s 版本为名的 GitHub Release，并上传 kubeadm 二进制。默认单版本；`--all` 同步全部 >= v1.31.0 的正式版本 |
 | `serve` | 加载离线产物，提供本地 OCI registry（`docker pull` 短名）与 yum/dnf/apt HTTP 软件源（纯 Go，无外部工具依赖） |
@@ -75,11 +82,18 @@ go build -o builder ./cmd/builder
 
 # 镜像（无需 --os；可 --upload 到 images Release）
 ./builder build images --kubernetes-version v1.31.6 --arch amd64 --upload
+
+# 多版本并发构建并上传
+./builder build images \
+  --kubernetes-version v1.31.7 \
+  --kubernetes-version v1.31.8 \
+  --kubernetes-version v1.31.9 \
+  --arch amd64 --upload
 ```
 
 ## 自定义附加组件（addon_packages / addon_images）
 
-核心软件包（kubeadm/kubelet/kubectl + containerd + cri-tools + 系统依赖）与核心镜像（kubeadm 生成）**始终使用默认清单**，不再支持按包/镜像覆盖或追加参数。containerd 包名与来源由 oses 节 `containerd_pkg` / `containerd_repo` 配置（默认 `containerd.io` + 阿里云镜像；openEuler 为 `containerd` + 系统源）；这两个字段**未配置时按发行版代码内推断**（openEuler → `containerd` + `none`，其他 → `containerd.io` + `aliyun`），因此旧版 builder.yaml 无需更新也能正确获取 openEuler 的 containerd。自定义能力完全由顶层 `addon_packages` / `addon_images` 与 `--mode` / `--only-addons` / `--skip-addons` 提供：
+核心软件包（kubeadm/kubelet/kubectl + containerd + cri-tools + 系统依赖）与核心镜像（kubeadm 生成）**始终使用默认清单**，不再支持按包/镜像覆盖或追加参数。containerd 包名与来源由 oses 节 `containerd_pkg` / `containerd_repo` 配置（默认 `containerd.io` + 阿里云镜像；openEuler 为 `containerd` + 系统源）；这两个字段**未配置时按发行版代码内推断**（openEuler → `containerd` + `none`，其他 → `containerd.io` + `aliyun`），因此旧版 builder.yaml 无需更新也能正确获取 openEuler 的 containerd。自定义能力完全由顶层 `addon_packages` / `addon_images` 与子命令 / `--only-addons` / `--skip-addons` 提供：
 
 | 参数 | 说明 | 示例 |
 |------|------|------|
@@ -87,21 +101,24 @@ go build -o builder ./cmd/builder
 | `--only-addons` | 只打包附加组件：核心软件包与核心镜像全去，软件包=`addon_packages`、镜像=`addon_images`；与 `--skip-addons` 互斥。此时 `--kubernetes-version` 可省略（不构建 k8s 核心，无需推导 k8s 版本）；且只配置系统源（addon_packages 全部来自系统源，不再配置 k8s/containerd 源） | `--only-addons` |
 
 ```bash
-# 默认（mode all）：软件包 = 核心 + addon_packages；镜像 = 核心 + addon_images
-./builder build --os ubuntu --os-version 22.04 --kubernetes-version v1.27.3 --dry-run
+# 软件包：核心 + addon_packages
+./builder build packages --os ubuntu --os-version 22.04 --kubernetes-version v1.27.3 --dry-run
 
-# 跳过附加组件（仅核心软件包/镜像）
-./builder build --os ubuntu --os-version 22.04 --kubernetes-version v1.27.3 --skip-addons --dry-run
+# 镜像：核心 + addon_images
+./builder build images --kubernetes-version v1.27.3 --dry-run
+
+# 跳过附加组件（仅核心）
+./builder build packages --os ubuntu --os-version 22.04 --kubernetes-version v1.27.3 --skip-addons --dry-run
 ```
 
-`--mode` 与附加组件联动：`addon_packages` 在 `--mode packages` / `all` 且未 `--skip-addons` 时并入软件包清单；`addon_images` 在 `--mode images` / `all` 且未 `--skip-addons` 时并入镜像清单。详见下文"附加组件配置与构建模式联动"。
+附加组件与子命令联动：`addon_packages` 在 `build packages` 且未 `--skip-addons` 时并入软件包清单；`addon_images` 在 `build images` 且未 `--skip-addons` 时并入镜像清单。详见下文。
 
-### 附加组件配置与构建模式联动
+### 附加组件配置与构建子命令联动
 
-附加组件由两处顶层配置提供，均与 `--mode` / `--only-addons` / `--skip-addons` 联动：
+附加组件由两处顶层配置提供，均与 `build packages` / `build images` / `--only-addons` / `--skip-addons` 联动：
 
-- **`addon_images`**：附加组件镜像清单（name → image:tag）。`--mode images` / `all` 且未 `--skip-addons` 时并入镜像清单（与核心镜像去重）；`--only-addons` 时为其镜像主体（核心镜像全去）。
-- **`addon_packages`**：附加安装包列表（对象格式：name + 可选 version）。`--mode packages` / `all` 且未 `--skip-addons` 时并入软件包下载清单（与核心清单按包名去重）；`--only-addons` 时为其软件包主体（核心软件包全去）。`version` 为空（或省略）不锁版本，透传纯包名；非空按目标包管理器语法转译（apt 系 `name=version`、dnf/yum 系 `name-version`），见下方示例。
+- **`addon_images`**：附加组件镜像清单（name → image:tag）。`build images` 且未 `--skip-addons` 时并入镜像清单（与核心镜像去重）；`--only-addons` 时为其镜像主体（核心镜像全去）。
+- **`addon_packages`**：附加安装包列表（对象格式：name + 可选 version）。`build packages` 且未 `--skip-addons` 时并入软件包下载清单（与核心清单按包名去重）；`--only-addons` 时为其软件包主体（核心软件包全去）。`version` 为空（或省略）不锁版本，透传纯包名；非空按目标包管理器语法转译（apt 系 `name=version`、dnf/yum 系 `name-version`），见下方示例。
 
 ```yaml
 # 附加组件镜像（仅镜像；不含软件包）
@@ -128,23 +145,21 @@ addon_packages:
 `--only-addons` 与 `--skip-addons` 互斥（同时传报错）：
 
 ```bash
-# 默认（mode all）：核心 + addon_packages 并入软件包；核心 + addon_images 并入镜像
-./builder build --os ubuntu --os-version 22.04 --kubernetes-version v1.27.3 --dry-run
+# 软件包：核心 + addon_packages
+./builder build packages --os ubuntu --os-version 22.04 --kubernetes-version v1.27.3 --dry-run
 
-# mode packages：软件包 = 核心 + addon_packages；镜像跳过
-./builder build --os ubuntu --os-version 22.04 --kubernetes-version v1.27.3 --mode packages --dry-run
+# 镜像：核心 + addon_images
+./builder build images --kubernetes-version v1.27.3 --dry-run
 
-# mode images：软件包跳过；镜像 = 核心 + addon_images
-./builder build --os ubuntu --os-version 22.04 --kubernetes-version v1.27.3 --mode images --dry-run
+# 只打包附加软件包（无核心；--kubernetes-version 可省略）
+./builder build packages --os ubuntu --os-version 22.04 --only-addons --dry-run
 
-# 只打包附加：软件包 = addon_packages、镜像 = addon_images（无核心；--kubernetes-version 可省略）
-./builder build --os ubuntu --os-version 22.04 --only-addons --dry-run
-
-# 只打包附加且仅镜像：镜像 = addon_images（无核心、无软件包）
-./builder build --os ubuntu --os-version 22.04 --kubernetes-version v1.27.3 --only-addons --mode images --dry-run
+# 只打包附加镜像（无核心）
+./builder build images --only-addons --dry-run
 
 # 跳过附加：无 addon_packages / addon_images，仅核心
-./builder build --os ubuntu --os-version 22.04 --kubernetes-version v1.27.3 --skip-addons --dry-run
+./builder build packages --os ubuntu --os-version 22.04 --kubernetes-version v1.27.3 --skip-addons --dry-run
+./builder build images --kubernetes-version v1.27.3 --skip-addons --dry-run
 ```
 
 ## 产物目录结构
@@ -354,7 +369,7 @@ go test ./...    # 单元测试
 ## 已知限制
 
 - 镜像阶段按本机架构拉取（容器内 `docker pull`，经挂载的 docker.sock 操作宿主机 daemon）；若 `--arch` 与本机不同会打印 warning，无法交叉拉取。
-- 依赖本机 docker；docker 不可用时 build 直接失败中断，不产出离线包；可用 `--mode packages` 显式跳过镜像阶段。
+- 依赖本机 docker；docker 不可用时 build 直接失败中断，不产出离线包；可用 `build packages` 显式跳过镜像阶段。
 - 附加组件镜像 flannel 已切换到华为云 SWR pixiu-public 仓库（`swr.cn-north-4.myhuaweicloud.com/pixiu-public/flannel/flannel:v0.24.2`）；metrics-server 等镜像使用当前 builder.yaml 中配置的 pixiucloud 仓库。网络不支持外部仓库时可用 `--skip-addons` 跳过附加组件（addon_images 与 addon_packages 均不进产物，核心镜像 + 核心软件包仍完整），未显式跳过时附加组件拉取失败仍中断。
 - 核心镜像清单通过官方 kubeadm 静态二进制生成（`kubeadm config images list`，Linux 宿主机直跑；其它平台挂载进构建容器）。
 - 镜像打包在 `swr.cn-north-4.myhuaweicloud.com/pixiu-public/pixiukit/docker:24-cli` 容器内执行（`--name builder-images-<id>`，挂载 `/var/run/docker.sock` 与输出目录）；软件包下载容器名为 `builder-packages-<id>`，便于 `docker ps` 区分阶段。

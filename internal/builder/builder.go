@@ -1,5 +1,5 @@
 // Package builder 编排 builder 的完整构建管线：
-// 容器内软件包下载与镜像清单+拉取+save（--mode all 时并行）→
+// 容器内软件包下载与镜像清单+拉取+save（mode=all 时并行）→
 // 渲染脚本 → 生成 manifest → 打包 tar.gz；并提供 bundle verify。
 package builder
 
@@ -76,9 +76,9 @@ type StepResult struct {
 type Result struct {
 	BundleDir  string
 	BundleName string
-	// TarPath 单产物路径（packages/images 模式）；--mode all 时为软件包 tar（兼容旧字段）。
+	// TarPath 单产物路径（packages/images 模式）；mode=all 时为软件包 tar（兼容旧字段）。
 	TarPath string
-	// TarPaths 全部产物路径；--mode all 时含 packages 与 images 两个独立 tar.gz。
+	// TarPaths 全部产物路径；mode=all 时含 packages 与 images 两个独立 tar.gz。
 	TarPaths []string
 	Steps    []StepResult
 }
@@ -346,7 +346,7 @@ func Build(ctx context.Context, opts Options) (*Result, error) {
 	}
 	doPackages := func(c context.Context) stepOut {
 		if !runPkg {
-			return stepOut{sr: StepResult{Name: "容器内软件包下载", Status: "skipped", Message: "按 --mode images 跳过软件包"}}
+			return stepOut{sr: StepResult{Name: "容器内软件包下载", Status: "skipped", Message: "images 构建跳过软件包"}}
 		}
 		pkgList := resolvePackageList(opts, opts.Config, osDef.PkgManager, opts.K8sVersion, osDef.ContainerdPkg)
 		if opts.DryRun {
@@ -382,7 +382,7 @@ func Build(ctx context.Context, opts Options) (*Result, error) {
 	}
 	doImages := func(c context.Context) stepOut {
 		if !runImg {
-			return stepOut{sr: StepResult{Name: "镜像清单与保存", Status: "skipped", Message: "按 --mode packages 跳过镜像"}}
+			return stepOut{sr: StepResult{Name: "镜像清单与保存", Status: "skipped", Message: "packages 构建跳过镜像"}}
 		}
 		imgPlan, err := resolveImages(opts, opts.Config)
 		if err != nil {
@@ -477,11 +477,15 @@ func Build(ctx context.Context, opts Options) (*Result, error) {
 			return res, err
 		}
 	} else {
-		stepStart(1, "容器内软件包下载")
+		if runPkg {
+			stepStart(1, "容器内软件包下载")
+		}
 		if r, err := recordStep(1, doPackages(ctx)); err != nil {
 			return r, err
 		}
-		stepStart(2, "镜像清单与保存")
+		if runImg {
+			stepStart(2, "镜像清单与保存")
+		}
 		if r, err := recordStep(2, doImages(ctx)); err != nil {
 			return r, err
 		}
@@ -616,13 +620,13 @@ func BundleName(osName, osVer, arch, k8sVer string) string {
 	return fmt.Sprintf("pixiu-%s-%s-%s-%s", osName, osVer, arch, k8sVer)
 }
 
-// PackagesBundleName 软件包产物名（单模式 packages 与 --mode all 拆分统一）：
+// PackagesBundleName 软件包产物名（packages 模式与 mode=all 拆分统一）：
 // pixiu-packages-{os}-{osver}-{arch}-{k8s}。
 func PackagesBundleName(osName, osVer, arch, k8sVer string) string {
 	return fmt.Sprintf("pixiu-packages-%s-%s-%s-%s", osName, osVer, arch, k8sVer)
 }
 
-// ImagesOSBundleName 指定 OS 的镜像产物名（单模式 images 且指定 OS，与 --mode all 拆分统一）：
+// ImagesOSBundleName 指定 OS 的镜像产物名（images 且指定 OS，与 mode=all 拆分统一）：
 // pixiu-images-{os}-{osver}-{arch}-{k8s}。
 func ImagesOSBundleName(osName, osVer, arch, k8sVer string) string {
 	return fmt.Sprintf("pixiu-images-%s-%s-%s-%s", osName, osVer, arch, k8sVer)
@@ -700,7 +704,7 @@ func ImagesBundleName(arch, k8sVer string) string {
 	return fmt.Sprintf("pixiu-images-%s-%s", arch, k8sVer)
 }
 
-// defaultBuildOS 为 --mode images 未指定 OS 时挑选默认构建容器发行版。
+// defaultBuildOS 为 images 模式未指定 OS 时挑选默认构建容器发行版。
 // 优先 ubuntu/22.04；否则取 ubuntu 第一个版本；再否则取清单中第一个 OS 的第一个版本。
 func defaultBuildOS(cfg *config.Config) (name, version string, err error) {
 	if cfg == nil {
