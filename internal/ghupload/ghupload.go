@@ -149,6 +149,16 @@ func DownloadAsset(ctx context.Context, opts Options, assetName, dst string, mod
 	return c.downloadAsset(ctx, found.ID, dst, mode)
 }
 
+// CheckRelease 检查指定 tag 的 GitHub Release 是否存在；不存在则返回错误（不自动创建）。
+func CheckRelease(ctx context.Context, opts Options) error {
+	if err := opts.Validate(); err != nil {
+		return err
+	}
+	c := newClient(opts)
+	_, err := c.getRelease(ctx)
+	return err
+}
+
 // EnsureRelease 确保指定 tag 的 GitHub Release 存在；不存在时自动创建。
 // 创建时 Release 名与 tag_name 均为 opts.Tag（通常为 k8s 版本号）。
 func EnsureRelease(ctx context.Context, opts Options) error {

@@ -136,7 +136,7 @@ func TestResolveBuildOptionsEmptyConfig(t *testing.T) {
 
 // TestRequiredParamsMissing 验证必填参数（os/os-version/kubernetes-version）缺失时的报错信息。
 func TestRequiredParamsMissing(t *testing.T) {
-	buildK8sVersion = ""
+	buildK8sVersions = nil
 	buildOS = ""
 	buildOSVersion = ""
 	buildArch = "amd64"
@@ -144,7 +144,7 @@ func TestRequiredParamsMissing(t *testing.T) {
 	// 空配置 + 未传任何必填 flag → packages 三个必填项全部列出。
 	cfg := &config.Config{}
 	opts := resolveBuildOptions(cfg, buildFlagValues{
-		K8sVersion: buildK8sVersion, OS: buildOS, OSVersion: buildOSVersion,
+		K8sVersion: firstK8sVersion(buildK8sVersions), OS: buildOS, OSVersion: buildOSVersion,
 		Arch: "amd64", Mirror: "official", WorkDir: "./work", OutDir: "./dist", Mode: "packages",
 	}, buildFlagChanged{})
 	if opts.OS != "" || opts.OSVersion != "" || opts.K8sVersion != "" {
@@ -187,5 +187,13 @@ func TestRequiredParamsMissingOnlyAddons(t *testing.T) {
 	opts.OnlyAddons = false
 	if missing := requiredMissing(opts, "packages"); strings.Join(missing, ",") != "kubernetes-version" {
 		t.Errorf("非 only-addons 缺 k8s 版本应报 kubernetes-version，实际 %v", missing)
+	}
+}
+
+func TestNormalizeK8sVersions(t *testing.T) {
+	got := normalizeK8sVersions([]string{" v1.31.7 ", "v1.31.8", "", "v1.31.7", "v1.31.9"})
+	want := "v1.31.7,v1.31.8,v1.31.9"
+	if strings.Join(got, ",") != want {
+		t.Errorf("normalizeK8sVersions = %v, want %s", got, want)
 	}
 }

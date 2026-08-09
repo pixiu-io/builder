@@ -36,7 +36,7 @@ type Config struct {
 // BuildOptions build 子命令可配置的默认参数。
 // 命令行显式传参优先；未传时回落到本配置节；配置值为空时再回落到 flag 内置默认值。
 // 核心软件包/镜像始终使用默认清单（BuildPackageList / kubeadm 生成）；
-// 自定义能力由顶层 addon_packages / addon_images（与 --mode / --only-addons / --skip-addons 联动）提供。
+// 自定义能力由顶层 addon_packages / addon_images（与 build packages/images / --only-addons / --skip-addons 联动）提供。
 type BuildOptions struct {
 	OS                string `yaml:"os"`
 	OSVersion         string `yaml:"os_version"`

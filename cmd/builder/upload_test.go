@@ -41,6 +41,21 @@ func TestKubeadmAssetName(t *testing.T) {
 	}
 }
 
+func TestImagesGitHubTag(t *testing.T) {
+	old := githubTag
+	t.Cleanup(func() { githubTag = old })
+
+	githubTag = ""
+	if got := imagesGitHubTag(); got != githubImagesReleaseTag {
+		t.Fatalf("default tag = %q, want %q", got, githubImagesReleaseTag)
+	}
+
+	githubTag = "  custom-images  "
+	if got := imagesGitHubTag(); got != "custom-images" {
+		t.Fatalf("explicit tag = %q, want custom-images", got)
+	}
+}
+
 func TestKubeadmDownloadURL(t *testing.T) {
 	got := kubeadmDownloadURL("v1.31.6", "amd64")
 	want := "https://dl.k8s.io/release/v1.31.6/bin/linux/amd64/kubeadm"
