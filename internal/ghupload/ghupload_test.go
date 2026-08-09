@@ -257,6 +257,35 @@ func TestEnsureReleaseCreatesMissingRelease(t *testing.T) {
 	}
 }
 
+func TestCheckReleaseExistsAndMissing(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/repos/acme/builder/releases/tags/images", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(release{ID: 7})
+	})
+	mux.HandleFunc("/repos/acme/builder/releases/tags/missing", func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, `{"message":"Not Found"}`, http.StatusNotFound)
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	opts := Options{
+		Owner:      "acme",
+		Repo:       "builder",
+		Token:      "tok",
+		APIBase:    srv.URL,
+		HTTPClient: srv.Client(),
+	}
+	opts.Tag = "images"
+	if err := CheckRelease(context.Background(), opts); err != nil {
+		t.Fatalf("images should exist: %v", err)
+	}
+	opts.Tag = "missing"
+	err := CheckRelease(context.Background(), opts)
+	if err == nil || !strings.Contains(err.Error(), "不存在") {
+		t.Fatalf("expected missing release error, got %v", err)
+	}
+}
+
 func TestListReleasesAndTags(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/repos/acme/builder/releases", func(w http.ResponseWriter, r *http.Request) {

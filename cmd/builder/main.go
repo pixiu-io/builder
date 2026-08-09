@@ -48,7 +48,8 @@ var (
 	buildUpload      bool
 )
 
-// githubImagesReleaseTag build images --upload 时使用的固定 Release 名/tag。
+// githubImagesReleaseTag build images 默认使用的 GitHub Release 名/tag。
+// 下载 kubeadm 与 --upload 均优先 --github-tag；未指定时用此默认值（不再回退到 k8s 版本）。
 const githubImagesReleaseTag = "images"
 
 // imagesBuildConcurrency build images 多版本时的最大并发数。
@@ -193,10 +194,12 @@ func newBuildImagesCmd() *cobra.Command {
 		Long: `构建核心/附加组件镜像并打包为 pixiu-images-{arch}-{k8sVersion}.tar.gz。
 无需指定 --os / --os-version。
 可重复指定 --kubernetes-version；多个版本时并发构建与上传（并发上限 10）。
---upload 时上传到名为 images 的 GitHub Release（不存在则自动创建）。`,
+构建时从 GitHub Release 拉取对应版本的 kubeadm（仅检查 --github-tag；未指定则默认 tag=images）。
+--upload 时上传到同一 Release（--github-tag 或默认 images；不存在则自动创建）。`,
 		Example: `  builder build images --kubernetes-version v1.31.6 --arch amd64
   builder build images --kubernetes-version v1.31.6 --arch amd64 --upload
-  builder build images --kubernetes-version v1.31.7 --kubernetes-version v1.31.8 --kubernetes-version v1.31.9 --arch amd64 --upload`,
+  builder build images --kubernetes-version v1.31.7 --kubernetes-version v1.31.8 --kubernetes-version v1.31.9 --arch amd64 --upload
+  builder build images --kubernetes-version v1.31.6 --arch amd64 --github-tag images --upload`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runBuild(cmd, "images")
@@ -233,7 +236,7 @@ func addBuildCommonFlags(cmd *cobra.Command, withOS bool) {
 func addGitHubFlags(cmd *cobra.Command) {
 	cmd.Flags().StringVar(&githubOwner, "github-owner", "", "GitHub 仓库所有者（覆盖配置文件 github.owner）")
 	cmd.Flags().StringVar(&githubRepo, "github-repo", "", "GitHub 仓库名（覆盖配置文件 github.repo）")
-	cmd.Flags().StringVar(&githubTag, "github-tag", "", "GitHub Release tag（覆盖配置文件 github.tag；为空时复用 --kubernetes-version）")
+	cmd.Flags().StringVar(&githubTag, "github-tag", "", "GitHub Release tag（覆盖配置文件 github.tag；build images 未指定时默认 images；其它命令为空时复用 --kubernetes-version）")
 	cmd.Flags().StringVar(&githubToken, "github-token", "", "GitHub token（覆盖配置文件 github.token；也可用环境变量 GITHUB_TOKEN/GH_TOKEN）")
 }
 
@@ -290,6 +293,8 @@ type buildOptions struct {
 	KeepFiles  bool
 	Verbose    bool
 	KubeadmDir string
+	// DeferDockerImageCleanup 多版本并发构建时置 true：各版本不立刻 docker rmi。
+	DeferDockerImageCleanup bool
 }
 
 // resolveBuildOptions 按"命令行 > 配置文件 build 节 > flag 内置默认值"合并 build 参数。
@@ -454,7 +459,8 @@ func runBuild(cmd *cobra.Command, mode string) error {
 	if mode == "images" && len(versions) > 1 {
 		return runBuildImagesConcurrent(ctx, cfg, opts, mirrorVal, versions)
 	}
-	return runBuildOne(ctx, cfg, opts, mirrorVal, mode, os.Stdout)
+	_, err = runBuildOne(ctx, cfg, opts, mirrorVal, mode, os.Stdout)
+	return err
 }
 
 // runBuildImagesConcurrent 并发构建多个 k8s 版本的镜像产物（及可选上传）。
@@ -462,9 +468,8 @@ func runBuildImagesConcurrent(ctx context.Context, cfg *config.Config, base buil
 	fmt.Printf("开始并发构建 %d 个版本（并发=%d）...\n", len(versions), imagesBuildConcurrency)
 
 	if buildUpload && !base.DryRun {
-		// 并发上传前先确保 images Release 存在，避免各 goroutine 同时创建竞态。
-		ghOpts := mergeGitHubOptions(cfg.GitHub, githubOwner, githubRepo, "", githubToken)
-		ghOpts.Tag = githubImagesReleaseTag
+		// 并发上传前先确保目标 Release 存在，避免各 goroutine 同时创建竞态。
+		ghOpts := mergeGitHubOptions(cfg.GitHub, githubOwner, githubRepo, imagesGitHubTag(), githubToken)
 		if ghOpts.Owner == "" || ghOpts.Repo == "" {
 			return fmt.Errorf("github owner/repo 不能为空（配置 github.owner/github.repo 或 --github-owner/--github-repo）")
 		}
@@ -472,9 +477,16 @@ func runBuildImagesConcurrent(ctx context.Context, cfg *config.Config, base buil
 		if err := ghupload.EnsureRelease(ctx, ghOpts); err != nil {
 			return err
 		}
+	} else if buildNeedsKubeadm("images", base) {
+		// 仅构建镜像时：先检查 kubeadm 所在 Release 是否存在（默认 images），避免多版本并发各自报 404。
+		if err := checkImagesGitHubRelease(ctx, cfg); err != nil {
+			return err
+		}
 	}
 
 	var logMu sync.Mutex
+	var pulledMu sync.Mutex
+	var pulledImages []string
 	g, gctx := errgroup.WithContext(ctx)
 	g.SetLimit(imagesBuildConcurrency)
 	var done atomic.Int64
@@ -483,9 +495,17 @@ func runBuildImagesConcurrent(ctx context.Context, cfg *config.Config, base buil
 		g.Go(func() error {
 			one := base
 			one.K8sVersion = ver
+			// 多版本共享宿主机 docker 镜像层；各版本构建内不立刻 rmi，结束后统一去重清理。
+			one.DeferDockerImageCleanup = !base.KeepFiles && !base.DryRun
 			out := &lockedPrefixWriter{mu: &logMu, w: os.Stdout, prefix: "[" + ver + "] "}
 			fmt.Fprintf(out, "======== 开始构建 %s ========\n", ver)
-			if err := runBuildOne(gctx, cfg, one, mirrorVal, "images", out); err != nil {
+			res, err := runBuildOne(gctx, cfg, one, mirrorVal, "images", out)
+			if res != nil && len(res.PulledImages) > 0 {
+				pulledMu.Lock()
+				pulledImages = append(pulledImages, res.PulledImages...)
+				pulledMu.Unlock()
+			}
+			if err != nil {
 				_ = out.flush()
 				return fmt.Errorf("构建 %s 失败: %w", ver, err)
 			}
@@ -495,8 +515,15 @@ func runBuildImagesConcurrent(ctx context.Context, cfg *config.Config, base buil
 			return nil
 		})
 	}
-	if err := g.Wait(); err != nil {
-		return err
+	waitErr := g.Wait()
+	// 无论整体成功与否，都对已拉取镜像做一次去重清理（避免残留；也避免中途失败留下半套）。
+	if !base.KeepFiles && !base.DryRun && len(pulledImages) > 0 {
+		uniq := builder.UniqueImageRefs(pulledImages)
+		fmt.Printf("统一清理中间镜像（去重前 %d → 去重后 %d）...\n", len(pulledImages), len(uniq))
+		builder.CleanupDockerImages("", uniq, os.Stdout)
+	}
+	if waitErr != nil {
+		return waitErr
 	}
 	fmt.Printf("并发构建完成：成功 %d / %d\n", done.Load(), len(versions))
 	return nil
@@ -553,7 +580,7 @@ func (l *lockedPrefixWriter) flushLocked() error {
 }
 
 // runBuildOne 构建单个版本（packages 或 images），可选上传。
-func runBuildOne(ctx context.Context, cfg *config.Config, opts buildOptions, mirrorVal mirror.Mirror, mode string, out io.Writer) error {
+func runBuildOne(ctx context.Context, cfg *config.Config, opts buildOptions, mirrorVal mirror.Mirror, mode string, out io.Writer) (*builder.Result, error) {
 	if out == nil {
 		out = os.Stdout
 	}
@@ -564,31 +591,32 @@ func runBuildOne(ctx context.Context, cfg *config.Config, opts buildOptions, mir
 		var err error
 		kubeadmBin, cleanup, err = prepareBuildKubeadm(ctx, cfg, opts.K8sVersion, opts.Arch, opts.KubeadmDir, opts.Verbose)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		defer cleanup()
 	}
 
 	res, err := builder.Build(ctx, builder.Options{
-		Config:     cfg,
-		OS:         opts.OS,
-		OSVersion:  opts.OSVersion,
-		Arch:       opts.Arch,
-		K8sVersion: opts.K8sVersion,
-		Mirror:     mirrorVal,
-		WorkDir:    opts.WorkDir,
-		OutDir:     opts.OutDir,
-		Mode:       mode,
-		SkipAddons: opts.SkipAddons,
-		OnlyAddons: opts.OnlyAddons,
-		DryRun:     opts.DryRun,
-		KeepFiles:  opts.KeepFiles,
-		Verbose:    opts.Verbose,
-		KubeadmBin: kubeadmBin,
-		Out:        out,
+		Config:                  cfg,
+		OS:                      opts.OS,
+		OSVersion:               opts.OSVersion,
+		Arch:                    opts.Arch,
+		K8sVersion:              opts.K8sVersion,
+		Mirror:                  mirrorVal,
+		WorkDir:                 opts.WorkDir,
+		OutDir:                  opts.OutDir,
+		Mode:                    mode,
+		SkipAddons:              opts.SkipAddons,
+		OnlyAddons:              opts.OnlyAddons,
+		DryRun:                  opts.DryRun,
+		KeepFiles:               opts.KeepFiles,
+		DeferDockerImageCleanup: opts.DeferDockerImageCleanup,
+		Verbose:                 opts.Verbose,
+		KubeadmBin:              kubeadmBin,
+		Out:                     out,
 	})
 	if err != nil {
-		return err
+		return res, err
 	}
 
 	fmt.Fprintln(out, res.StepsTable())
@@ -608,7 +636,7 @@ func runBuildOne(ctx context.Context, cfg *config.Config, opts buildOptions, mir
 	if buildUpload {
 		if opts.DryRun {
 			fmt.Fprintln(out, "[dry-run] 跳过 GitHub Release 上传")
-			return nil
+			return res, nil
 		}
 		files := res.TarPaths
 		if len(files) == 0 && res.TarPath != "" {
@@ -617,15 +645,15 @@ func runBuildOne(ctx context.Context, cfg *config.Config, opts buildOptions, mir
 		uploadTag := opts.K8sVersion
 		forceTag := false
 		if mode == "images" {
-			// 镜像产物固定上传到名为 images 的 Release（不受 github.tag / --github-tag 覆盖）。
-			uploadTag = githubImagesReleaseTag
+			// 镜像产物上传到 --github-tag（未指定则默认 images），不回退到 k8s 版本。
+			uploadTag = imagesGitHubTag()
 			forceTag = true
 		}
 		if err := uploadGitHubArtifacts(ctx, cfg, files, uploadTag, forceTag); err != nil {
-			return err
+			return res, err
 		}
 	}
-	return nil
+	return res, nil
 }
 
 func newUploadCmd() *cobra.Command {
@@ -961,10 +989,8 @@ func prepareBuildKubeadm(ctx context.Context, cfg *config.Config, version, arch,
 }
 
 func downloadBuildKubeadmFromGitHub(ctx context.Context, cfg *config.Config, version, arch, path string, verbose bool) (string, func(), error) {
-	opts := mergeGitHubOptions(cfg.GitHub, githubOwner, githubRepo, githubTag, githubToken)
-	if opts.Tag == "" {
-		opts.Tag = version
-	}
+	// build images：kubeadm 从 --github-tag（默认 images）Release 下载，不按 k8s 版本找 Release。
+	opts := mergeGitHubOptions(cfg.GitHub, githubOwner, githubRepo, imagesGitHubTag(), githubToken)
 	if verbose {
 		opts.Progress = os.Stdout
 	}
@@ -972,7 +998,7 @@ func downloadBuildKubeadmFromGitHub(ctx context.Context, cfg *config.Config, ver
 		return "", nil, fmt.Errorf("github owner/repo 不能为空（配置 github.owner/github.repo 或 --github-owner/--github-repo）")
 	}
 	if opts.Tag == "" {
-		return "", nil, fmt.Errorf("github tag 不能为空（配置 github.tag、--github-tag，或提供 --kubernetes-version）")
+		return "", nil, fmt.Errorf("github tag 不能为空（build images 请指定 --github-tag，或使用默认 images）")
 	}
 
 	assetName := kubeadmAssetName(version, arch)
@@ -982,6 +1008,25 @@ func downloadBuildKubeadmFromGitHub(ctx context.Context, cfg *config.Config, ver
 		return "", nil, err
 	}
 	return path, func() {}, nil
+}
+
+// imagesGitHubTag 返回 build images 使用的 GitHub Release tag：
+// 命令行 --github-tag 优先；未指定时默认 images（不回退到 --kubernetes-version）。
+func imagesGitHubTag() string {
+	if tag := strings.TrimSpace(githubTag); tag != "" {
+		return tag
+	}
+	return githubImagesReleaseTag
+}
+
+// checkImagesGitHubRelease 检查 build images 所用 Release 是否存在（不自动创建）。
+func checkImagesGitHubRelease(ctx context.Context, cfg *config.Config) error {
+	opts := mergeGitHubOptions(cfg.GitHub, githubOwner, githubRepo, imagesGitHubTag(), githubToken)
+	if opts.Owner == "" || opts.Repo == "" {
+		return fmt.Errorf("github owner/repo 不能为空（配置 github.owner/github.repo 或 --github-owner/--github-repo）")
+	}
+	fmt.Printf("检查 GitHub Release: %s/%s@%s\n", opts.Owner, opts.Repo, opts.Tag)
+	return ghupload.CheckRelease(ctx, opts)
 }
 
 func effectiveGitHubTag(cfg *config.Config, defaultTag string) string {

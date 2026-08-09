@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -692,6 +693,93 @@ func TestBuildModePackages(t *testing.T) {
 	}
 }
 
+func TestUniqueImageRefs(t *testing.T) {
+	got := UniqueImageRefs([]string{
+		"registry.k8s.io/pause:3.10",
+		"",
+		" registry.k8s.io/pause:3.10 ",
+		"registry.k8s.io/etcd:3.5.15-0",
+		"registry.k8s.io/pause:3.10",
+	})
+	want := []string{
+		"registry.k8s.io/pause:3.10",
+		"registry.k8s.io/etcd:3.5.15-0",
+	}
+	if len(got) != len(want) {
+		t.Fatalf("UniqueImageRefs len=%d, want %d (%v)", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("UniqueImageRefs[%d]=%q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
+func TestCleanupDockerImagesDedup(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "rmi.log")
+	binPath := filepath.Join(t.TempDir(), "docker")
+	script := `#!/bin/sh
+if [ "$1" = "rmi" ]; then
+  echo "$2" >> "` + logPath + `"
+  exit 0
+fi
+exit 1
+`
+	if err := os.WriteFile(binPath, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	removed := CleanupDockerImages(binPath, []string{
+		"img/a:1",
+		"img/a:1",
+		"img/b:1",
+		"",
+		"img/a:1",
+	}, io.Discard)
+	if removed != 2 {
+		t.Fatalf("removed=%d, want 2", removed)
+	}
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	if len(lines) != 2 || lines[0] != "img/a:1" || lines[1] != "img/b:1" {
+		t.Fatalf("rmi log = %q, want img/a:1 then img/b:1", string(data))
+	}
+}
+
+func TestBuildDeferDockerImageCleanup(t *testing.T) {
+	cfg := loadSampleConfig(t)
+	binDir := t.TempDir()
+	binPath := filepath.Join(binDir, "docker")
+	rmiLog := filepath.Join(binDir, "rmi.log")
+	writeBuilderImagesFakeDockerWithRMILog(t, binPath, rmiLog)
+	kubeadmPath := filepath.Join(binDir, "kubeadm")
+	writeBuilderFakeKubeadm(t, kubeadmPath)
+
+	res, err := Build(context.Background(), Options{
+		Config:                  cfg,
+		Arch:                    "amd64",
+		K8sVersion:              "v1.27.3",
+		Mirror:                  mirror.Official,
+		WorkDir:                 filepath.Join(t.TempDir(), "work"),
+		OutDir:                  filepath.Join(t.TempDir(), "dist"),
+		DockerBin:               binPath,
+		KubeadmBin:              kubeadmPath,
+		Mode:                    "images",
+		DeferDockerImageCleanup: true,
+	})
+	if err != nil {
+		t.Fatalf("构建失败: %v", err)
+	}
+	if len(res.PulledImages) == 0 {
+		t.Fatal("DeferDockerImageCleanup 时应回传 PulledImages")
+	}
+	if _, err := os.Stat(rmiLog); !os.IsNotExist(err) {
+		t.Fatalf("DeferDockerImageCleanup 时不应立即 docker rmi，日志: %v", err)
+	}
+}
+
 // TestBuildKeepFilesCleanup 验证中间文件清理：默认（KeepFiles=false）构建后删除
 // bundle 中间目录；KeepFiles=true 时保留。
 func TestBuildKeepFilesCleanup(t *testing.T) {
@@ -1098,6 +1186,30 @@ fi
 exit 1
 `
 	if err := os.WriteFile(binPath, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// writeBuilderImagesFakeDockerWithRMILog 同 writeBuilderImagesFakeDocker，额外把 docker rmi 记入 logPath。
+func writeBuilderImagesFakeDockerWithRMILog(t *testing.T, binPath, rmiLog string) {
+	t.Helper()
+	writeBuilderImagesFakeDocker(t, binPath)
+	data, err := os.ReadFile(binPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 在 case 分支前插入 rmi 记录，便于断言是否立即清理。
+	patched := strings.Replace(string(data), `case "$1" in
+  info)`, `case "$1" in
+  rmi)
+    echo "$2" >> "`+rmiLog+`"
+    exit 0
+    ;;
+  info)`, 1)
+	if patched == string(data) {
+		t.Fatal("未能给 fake docker 注入 rmi 分支")
+	}
+	if err := os.WriteFile(binPath, []byte(patched), 0o755); err != nil {
 		t.Fatal(err)
 	}
 }
