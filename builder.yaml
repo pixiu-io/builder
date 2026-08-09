@@ -1,6 +1,6 @@
 # builder 配置文件（位于仓库根目录 builder.yaml）
-# 单文件包含五节：build 默认参数、OS 注册表（oses）、k8s 版本参考（versions）、
-# 附加组件镜像（addon_images）、附加安装包（addon_packages）。
+# 单文件包含：build 默认参数、OS 注册表（oses）、k8s 版本参考（versions）、
+# 附加组件镜像（addon_images）、平台服务镜像（server_images）、附加安装包（addon_packages）。
 # 生产默认路径 /etc/pixiu/builder.yaml；本地开发：--configFile ./builder.yaml 或 BUILDER_CONFIG_FILE=./builder.yaml
 
 # ========== build 默认参数（优先级：命令行 > 配置文件 > 内置默认值）==========
@@ -8,7 +8,7 @@
 #   命令行显式传参优先；未传时回落本配置节；配置值为空（或未配置）时使用 flag 内置默认值。
 # 字符串 key 留空 "" 表示不覆盖内置默认；布尔 key（skip_* / only_addons / dry_run）默认 false。
 # 核心软件包/镜像始终使用默认清单（BuildPackageList / kubeadm 生成），不再提供覆盖/追加参数；
-# 自定义能力完全由顶层 addon_packages / addon_images + --mode + --only-addons / --skip-addons 提供。
+# 自定义能力由顶层 addon_packages / addon_images / server_images + 子命令 build packages|images|servers 提供。
 build:
   os: ""                    # 对应 --os：目标系统（如 ubuntu）
   os_version: ""            # 对应 --os-version：系统版本（如 22.04）
@@ -17,7 +17,7 @@ build:
   mirror: "aliyun"         # 对应 --mirror：镜像源（official/aliyun/tencent，默认阿里云 registry.aliyuncs.com/google_containers）
   workdir: "./work"         # 对应 --workdir：工作目录（bundle 构建于此）
   out: "./dist"             # 对应 --out：产物输出目录（tar.gz 输出到此）
-  mode: ""                  # 已废弃：请使用子命令 build packages / build images
+  mode: ""                  # 已废弃：请使用子命令 build packages / build images / build servers
   skip_addons: false        # 对应 --skip-addons：跳过附加组件（addon_images 与 addon_packages 均不并入）
   only_addons: false        # 对应 --only-addons：只打包附加（核心软件包/镜像全去）
   dry_run: false            # 对应 --dry-run：仅演练管线，不真实下载/拉取
@@ -120,7 +120,6 @@ addon_images:
   - name: flannel-cni-plugin
     image: "ccr.ccs.tencentyun.com/pixiucloud/flannel-cni-plugin"
     tag: "v1.4.1-flannel1"
-  # ---- kubez-ansible CNI：calico（enable_calico=yes，v3.31.3，仓库 ccr.ccs.tencentyun.com/pixiucloud）----
   - name: calico-cni
     image: "ccr.ccs.tencentyun.com/pixiucloud/cni"
     tag: "v3.31.3"
@@ -133,7 +132,6 @@ addon_images:
   - name: calico-typha
     image: "ccr.ccs.tencentyun.com/pixiucloud/typha"
     tag: "v3.31.3"
-  # ---- kubez-ansible metrics：metrics-server 与 dashboard metrics-scraper（仓库 ccr.ccs.tencentyun.com/pixiucloud）----
   - name: metrics-server
     image: "ccr.ccs.tencentyun.com/pixiucloud/metrics-server"
     tag: "v0.6.4"
@@ -144,6 +142,23 @@ addon_images:
     image: "ccr.ccs.tencentyun.com/pixiucloud/nginx"
     tag: "1.25-pixiu"
 
+# ========== 平台服务镜像 ==========
+# 平台/服务端镜像清单：格式与 addon_images 一致（name → image:tag）。
+# 仅 build servers 读取并打包为 pixiu-server-images-{arch}.tar.gz；不与 addon_images 混入。
+# 空配置时 build servers 直接报错。
+server_images:
+  - name: mysql
+    image: "ccr.ccs.tencentyun.com/pixiucloud/mysql"
+    tag: "5.7"
+  - name: pixiu
+    image: "crpi-0ecikjs9ylb2hqyo.cn-hangzhou.personal.cr.aliyuncs.com/pixiu-public/pixiu"
+    tag: "v2.0.1-beta.5"
+  - name: kubez-ansible-v2
+    image: "ccr.ccs.tencentyun.com/pixiucloud/kubez-ansible"
+    tag: "v2.0.2"
+  - name: kubez-ansible-v3
+    image: "ccr.ccs.tencentyun.com/pixiucloud/kubez-ansible"
+    tag: "v3.0.3"
 
 # ========== 附加安装包 ==========
 # 附加安装包列表（与 addon_images 平级），mode ∈ {packages, all} 且未 --skip-addons 时

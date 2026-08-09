@@ -57,6 +57,7 @@ go build -o builder ./cmd/builder
 |------|------|
 | `build packages` | 构建软件包离线包。需 `--os` / `--os-version` / `--kubernetes-version`（`--only-addons` 时可省略 k8s 版本）。产物：`pixiu-packages-{os}-{osver}-{arch}-{k8s}.tar.gz`。`--upload` 上传到以 k8s 版本为名的 Release |
 | `build images` | 构建镜像离线包（**无需**操作系统）。需 `--kubernetes-version`（可重复；多版本时并发构建与上传，上限 10）。产物：`pixiu-images-{arch}-{k8s}.tar.gz`。kubeadm 下载与 `--upload` 均只检查/使用 `--github-tag`（未指定默认 `images`；不按 k8s 版本找 Release） |
+| `build servers` | 构建平台服务镜像离线包。只读 `server_images`（格式同 `addon_images`）；**无需** `--os` / `--kubernetes-version`；忽略 `--skip-addons` / `--only-addons`；空配置报错。产物：`pixiu-server-images-{arch}.tar.gz`。`--upload` 默认 tag=`servers` |
 | `upload` | 将已有产物 tar.gz 上传到 GitHub Release。`--file` 可重复；`--github-*` 覆盖配置节 |
 | `sync-kubeadm` | 创建以 k8s 版本为名的 GitHub Release，并上传 kubeadm 二进制。默认单版本；`--all` 同步全部 >= v1.31.0 的正式版本 |
 | `serve` | 加载离线产物，提供本地 OCI registry（`docker pull` 短名）与 yum/dnf/apt HTTP 软件源（纯 Go，无外部工具依赖） |
@@ -73,8 +74,9 @@ go build -o builder ./cmd/builder
 |--------|---------|--------|--------------|
 | `build packages` | 软件包（k8s/运行时/系统依赖）+ 脚本 + manifest | `pixiu-packages-{os}-{osver}-{arch}-{k8s}.tar.gz` | k8s 版本（或 `--github-tag`） |
 | `build images` | 镜像（核心 + 附加组件）+ 脚本 + manifest | `pixiu-images-{arch}-{k8s}.tar.gz` | `--github-tag`（默认 `images`） |
+| `build servers` | 平台服务镜像（仅 `server_images`）+ 脚本 + manifest | `pixiu-server-images-{arch}.tar.gz` | `--github-tag`（默认 `servers`） |
 
-被跳过的步骤在构建汇总中标记为 `skipped`（非失败）。`build images` 不需要、也不接受操作系统参数。
+被跳过的步骤在构建汇总中标记为 `skipped`（非失败）。`build images` / `build servers` 不需要操作系统参数。
 
 ```bash
 # 软件包
@@ -89,6 +91,9 @@ go build -o builder ./cmd/builder
   --kubernetes-version v1.31.8 \
   --kubernetes-version v1.31.9 \
   --arch amd64 --upload
+
+# 平台服务镜像（读 server_images；可 --upload 到 servers Release）
+./builder build servers --arch amd64 --upload
 ```
 
 多版本并发时，各版本构建过程中**不立刻** `docker rmi`（避免先完成的版本删掉后完成版本仍在用的共享镜像）；全部结束后对中间镜像去重再统一清理（`--keep-files` 时仍保留）。
@@ -187,14 +192,15 @@ pixiu-images-{arch}-{k8sver}/                  # build images（不绑定 OS）
 
 ## 配置文件
 
-单份 yaml 默认位于 `/etc/pixiu/builder.yaml`（生产部署，与 pixiu 配置惯例一致），可通过 `--configFile` 或环境变量 `BUILDER_CONFIG_FILE` 指定配置文件。本地开发使用仓库根目录下的 `builder.yaml`：`--configFile ./builder.yaml` 或 `export BUILDER_CONFIG_FILE=./builder.yaml`。文件按顶层分为六节：
+单份 yaml 默认位于 `/etc/pixiu/builder.yaml`（生产部署，与 pixiu 配置惯例一致），可通过 `--configFile` 或环境变量 `BUILDER_CONFIG_FILE` 指定配置文件。本地开发使用仓库根目录下的 `builder.yaml`：`--configFile ./builder.yaml` 或 `export BUILDER_CONFIG_FILE=./builder.yaml`。文件按顶层分为：
 
 | 节 | 内容 |
 |------|------|
 | `build` | build 子命令默认参数（可选；优先级：命令行 > 配置 > 内置默认值） |
 | `oses` | OS 注册表：可用版本、包管理器（apt/dnf）、容器内下载软件包用的构建镜像、架构、apt 版本代号（codename/codenames）、dnf 发行版标识（rpm_distro）、containerd 包名与来源（containerd_pkg / containerd_repo） |
 | `versions` | k8s 版本定义；containerd/runc 为记录用，crictl 用于 cri-tools 包缺失时的静态回退 |
-| `addon_images` | 附加组件镜像清单（name → image:tag；仅镜像，不含软件包） |
+| `addon_images` | 附加组件镜像清单（name → image:tag；仅镜像，不含软件包；供 `build images`） |
+| `server_images` | 平台服务镜像清单（格式同 `addon_images`；仅 `build servers` 读取；空配置时报错） |
 | `addon_packages` | 附加安装包列表（对象格式：name + 可选 version；version 空不锁版本、非空按目标包管理器语法转译 name=version / name-version；mode ∈ packages/all 且未跳过附加时并入软件包清单） |
 | `github` | 可选：产物上传到 GitHub Release（owner/repo/tag/token 等；token 建议用环境变量） |
 
@@ -279,9 +285,11 @@ export GITHUB_TOKEN=ghp_xxx
 # 已解压目录
 ./builder serve --bundle ./work/pixiu-ubuntu-22.04-amd64-v1.27.3
 
-# 指定离线包目录：自动加载其中所有 *.tar.gz，并每 3s 轮询热加载新放入的包
+# 指定离线包目录：目录不存在则自动创建；加载其中所有 *.tar.gz，并每 3s 轮询热加载新放入的包
 ./builder serve --dir ./offline-packages --advertise-host 192.168.1.10
 ```
+
+加载完成后会打印**镜像配置 demo**与**自定义安装包配置 demo**（含节点侧 registry/软件源用法，以及 `builder.yaml` 的 `addon_images` / `addon_packages` 示例）。
 
 `--advertise-host` 默认取**本机非 loopback IP**（打印给客户端），无需显式指定；仅在需要对外暴露固定地址时手动覆盖。
 

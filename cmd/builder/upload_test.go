@@ -56,6 +56,30 @@ func TestImagesGitHubTag(t *testing.T) {
 	}
 }
 
+func TestServersGitHubTag(t *testing.T) {
+	old := githubTag
+	t.Cleanup(func() { githubTag = old })
+
+	githubTag = ""
+	if got := serversGitHubTag(); got != githubServersReleaseTag {
+		t.Fatalf("default tag = %q, want %q", got, githubServersReleaseTag)
+	}
+
+	githubTag = "  custom-servers  "
+	if got := serversGitHubTag(); got != "custom-servers" {
+		t.Fatalf("explicit tag = %q, want custom-servers", got)
+	}
+}
+
+func TestBuildNeedsKubeadmServers(t *testing.T) {
+	if buildNeedsKubeadm("servers", buildOptions{}) {
+		t.Fatal("build servers 不应需要 kubeadm")
+	}
+	if !buildNeedsKubeadm("images", buildOptions{}) {
+		t.Fatal("build images 默认需要 kubeadm")
+	}
+}
+
 func TestKubeadmDownloadURL(t *testing.T) {
 	got := kubeadmDownloadURL("v1.31.6", "amd64")
 	want := "https://dl.k8s.io/release/v1.31.6/bin/linux/amd64/kubeadm"

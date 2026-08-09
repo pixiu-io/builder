@@ -52,6 +52,9 @@ var (
 // 下载 kubeadm 与 --upload 均优先 --github-tag；未指定时用此默认值（不再回退到 k8s 版本）。
 const githubImagesReleaseTag = "images"
 
+// githubServersReleaseTag build servers 默认使用的 GitHub Release 名/tag。
+const githubServersReleaseTag = "servers"
+
 // imagesBuildConcurrency build images 多版本时的最大并发数。
 const imagesBuildConcurrency = 10
 
@@ -157,18 +160,21 @@ func newBuildCmd() *cobra.Command {
 		Short: "构建离线安装包",
 		Long: `构建 Kubernetes 离线产物，需指定子命令：
   build packages  构建软件包离线包（需 --os / --os-version）
-  build images    构建镜像离线包（无需操作系统；产物 pixiu-images-{arch}-{k8s}.tar.gz）`,
+  build images    构建镜像离线包（无需操作系统；产物 pixiu-images-{arch}-{k8s}.tar.gz）
+  build servers   构建平台服务镜像离线包（读 server_images；产物 pixiu-server-images-{arch}.tar.gz）`,
 		Example: `  builder build packages --os ubuntu --os-version 22.04 --kubernetes-version v1.31.6
   builder build images --kubernetes-version v1.31.6 --arch amd64 --upload
   builder build images --kubernetes-version v1.31.7 --kubernetes-version v1.31.8 --arch amd64 --upload
+  builder build servers --arch amd64 --upload
   builder build packages --os ubuntu --os-version 22.04 --kubernetes-version v1.31.6 --skip-addons`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return fmt.Errorf("请指定子命令：build packages 或 build images")
+			return fmt.Errorf("请指定子命令：build packages / build images / build servers")
 		},
 	}
 	cmd.AddCommand(newBuildPackagesCmd())
 	cmd.AddCommand(newBuildImagesCmd())
+	cmd.AddCommand(newBuildServersCmd())
 	return cmd
 }
 
@@ -209,6 +215,26 @@ func newBuildImagesCmd() *cobra.Command {
 	return cmd
 }
 
+func newBuildServersCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "servers",
+		Short: "构建平台服务镜像离线包（读 server_images）",
+		Long: `按配置文件 server_images 拉取并打包平台/服务端镜像为 pixiu-server-images-{arch}.tar.gz。
+无需 --os / --os-version / --kubernetes-version；忽略 --skip-addons / --only-addons。
+server_images 为空时直接报错。
+--upload 时上传到 --github-tag（未指定则默认 servers；不存在则自动创建）。`,
+		Example: `  builder build servers --arch amd64
+  builder build servers --arch amd64 --upload
+  builder build servers --arch amd64 --github-tag servers --upload`,
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runBuild(cmd, "servers")
+		},
+	}
+	addBuildServersFlags(cmd)
+	return cmd
+}
+
 // addBuildCommonFlags 为 build packages / build images 注册共用 flags。
 // withOS 为 true 时注册 --os / --os-version（仅 packages 需要）。
 func addBuildCommonFlags(cmd *cobra.Command, withOS bool) {
@@ -233,10 +259,23 @@ func addBuildCommonFlags(cmd *cobra.Command, withOS bool) {
 	addGitHubFlags(cmd)
 }
 
+// addBuildServersFlags 为 build servers 注册 flags（无 os/k8s/addons/kubeadm）。
+func addBuildServersFlags(cmd *cobra.Command) {
+	cmd.Flags().StringVar(&buildArch, "arch", "amd64", "目标架构（amd64/arm64）")
+	cmd.Flags().StringVar(&buildMirror, "mirror", "aliyun", "镜像仓库源（默认 aliyun；official/aliyun/tencent）")
+	cmd.Flags().StringVar(&buildWorkDir, "workdir", "./work", "工作目录（bundle 在此构建）")
+	cmd.Flags().StringVar(&buildOutDir, "out", "./dist", "产物输出目录（tar.gz 输出到此）")
+	cmd.Flags().BoolVar(&buildDryRun, "dry-run", false, "仅演练管线，不执行真实下载/拉取")
+	cmd.Flags().BoolVar(&buildKeepFiles, "keep-files", false, "构建完成后保留中间文件（默认清理）")
+	cmd.Flags().BoolVarP(&buildVerbose, "verbose", "v", false, "打印详细过程日志")
+	cmd.Flags().BoolVar(&buildUpload, "upload", false, "构建完成后将产物上传到 GitHub Release（默认 tag=servers）")
+	addGitHubFlags(cmd)
+}
+
 func addGitHubFlags(cmd *cobra.Command) {
 	cmd.Flags().StringVar(&githubOwner, "github-owner", "", "GitHub 仓库所有者（覆盖配置文件 github.owner）")
 	cmd.Flags().StringVar(&githubRepo, "github-repo", "", "GitHub 仓库名（覆盖配置文件 github.repo）")
-	cmd.Flags().StringVar(&githubTag, "github-tag", "", "GitHub Release tag（覆盖配置文件 github.tag；build images 未指定时默认 images；其它命令为空时复用 --kubernetes-version）")
+	cmd.Flags().StringVar(&githubTag, "github-tag", "", "GitHub Release tag（覆盖配置文件 github.tag；build images 默认 images，build servers 默认 servers；其它命令为空时复用 --kubernetes-version）")
 	cmd.Flags().StringVar(&githubToken, "github-token", "", "GitHub token（覆盖配置文件 github.token；也可用环境变量 GITHUB_TOKEN/GH_TOKEN）")
 }
 
@@ -341,13 +380,14 @@ func resolveBool(changed bool, flagVal, cfgVal bool) bool {
 }
 
 // requiredMissing 返回 build 必填参数中缺失项的列表（空表示无缺失）。
-// images 不要求 os/os-version；packages 要求。kubernetes-version 在 --only-addons 时可省略。
+// images/servers 不要求 os/os-version；packages 要求。
+// kubernetes-version：servers 不需要；--only-addons 时可省略。
 func requiredMissing(opts buildOptions, mode string) []string {
 	var missing []string
-	if !opts.OnlyAddons && opts.K8sVersion == "" {
+	if mode != "servers" && !opts.OnlyAddons && opts.K8sVersion == "" {
 		missing = append(missing, "kubernetes-version")
 	}
-	if mode != "images" {
+	if mode != "images" && mode != "servers" {
 		if opts.OS == "" {
 			missing = append(missing, "os")
 		}
@@ -381,7 +421,7 @@ func firstK8sVersion(versions []string) string {
 	return versions[0]
 }
 
-// runBuild 执行构建；mode 由子命令固定为 packages 或 images。
+// runBuild 执行构建；mode 由子命令固定为 packages / images / servers。
 // build images 支持重复 --kubernetes-version；多版本时并发构建与上传。
 func runBuild(cmd *cobra.Command, mode string) error {
 	cfg, err := config.Load(configFile)
@@ -425,13 +465,25 @@ func runBuild(cmd *cobra.Command, mode string) error {
 	opts.Mode = mode
 
 	versions := cliVersions
-	if !cmd.Flags().Changed("kubernetes-version") && opts.K8sVersion != "" {
+	if mode != "servers" && !cmd.Flags().Changed("kubernetes-version") && opts.K8sVersion != "" {
 		versions = []string{opts.K8sVersion}
 	}
 	if mode == "packages" && len(versions) > 1 {
 		return fmt.Errorf("build packages 仅支持一个 --kubernetes-version")
 	}
-	opts.K8sVersion = firstK8sVersion(versions)
+	if mode == "servers" {
+		versions = nil
+		opts.K8sVersion = ""
+		opts.OS, opts.OSVersion = "", ""
+		// build servers 忽略 addon 相关开关与配置回落。
+		opts.SkipAddons = false
+		opts.OnlyAddons = false
+		if len(cfg.ServerImages.Addons) == 0 {
+			return fmt.Errorf("server_images 配置为空，请在 builder.yaml 中配置后再执行 build servers")
+		}
+	} else {
+		opts.K8sVersion = firstK8sVersion(versions)
+	}
 
 	mirrorVal, err := mirror.ParseMirror(opts.Mirror)
 	if err != nil {
@@ -439,9 +491,9 @@ func runBuild(cmd *cobra.Command, mode string) error {
 	}
 
 	switch mode {
-	case "packages", "images":
+	case "packages", "images", "servers":
 	default:
-		return fmt.Errorf("非法构建模式 %q（可选: packages / images）", mode)
+		return fmt.Errorf("非法构建模式 %q（可选: packages / images / servers）", mode)
 	}
 
 	// images 不绑定 OS：忽略配置/残留的 os 字段，避免误绑发行版。
@@ -644,9 +696,13 @@ func runBuildOne(ctx context.Context, cfg *config.Config, opts buildOptions, mir
 		}
 		uploadTag := opts.K8sVersion
 		forceTag := false
-		if mode == "images" {
+		switch mode {
+		case "images":
 			// 镜像产物上传到 --github-tag（未指定则默认 images），不回退到 k8s 版本。
 			uploadTag = imagesGitHubTag()
+			forceTag = true
+		case "servers":
+			uploadTag = serversGitHubTag()
 			forceTag = true
 		}
 		if err := uploadGitHubArtifacts(ctx, cfg, files, uploadTag, forceTag); err != nil {
@@ -958,7 +1014,7 @@ func downloadFile(ctx context.Context, rawURL, dst string, mode os.FileMode) err
 }
 
 func buildNeedsKubeadm(mode string, opts buildOptions) bool {
-	return mode != "packages" && !opts.OnlyAddons && !opts.DryRun
+	return mode != "packages" && mode != "servers" && !opts.OnlyAddons && !opts.DryRun
 }
 
 func kubeadmAssetName(version, arch string) string {
@@ -1017,6 +1073,15 @@ func imagesGitHubTag() string {
 		return tag
 	}
 	return githubImagesReleaseTag
+}
+
+// serversGitHubTag 返回 build servers 使用的 GitHub Release tag：
+// 命令行 --github-tag 优先；未指定时默认 servers。
+func serversGitHubTag() string {
+	if tag := strings.TrimSpace(githubTag); tag != "" {
+		return tag
+	}
+	return githubServersReleaseTag
 }
 
 // checkImagesGitHubRelease 检查 build images 所用 Release 是否存在（不自动创建）。
@@ -1114,7 +1179,7 @@ func newServeCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().StringArrayVar(&serveBundles, "bundle", nil, "离线包目录或 tar.gz（可重复，例如 packages + images）")
-	cmd.Flags().StringVar(&serveDir, "dir", "", "离线包目录：加载其下所有 *.tar.gz 并轮询热加载新包（3s）")
+	cmd.Flags().StringVar(&serveDir, "dir", "", "离线包目录：不存在则自动创建；加载其下所有 *.tar.gz 并轮询热加载新包（3s）")
 	cmd.Flags().StringVar(&serveDataDir, "data-dir", "./serve-data", "工作目录（解压、repodata、registry blob）")
 	cmd.Flags().StringVar(&serveRegistryAddr, "registry-addr", "0.0.0.0:5000", "OCI registry 监听地址")
 	cmd.Flags().StringVar(&serveRepoAddr, "repo-addr", "0.0.0.0:8080", "软件源 HTTP 监听地址")

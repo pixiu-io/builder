@@ -36,14 +36,15 @@ type Options struct {
 	Mirror     mirror.Mirror
 	WorkDir    string
 	OutDir     string
-	// Mode 构建模式：packages=仅软件包 / images=仅镜像 / all=两者都构建（默认）。
+	// Mode 构建模式：packages=仅软件包 / images=仅镜像 / servers=仅 server_images / all=packages+images（默认）。
 	// CLI 默认填充 all；库调用方为空时按 all 处理。
 	Mode string
 	// SkipAddons 跳过附加组件：addon_images 不进镜像清单，addon_packages 不并入软件包清单（仅核心）。
+	// build servers 忽略本字段。
 	SkipAddons bool
 	// OnlyAddons 只打包附加组件：核心软件包与核心镜像全去，
 	// 软件包=addon_packages、镜像=addon_images。
-	// 与 SkipAddons 互斥（同时设置报错）。
+	// 与 SkipAddons 互斥（同时设置报错）。build servers 忽略本字段。
 	OnlyAddons bool
 	// DryRun 仅演练管线，不执行真实下载/拉取。
 	DryRun bool
@@ -212,10 +213,21 @@ func dedupAddons(in []config.Addon) []config.Addon {
 }
 
 // resolveImages 计算镜像阶段最终拉取清单：
+//   - mode=servers：仅 server_images（忽略 --only-addons / --skip-addons）；空配置报错
 //   - --only-addons：核心镜像全去；镜像 = addon_images 全部（mode ∈ {images, all}）
 //   - 非 only-addons：核心由 kubeadm 默认生成；addon_images 全部并入（mode ∈ {images, all}）
 //   - --skip-addons 时附加组件全部排除（仅核心镜像）
 func resolveImages(opts Options, cfg *config.Config) (resolvedImages, error) {
+	if opts.Mode == "servers" {
+		addons := dedupAddons(cfg.ServerImages.Addons)
+		if len(addons) == 0 {
+			return resolvedImages{}, fmt.Errorf("server_images 配置为空，请在 builder.yaml 中配置后再执行 build servers")
+		}
+		return resolvedImages{
+			CoreImages: []string{}, // 空非 nil：不拉 kubeadm 核心镜像
+			Addons:     addons,
+		}, nil
+	}
 	if opts.OnlyAddons {
 		return resolvedImages{
 			CoreImages: []string{}, // 空非 nil：明确不拉核心镜像
@@ -250,9 +262,8 @@ func Build(ctx context.Context, opts Options) (*Result, error) {
 		opts.Mode = "all"
 	}
 
-	// build images：不绑定发行版；选用默认构建容器仅用于容器内拉镜像清单，
-	// 产物名固定为 pixiu-images-{arch}-{k8s}。
-	if opts.Mode == "images" {
+	// build images / servers：不绑定发行版；选用默认构建容器仅用于容器内拉/保存镜像。
+	if opts.Mode == "images" || opts.Mode == "servers" {
 		name, ver, err := defaultBuildOS(opts.Config)
 		if err != nil {
 			return nil, err
@@ -285,6 +296,8 @@ func Build(ctx context.Context, opts Options) (*Result, error) {
 	switch {
 	case opts.Mode == "images":
 		bundleName = ImagesBundleName(opts.Arch, opts.K8sVersion)
+	case opts.Mode == "servers":
+		bundleName = ServerImagesBundleName(opts.Arch)
 	case opts.Mode == "packages":
 		bundleName = PackagesBundleName(opts.OS, opts.OSVersion, opts.Arch, opts.K8sVersion)
 	default:
@@ -342,7 +355,7 @@ func Build(ctx context.Context, opts Options) (*Result, error) {
 	}
 
 	// ---------- Step 1/2: 软件包下载 + 镜像打包（mode=all 且两者均需真实执行时并行） ----------
-	runPkg := opts.Mode != "images"
+	runPkg := opts.Mode != "images" && opts.Mode != "servers"
 	runImg := opts.Mode != "packages"
 	parallel := runPkg && runImg && !opts.DryRun
 
@@ -352,7 +365,11 @@ func Build(ctx context.Context, opts Options) (*Result, error) {
 	}
 	doPackages := func(c context.Context) stepOut {
 		if !runPkg {
-			return stepOut{sr: StepResult{Name: "容器内软件包下载", Status: "skipped", Message: "images 构建跳过软件包"}}
+			msg := "images 构建跳过软件包"
+			if opts.Mode == "servers" {
+				msg = "servers 构建跳过软件包"
+			}
+			return stepOut{sr: StepResult{Name: "容器内软件包下载", Status: "skipped", Message: msg}}
 		}
 		pkgList := resolvePackageList(opts, opts.Config, osDef.PkgManager, opts.K8sVersion, osDef.ContainerdPkg)
 		if opts.DryRun {
@@ -413,7 +430,7 @@ func Build(ctx context.Context, opts Options) (*Result, error) {
 			KubeadmRemotePath: opts.KubeadmRemotePath,
 			CoreImages:        imgPlan.CoreImages,
 			Addons:            imgPlan.Addons,
-			SkipAddons:        opts.SkipAddons,
+			SkipAddons:        opts.Mode != "servers" && opts.SkipAddons, // servers 忽略 --skip-addons
 			ImagesOutDir:      filepath.Join(bundleDir, "images"),
 			DockerBin:         opts.DockerBin,
 			Verbose:           opts.Verbose,
@@ -433,7 +450,9 @@ func Build(ctx context.Context, opts Options) (*Result, error) {
 		}
 		imgMu.Unlock()
 		msg := fmt.Sprintf("核心 %d 个 + addons %d 个", len(imgRes.Core), len(imgRes.Addons))
-		if imgRes.SkipAddons {
+		if opts.Mode == "servers" {
+			msg = fmt.Sprintf("server_images %d 个", len(imgRes.Addons))
+		} else if imgRes.SkipAddons {
 			msg += "（按 --skip-addons 跳过附加组件）"
 		}
 		if imgRes.ArchMismatch {
@@ -512,14 +531,17 @@ func Build(ctx context.Context, opts Options) (*Result, error) {
 	// ---------- Step 4: 生成 manifest ----------
 	stepStart(4, "生成 manifest")
 	metaOS, metaOSVer := opts.OS, opts.OSVersion
+	metaK8s := opts.K8sVersion
 	if opts.Mode == "images" {
 		metaOS, metaOSVer = "images", "-"
+	} else if opts.Mode == "servers" {
+		metaOS, metaOSVer, metaK8s = "servers", "-", "-"
 	}
 	meta := manifest.Meta{
 		OS:         metaOS,
 		OSVersion:  metaOSVer,
 		Arch:       opts.Arch,
-		K8sVersion: opts.K8sVersion,
+		K8sVersion: metaK8s,
 		Mirror:     opts.Mirror.String(),
 		HostArch:   hostArch(),
 	}
@@ -746,6 +768,11 @@ func ImagesBundleName(arch, k8sVer string) string {
 	return fmt.Sprintf("pixiu-images-%s-%s", arch, k8sVer)
 }
 
+// ServerImagesBundleName 生成 build servers 产物名：pixiu-server-images-{arch}。
+func ServerImagesBundleName(arch string) string {
+	return fmt.Sprintf("pixiu-server-images-%s", arch)
+}
+
 // defaultBuildOS 为 images 模式未指定 OS 时挑选默认构建容器发行版。
 // 优先 ubuntu/22.04；否则取 ubuntu 第一个版本；再否则取清单中第一个 OS 的第一个版本。
 func defaultBuildOS(cfg *config.Config) (name, version string, err error) {
@@ -787,13 +814,13 @@ func validateOptions(opts Options) error {
 		mode = "all"
 	}
 	switch mode {
-	case "all", "packages", "images":
+	case "all", "packages", "images", "servers":
 	default:
-		return fmt.Errorf("非法的构建模式 %q（可选: packages=仅软件包 / images=仅镜像 / all=两者都构建）", opts.Mode)
+		return fmt.Errorf("非法的构建模式 %q（可选: packages=仅软件包 / images=仅镜像 / servers=仅 server_images / all=两者都构建）", opts.Mode)
 	}
-	// packages/all 必须指定 OS；images 模式可在 Build 中先填入默认 OS 后再校验。
-	if mode != "images" && (opts.OS == "" || opts.OSVersion == "") {
-		return fmt.Errorf("缺少 OS/版本（build images 不需要）")
+	// packages/all 必须指定 OS；images/servers 可在 Build 中先填入默认 OS 后再校验。
+	if mode != "images" && mode != "servers" && (opts.OS == "" || opts.OSVersion == "") {
+		return fmt.Errorf("缺少 OS/版本（build images / build servers 不需要）")
 	}
 	if opts.OS != "" || opts.OSVersion != "" {
 		if opts.OS == "" || opts.OSVersion == "" {
@@ -804,9 +831,10 @@ func validateOptions(opts Options) error {
 			return fmt.Errorf("不支持的架构 %s（可选 amd64/arm64）", opts.Arch)
 		}
 	}
-	// k8s 版本格式校验：--only-addons 且未指定版本时跳过（不构建 k8s 核心，无需 k8s 版本）；
+	// k8s 版本格式校验：servers /（--only-addons 且未指定版本）跳过；
 	// 其余情况（含 only-addons 已指定版本）仍按任意 vX.Y.Z 格式校验。
-	if !(opts.OnlyAddons && opts.K8sVersion == "") && !opts.Config.ValidK8s(opts.K8sVersion) {
+	skipK8s := mode == "servers" || (opts.OnlyAddons && opts.K8sVersion == "")
+	if !skipK8s && !opts.Config.ValidK8s(opts.K8sVersion) {
 		return fmt.Errorf("非法的 k8s 版本格式: %s（期望形如 v1.31.0，如 v1.29.5；支持任意 vX.Y.Z）", opts.K8sVersion)
 	}
 	if !opts.Mirror.IsSupported() {
