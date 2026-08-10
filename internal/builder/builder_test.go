@@ -304,7 +304,7 @@ func TestBuildDryRunPackagesPinK8sVersion(t *testing.T) {
 }
 
 func TestBuildDryRunPackagesPinK8sVersionDnf(t *testing.T) {
-	// dnf/yum：只钉 version（kubeadm-1.31.6），不钉 release（rpm 现为 150500.1.1，与 kubez 一致）。
+	// dnf/yum：钉 version+arch（kubeadm-1.31.6.x86_64），规避 kubernetes-new 多架构扁平仓库冲突。
 	cfg := loadSampleConfig(t)
 	var buf bytes.Buffer
 	res, err := Build(context.Background(), Options{
@@ -318,7 +318,7 @@ func TestBuildDryRunPackagesPinK8sVersionDnf(t *testing.T) {
 	}
 	logs := buf.String()
 	for _, want := range []string{
-		"kubeadm-1.31.6", "kubelet-1.31.6", "kubectl-1.31.6",
+		"kubeadm-1.31.6.x86_64", "kubelet-1.31.6.x86_64", "kubectl-1.31.6.x86_64",
 	} {
 		if !strings.Contains(logs, want) {
 			t.Errorf("dnf 软件包清单应含 pin 版本 %q:\n%s", want, logs)
@@ -453,7 +453,7 @@ func TestBuildOpenEulerDryRunUsesSystemContainerd(t *testing.T) {
 		t.Fatalf("openEuler dry-run 失败: %v", err)
 	}
 	logs := buf.String()
-	if !strings.Contains(logs, "kubeadm-1.35.7, kubelet-1.35.7, kubectl-1.35.7, containerd, cri-tools") {
+	if !strings.Contains(logs, "kubeadm-1.35.7.x86_64, kubelet-1.35.7.x86_64, kubectl-1.35.7.x86_64, containerd, cri-tools") {
 		t.Errorf("openEuler 软件包清单应含 containerd（非 containerd.io）:\n%s", logs)
 	}
 	if strings.Contains(logs, "containerd.io") {
@@ -490,7 +490,7 @@ func TestBuildOpenEulerPackagesNoDockerRepo(t *testing.T) {
 	for _, want := range []string{
 		"mirrors.aliyun.com/kubernetes-new",
 		"dnf makecache",
-		"kubectl-1.35.7 containerd cri-tools",
+		"kubectl-1.35.7.x86_64 containerd cri-tools",
 	} {
 		if !strings.Contains(script, want) {
 			t.Errorf("openEuler 脚本应含 %q:\n%s", want, script)
@@ -575,7 +575,7 @@ func TestBuildOpenEulerInferPackagesNoDockerRepo(t *testing.T) {
 	for _, want := range []string{
 		"mirrors.aliyun.com/kubernetes-new",
 		"dnf makecache",
-		"kubectl-1.35.7 containerd cri-tools",
+		"kubectl-1.35.7.x86_64 containerd cri-tools",
 	} {
 		if !strings.Contains(script, want) {
 			t.Errorf("openEuler（推断）脚本应含 %q:\n%s", want, script)
@@ -608,7 +608,7 @@ func TestBuildOpenEulerInferDryRunUsesSystemContainerd(t *testing.T) {
 		t.Fatalf("openEuler（推断）dry-run 失败: %v", err)
 	}
 	logs := buf.String()
-	if !strings.Contains(logs, "kubeadm-1.35.7, kubelet-1.35.7, kubectl-1.35.7, containerd, cri-tools") {
+	if !strings.Contains(logs, "kubeadm-1.35.7.x86_64, kubelet-1.35.7.x86_64, kubectl-1.35.7.x86_64, containerd, cri-tools") {
 		t.Errorf("openEuler（推断）软件包清单应含 containerd（非 containerd.io）:\n%s", logs)
 	}
 	if strings.Contains(logs, "containerd.io") {
@@ -634,7 +634,7 @@ func TestBuildRockyDryRunDefaultContainerd(t *testing.T) {
 	if !strings.Contains(logs, "containerd.io") {
 		t.Errorf("rocky 软件包清单应含 containerd.io（默认阿里云源）:\n%s", logs)
 	}
-	if strings.Contains(logs, "kubectl-1.35.7, containerd, cri-tools") {
+	if strings.Contains(logs, "kubectl-1.35.7.x86_64, containerd, cri-tools") {
 		t.Errorf("rocky 软件包清单不应含系统源包名 containerd:\n%s", logs)
 	}
 	checkStep(t, res, "容器内软件包下载", "ok", "")
@@ -1516,8 +1516,8 @@ func TestResolvePackageListAddonVersions(t *testing.T) {
 		{Name: "conntrack", Version: "1.4"},
 		{Name: "vim", Version: "9.0"},
 	}
-	gotDnf := resolvePackageList(Options{Config: cfgDnf, OS: "rocky"}, cfgDnf, "dnf", "v1.27.3", "containerd.io")
-	wantDnf := []string{"kubeadm-1.27.3", "kubelet-1.27.3", "kubectl-1.27.3", "containerd.io", "cri-tools",
+	gotDnf := resolvePackageList(Options{Config: cfgDnf, OS: "rocky", Arch: "amd64"}, cfgDnf, "dnf", "v1.27.3", "containerd.io")
+	wantDnf := []string{"kubeadm-1.27.3.x86_64", "kubelet-1.27.3.x86_64", "kubectl-1.27.3.x86_64", "containerd.io", "cri-tools",
 		"conntrack", "ipvsadm", "socat", "ebtables", "chrony", "nfs-utils", "vim-9.0"}
 	if !equalStrings(gotDnf, wantDnf) {
 		t.Errorf("dnf 版本并入异常:\n got %v\nwant %v", gotDnf, wantDnf)

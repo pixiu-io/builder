@@ -160,12 +160,15 @@ func DnfSourceScript(repos []Repo) string {
 // 避免 docker-ce 源的 containerd.io 与独立 runc 包存在 Conflicts: runc 冲突导致 apt 无法同时解析。
 // pinK8s=true 且 k8sVersion 非空时，对 k8s 三件套按 --kubernetes-version 精确锁定到对应 patch：
 //   - apt：pkg=X.Y.Z-1.1（deb 的 version-release 固定为 1.1）
-//   - dnf/yum：pkg-X.Y.Z（只锁 version，与 kubez-ansible 一致；rpm release 随仓库变化，
-//     如 kubernetes-new 现为 150500.1.1，写成 pkg-X.Y.Z-1.1 会 No match）
+//   - dnf/yum：pkg-X.Y.Z（只锁 version，与 kubez-ansible 一致；不写 pkg-X.Y.Z.arch，
+//     因为那不是合法 NEVRA——dnf 会把 1.31.6.x86_64 当成 version。多架构仓库冲突
+//     由下载脚本的 dnf --forcearch 处理，见 BuildDownloadScript）
+// arch 保留以兼容调用方；当前不写入包名（架构由 --forcearch 约束）。
 // 源内无该 patch 时 apt/dnf 依赖解析失败即构建失败，不会静默回退同 minor 最新 patch。
 // 默认 false（或版本为空）使用源内 stable 最新版本。
 // containerdPkg 为空时默认 "containerd.io"（docker-ce 源包名）；openEuler 等系统源场景传 "containerd"。
-func BuildPackageList(pkgManager, k8sVersion string, deps []string, pinK8s bool, containerdPkg string) []string {
+func BuildPackageList(pkgManager, k8sVersion string, deps []string, pinK8s bool, containerdPkg, arch string) []string {
+	_ = arch // 架构约束走 dnf --forcearch，不写入包名
 	if containerdPkg == "" {
 		containerdPkg = "containerd.io"
 	}
@@ -174,7 +177,7 @@ func BuildPackageList(pkgManager, k8sVersion string, deps []string, pinK8s bool,
 	if pinK8s && ver != "" {
 		for i, p := range k8sPkgs {
 			if pkgManager == "dnf" || pkgManager == "yum" {
-				// 与 kubez-ansible（kubeadm-{{ kube_release }}）一致：只钉 version，不钉 release
+				// 与 kubez-ansible（kubeadm-{{ kube_release }}）一致：只钉 version
 				k8sPkgs[i] = p + "-" + ver
 			} else {
 				k8sPkgs[i] = p + "=" + ver + "-1.1"
@@ -187,4 +190,17 @@ func BuildPackageList(pkgManager, k8sVersion string, deps []string, pinK8s bool,
 	out = append(out, containerdPkg, "cri-tools")
 	out = append(out, deps...)
 	return out
+}
+
+// RPMArch 将构建架构（amd64/arm64）映射为 rpm 架构名（x86_64/aarch64）。
+// 未知架构返回空串（调用方可不追加架构后缀）。
+func RPMArch(arch string) string {
+	switch strings.ToLower(strings.TrimSpace(arch)) {
+	case "amd64", "x86_64":
+		return "x86_64"
+	case "arm64", "aarch64":
+		return "aarch64"
+	default:
+		return ""
+	}
 }

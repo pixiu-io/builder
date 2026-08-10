@@ -116,6 +116,9 @@ type DownloadScriptOpts struct {
 	ArchiveDir string
 	// CheckCrictl 是否在脚本内检测 cri-tools 包可用性并写缺失标记。
 	CheckCrictl bool
+	// Arch 构建架构（amd64/arm64）。dnf 分支会映射为 --forcearch，避免 kubernetes-new
+	// 多架构扁平仓库在 Kylin 等系统上把 aarch64/x86_64 一并纳入解析。
+	Arch string
 }
 
 // centos7VaultFix CentOS 7 已于 2024-06 停止维护（EOL），官方 mirrorlist.centos.org
@@ -166,17 +169,24 @@ func BuildDownloadScript(opts DownloadScriptOpts) string {
 	var b strings.Builder
 	switch opts.PkgManager {
 	case "dnf":
+		// kubernetes-new rpm 为多架构扁平仓库；Kylin 等系统上仅 pin version 会把异架构包一并纳入
+		// 解析并报 "does not have a compatible architecture"。用 --forcearch 固定目标架构。
+		// 注意：不能写成 kubeadm-1.31.6.x86_64（非法 NEVRA，dnf 会把 .x86_64 当成 version）。
+		forceArch := ""
+		if ra := RPMArch(opts.Arch); ra != "" {
+			forceArch = "--forcearch=" + ra + " "
+		}
 		b.WriteString("set -e\n")
 		b.WriteString(DnfSourceScript(opts.Repos))
 		b.WriteString("dnf makecache\n")
 		b.WriteString("dnf -y install dnf-plugins-core\n")
 		b.WriteString("mkdir -p " + opts.ArchiveDir + "\n")
-		b.WriteString(fmt.Sprintf("if dnf install -y --downloadonly --downloaddir=%s %s 2>/dev/null; then :\n", opts.ArchiveDir, pkgs))
-		b.WriteString(fmt.Sprintf("else\n  dnf download --resolve --destdir=%s %s\nfi\n", opts.ArchiveDir, pkgs))
+		b.WriteString(fmt.Sprintf("if dnf %sinstall -y --downloadonly --downloaddir=%s %s 2>/dev/null; then :\n", forceArch, opts.ArchiveDir, pkgs))
+		b.WriteString(fmt.Sprintf("else\n  dnf %sdownload --resolve --destdir=%s %s\nfi\n", forceArch, opts.ArchiveDir, pkgs))
 		// 依赖闭包验证：--assumeno 模拟安装，返回 0 表示闭包完整
-		b.WriteString(fmt.Sprintf("dnf install --assumeno %s >/dev/null\n", pkgs))
+		b.WriteString(fmt.Sprintf("dnf %sinstall --assumeno %s >/dev/null\n", forceArch, pkgs))
 		if opts.CheckCrictl {
-			b.WriteString("if ! dnf list --available cri-tools >/dev/null 2>&1; then touch /out/cri-tools-missing; fi\n")
+			b.WriteString(fmt.Sprintf("if ! dnf %slist --available cri-tools >/dev/null 2>&1; then touch /out/cri-tools-missing; fi\n", forceArch))
 		}
 	case "yum": // CentOS 7 等无 dnf，仅 yum。源配置与 dnf 相同（/etc/yum.repos.d/ + rpm --import）。
 		b.WriteString("set -e\n")
@@ -252,6 +262,7 @@ func Fetch(ctx context.Context, opts Options) (*Result, error) {
 		Pkgs:        opts.Pkgs,
 		ArchiveDir:  "/out",
 		CheckCrictl: true,
+		Arch:        opts.Arch,
 	})
 	cmdArgs := []string{
 		"run", "--rm",

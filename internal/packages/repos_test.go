@@ -126,7 +126,7 @@ func TestDnfSourceScript(t *testing.T) {
 
 func TestBuildPackageList(t *testing.T) {
 	deps := []string{"conntrack", "nfs-common"}
-	got := BuildPackageList("apt", "v1.27.3", deps, false, "containerd.io")
+	got := BuildPackageList("apt", "v1.27.3", deps, false, "containerd.io", "amd64")
 	want := []string{"kubeadm", "kubelet", "kubectl", "containerd.io", "cri-tools", "conntrack", "nfs-common"}
 	if len(got) != len(want) {
 		t.Fatalf("期望 %d 个包，实际 %d: %v", len(want), len(got), got)
@@ -140,7 +140,7 @@ func TestBuildPackageList(t *testing.T) {
 
 func TestBuildPackageListCustomContainerdPkg(t *testing.T) {
 	// openEuler 等系统源场景：containerd 包名为 "containerd"（非 docker-ce 源 containerd.io）。
-	got := BuildPackageList("dnf", "v1.35.7", []string{"conntrack"}, false, "containerd")
+	got := BuildPackageList("dnf", "v1.35.7", []string{"conntrack"}, false, "containerd", "amd64")
 	want := []string{"kubeadm", "kubelet", "kubectl", "containerd", "cri-tools", "conntrack"}
 	if len(got) != len(want) {
 		t.Fatalf("期望 %d 个包，实际 %d: %v", len(want), len(got), got)
@@ -151,7 +151,7 @@ func TestBuildPackageListCustomContainerdPkg(t *testing.T) {
 		}
 	}
 	// 空值保底默认 containerd.io
-	def := BuildPackageList("dnf", "v1.35.7", nil, false, "")
+	def := BuildPackageList("dnf", "v1.35.7", nil, false, "", "amd64")
 	for _, p := range def {
 		if p == "containerd" {
 			t.Errorf("空 containerdPkg 不应出现 containerd: %v", def)
@@ -169,25 +169,45 @@ func TestBuildPackageListCustomContainerdPkg(t *testing.T) {
 }
 
 func TestBuildPackageListPin(t *testing.T) {
-	apt := BuildPackageList("apt", "v1.27.3", nil, true, "")
+	apt := BuildPackageList("apt", "v1.27.3", nil, true, "", "amd64")
 	if apt[0] != "kubeadm=1.27.3-1.1" || apt[1] != "kubelet=1.27.3-1.1" || apt[2] != "kubectl=1.27.3-1.1" {
 		t.Errorf("apt 版本约束异常（应为 X.Y.Z-1.1）: %v", apt[:3])
 	}
-	dnf := BuildPackageList("dnf", "v1.28.2", nil, true, "")
-	if dnf[0] != "kubeadm-1.28.2" || dnf[1] != "kubelet-1.28.2" || dnf[2] != "kubectl-1.28.2" {
-		t.Errorf("dnf 版本约束异常（应为 X.Y.Z，不钉 release）: %v", dnf[:3])
+	dnf := BuildPackageList("dnf", "v1.28.2", nil, true, "", "amd64")
+	if dnf[0] != "kubeadm-1.28.2.x86_64" || dnf[1] != "kubelet-1.28.2.x86_64" || dnf[2] != "kubectl-1.28.2.x86_64" {
+		t.Errorf("dnf 版本约束异常（应为 X.Y.Z.x86_64）: %v", dnf[:3])
 	}
-	unpin := BuildPackageList("apt", "v1.27.3", nil, false, "")
+	dnfArm := BuildPackageList("dnf", "v1.28.2", nil, true, "", "arm64")
+	if dnfArm[0] != "kubeadm-1.28.2.aarch64" {
+		t.Errorf("dnf arm64 约束异常: %v", dnfArm[:3])
+	}
+	unpin := BuildPackageList("apt", "v1.27.3", nil, false, "", "amd64")
 	if unpin[0] != "kubeadm" {
 		t.Errorf("默认不 pin 版本: %v", unpin[:3])
 	}
 	// pinK8s=true 但版本为空（--only-addons 未指定 k8s 版本）：不应生成裸 `pkg=` / `pkg-`
-	empty := BuildPackageList("apt", "", nil, true, "")
+	empty := BuildPackageList("apt", "", nil, true, "", "amd64")
 	if empty[0] != "kubeadm" || empty[1] != "kubelet" || empty[2] != "kubectl" {
 		t.Errorf("版本为空时不应 pin: %v", empty[:3])
 	}
-	emptyDnf := BuildPackageList("dnf", "", nil, true, "")
+	emptyDnf := BuildPackageList("dnf", "", nil, true, "", "amd64")
 	if emptyDnf[0] != "kubeadm" {
 		t.Errorf("版本为空时不应 pin（dnf）: %v", emptyDnf[:3])
+	}
+}
+
+func TestRPMArch(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"amd64", "x86_64"},
+		{"x86_64", "x86_64"},
+		{"arm64", "aarch64"},
+		{"aarch64", "aarch64"},
+		{"", ""},
+		{"riscv64", ""},
+	}
+	for _, c := range cases {
+		if got := RPMArch(c.in); got != c.want {
+			t.Errorf("RPMArch(%q) = %q, want %q", c.in, got, c.want)
+		}
 	}
 }
