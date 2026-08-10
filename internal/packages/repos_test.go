@@ -174,12 +174,12 @@ func TestBuildPackageListPin(t *testing.T) {
 		t.Errorf("apt 版本约束异常（应为 X.Y.Z-1.1）: %v", apt[:3])
 	}
 	dnf := BuildPackageList("dnf", "v1.28.2", nil, true, "", "amd64")
-	if dnf[0] != "kubeadm-1.28.2.x86_64" || dnf[1] != "kubelet-1.28.2.x86_64" || dnf[2] != "kubectl-1.28.2.x86_64" {
-		t.Errorf("dnf 版本约束异常（应为 X.Y.Z.x86_64）: %v", dnf[:3])
+	if dnf[0] != "kubeadm-1.28.2" || dnf[1] != "kubelet-1.28.2" || dnf[2] != "kubectl-1.28.2" {
+		t.Errorf("dnf 版本约束异常（应为 X.Y.Z，架构走 --forcearch）: %v", dnf[:3])
 	}
 	dnfArm := BuildPackageList("dnf", "v1.28.2", nil, true, "", "arm64")
-	if dnfArm[0] != "kubeadm-1.28.2.aarch64" {
-		t.Errorf("dnf arm64 约束异常: %v", dnfArm[:3])
+	if dnfArm[0] != "kubeadm-1.28.2" {
+		t.Errorf("dnf arm64 包名仍应只钉 version: %v", dnfArm[:3])
 	}
 	unpin := BuildPackageList("apt", "v1.27.3", nil, false, "", "amd64")
 	if unpin[0] != "kubeadm" {

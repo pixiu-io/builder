@@ -44,6 +44,7 @@ func TestBuildDownloadScriptDNF(t *testing.T) {
 		Pkgs:        []string{"kubeadm", "containerd.io", "nfs-utils"},
 		ArchiveDir:  "/out",
 		CheckCrictl: true,
+		Arch:        "amd64",
 	})
 	for _, want := range []string{
 		"set -e",
@@ -53,9 +54,10 @@ func TestBuildDownloadScriptDNF(t *testing.T) {
 		"rpm --import",
 		"https://mirrors.aliyun.com/kubernetes-new/core/stable/v1.28/rpm/",
 		"https://mirrors.aliyun.com/docker-ce/linux/centos/9/$basearch/stable",
-		"dnf install -y --downloadonly --downloaddir=/out",
-		"dnf download --resolve --destdir=/out",
-		"dnf install --assumeno",
+		"--forcearch=x86_64",
+		"dnf --forcearch=x86_64 install -y --downloadonly --downloaddir=/out",
+		"dnf --forcearch=x86_64 download --resolve --destdir=/out",
+		"dnf --forcearch=x86_64 install --assumeno",
 		"cri-tools-missing",
 	} {
 		if !strings.Contains(s, want) {
