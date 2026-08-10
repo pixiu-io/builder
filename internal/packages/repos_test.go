@@ -35,6 +35,10 @@ func TestK8sRepos(t *testing.T) {
 			t.Errorf("k8s dnf repo 不应含 %q:\n%s", forbid, r.DnfRepoBlock)
 		}
 	}
+	// 与 kubez-ansible kubernetes.repo.j2 一致：gpgcheck=0
+	if !strings.Contains(r.DnfRepoBlock, "gpgcheck=0") {
+		t.Errorf("k8s dnf repo 应为 gpgcheck=0（对齐 kubez）:\n%s", r.DnfRepoBlock)
+	}
 	// [kubernetes] 块只保留 name/baseurl/enabled/gpgcheck/gpgkey，以 gpgkey 行收尾
 	if !strings.HasSuffix(strings.TrimSpace(r.DnfRepoBlock), "repomd.xml.key") {
 		t.Errorf("k8s dnf repo 应以 gpgkey 行收尾（不应有多余 exclude 行）:\n%s", r.DnfRepoBlock)
@@ -70,6 +74,36 @@ func TestContainerdRepos(t *testing.T) {
 		if !strings.Contains(ustc[0].AptLine+ustc[0].AptKeyURL, want) {
 			t.Errorf("ustc repo 缺少 %q", want)
 		}
+	}
+
+	// tuna + rhel7：对齐 kubez-ansible docker-ce.repo-openEuler.j2
+	tuna := ContainerdRepos("", "", "rhel7", "tuna")
+	if tuna[0].Name != "docker-ce" {
+		t.Errorf("el7 repo Name = %q, want docker-ce", tuna[0].Name)
+	}
+	for _, want := range []string{
+		"Docker CE Stable - $basearch",
+		"https://mirrors.tuna.tsinghua.edu.cn/docker-ce/linux/centos/7/$basearch/stable",
+		"https://mirrors.tuna.tsinghua.edu.cn/docker-ce/linux/centos/gpg",
+		"[docker-ce-nightly-source]",
+		"enabled=0",
+	} {
+		if !strings.Contains(tuna[0].DnfRepoBlock+tuna[0].DnfKeyURL, want) {
+			t.Errorf("tuna el7 repo 缺少 %q:\n%s", want, tuna[0].DnfRepoBlock)
+		}
+	}
+	// 不应使用 $releasever（Kylin 上会指错仓库）
+	if strings.Contains(tuna[0].DnfRepoBlock, "$releasever") {
+		t.Errorf("el7 docker-ce repo 不应含 $releasever:\n%s", tuna[0].DnfRepoBlock)
+	}
+
+	// el7 即使配置 aliyun，dnf 也强制 tuna（规避阿里云 centos/7 包 403）
+	aliyunEL7 := ContainerdRepos("", "", "rhel7", "aliyun")
+	if !strings.Contains(aliyunEL7[0].DnfRepoBlock, "mirrors.tuna.tsinghua.edu.cn/docker-ce/linux/centos/7") {
+		t.Errorf("el7+aliyun 应强制 tuna dnf host:\n%s", aliyunEL7[0].DnfRepoBlock)
+	}
+	if strings.Contains(aliyunEL7[0].DnfRepoBlock, "mirrors.aliyun.com/docker-ce") {
+		t.Errorf("el7 dnf 不应再含 aliyun docker-ce:\n%s", aliyunEL7[0].DnfRepoBlock)
 	}
 
 	// docker 官方保留（download.docker.com，rpm 段为 rhel）
@@ -122,7 +156,7 @@ func TestDnfSourceScript(t *testing.T) {
 
 func TestBuildPackageList(t *testing.T) {
 	deps := []string{"conntrack", "nfs-common"}
-	got := BuildPackageList("apt", "v1.27.3", deps, false, "containerd.io")
+	got := BuildPackageList("apt", "v1.27.3", deps, false, "containerd.io", "amd64")
 	want := []string{"kubeadm", "kubelet", "kubectl", "containerd.io", "cri-tools", "conntrack", "nfs-common"}
 	if len(got) != len(want) {
 		t.Fatalf("期望 %d 个包，实际 %d: %v", len(want), len(got), got)
@@ -136,7 +170,7 @@ func TestBuildPackageList(t *testing.T) {
 
 func TestBuildPackageListCustomContainerdPkg(t *testing.T) {
 	// openEuler 等系统源场景：containerd 包名为 "containerd"（非 docker-ce 源 containerd.io）。
-	got := BuildPackageList("dnf", "v1.35.7", []string{"conntrack"}, false, "containerd")
+	got := BuildPackageList("dnf", "v1.35.7", []string{"conntrack"}, false, "containerd", "amd64")
 	want := []string{"kubeadm", "kubelet", "kubectl", "containerd", "cri-tools", "conntrack"}
 	if len(got) != len(want) {
 		t.Fatalf("期望 %d 个包，实际 %d: %v", len(want), len(got), got)
@@ -147,7 +181,7 @@ func TestBuildPackageListCustomContainerdPkg(t *testing.T) {
 		}
 	}
 	// 空值保底默认 containerd.io
-	def := BuildPackageList("dnf", "v1.35.7", nil, false, "")
+	def := BuildPackageList("dnf", "v1.35.7", nil, false, "", "amd64")
 	for _, p := range def {
 		if p == "containerd" {
 			t.Errorf("空 containerdPkg 不应出现 containerd: %v", def)
@@ -165,25 +199,81 @@ func TestBuildPackageListCustomContainerdPkg(t *testing.T) {
 }
 
 func TestBuildPackageListPin(t *testing.T) {
-	apt := BuildPackageList("apt", "v1.27.3", nil, true, "")
+	apt := BuildPackageList("apt", "v1.27.3", nil, true, "", "amd64")
 	if apt[0] != "kubeadm=1.27.3-1.1" || apt[1] != "kubelet=1.27.3-1.1" || apt[2] != "kubectl=1.27.3-1.1" {
 		t.Errorf("apt 版本约束异常（应为 X.Y.Z-1.1）: %v", apt[:3])
 	}
-	dnf := BuildPackageList("dnf", "v1.28.2", nil, true, "")
-	if dnf[0] != "kubeadm-1.28.2-1.1" || dnf[1] != "kubelet-1.28.2-1.1" || dnf[2] != "kubectl-1.28.2-1.1" {
-		t.Errorf("dnf 版本约束异常（应为 X.Y.Z-1.1）: %v", dnf[:3])
+	dnf := BuildPackageList("dnf", "v1.28.2", nil, true, "", "amd64")
+	if dnf[0] != "kubeadm-1.28.2" || dnf[1] != "kubelet-1.28.2" || dnf[2] != "kubectl-1.28.2" {
+		t.Errorf("dnf 版本约束异常（应为 X.Y.Z，架构走 repoquery --arch=）: %v", dnf[:3])
 	}
-	unpin := BuildPackageList("apt", "v1.27.3", nil, false, "")
+	dnfArm := BuildPackageList("dnf", "v1.28.2", nil, true, "", "arm64")
+	if dnfArm[0] != "kubeadm-1.28.2" {
+		t.Errorf("dnf arm64 包名仍应只钉 version: %v", dnfArm[:3])
+	}
+	unpin := BuildPackageList("apt", "v1.27.3", nil, false, "", "amd64")
 	if unpin[0] != "kubeadm" {
 		t.Errorf("默认不 pin 版本: %v", unpin[:3])
 	}
 	// pinK8s=true 但版本为空（--only-addons 未指定 k8s 版本）：不应生成裸 `pkg=` / `pkg-`
-	empty := BuildPackageList("apt", "", nil, true, "")
+	empty := BuildPackageList("apt", "", nil, true, "", "amd64")
 	if empty[0] != "kubeadm" || empty[1] != "kubelet" || empty[2] != "kubectl" {
 		t.Errorf("版本为空时不应 pin: %v", empty[:3])
 	}
-	emptyDnf := BuildPackageList("dnf", "", nil, true, "")
+	emptyDnf := BuildPackageList("dnf", "", nil, true, "", "amd64")
 	if emptyDnf[0] != "kubeadm" {
 		t.Errorf("版本为空时不应 pin（dnf）: %v", emptyDnf[:3])
+	}
+}
+
+func TestRPMArch(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"amd64", "x86_64"},
+		{"x86_64", "x86_64"},
+		{"arm64", "aarch64"},
+		{"aarch64", "aarch64"},
+		{"", ""},
+		{"riscv64", ""},
+	}
+	for _, c := range cases {
+		if got := RPMArch(c.in); got != c.want {
+			t.Errorf("RPMArch(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+func TestCentOS7ExtrasRepos(t *testing.T) {
+	repos := CentOS7ExtrasRepos()
+	if len(repos) != 1 {
+		t.Fatalf("期望 1 个 repo，实际 %d", len(repos))
+	}
+	r := repos[0]
+	for _, want := range []string{
+		"[centos7-extras]",
+		"mirrors.aliyun.com/centos-vault/7.9.2009/extras/$basearch/",
+		"gpgcheck=0",
+	} {
+		if !strings.Contains(r.DnfRepoBlock, want) {
+			t.Errorf("centos7-extras 缺少 %q:\n%s", want, r.DnfRepoBlock)
+		}
+	}
+}
+
+func TestNeedsCentOS7Extras(t *testing.T) {
+	cases := []struct {
+		distro string
+		pkgs   []string
+		want   bool
+	}{
+		{"rhel7", []string{"kubeadm", "docker-ce"}, true},
+		{"rhel7", []string{"docker-ce-26.1.4"}, true},
+		{"rhel7", []string{"kubeadm", "containerd.io"}, false},
+		{"rhel9", []string{"docker-ce"}, false},
+		{"", []string{"docker-ce"}, false},
+	}
+	for _, c := range cases {
+		if got := NeedsCentOS7Extras(c.distro, c.pkgs); got != c.want {
+			t.Errorf("NeedsCentOS7Extras(%q, %v) = %v, want %v", c.distro, c.pkgs, got, c.want)
+		}
 	}
 }

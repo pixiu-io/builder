@@ -44,6 +44,7 @@ func TestBuildDownloadScriptDNF(t *testing.T) {
 		Pkgs:        []string{"kubeadm", "containerd.io", "nfs-utils"},
 		ArchiveDir:  "/out",
 		CheckCrictl: true,
+		Arch:        "amd64",
 	})
 	for _, want := range []string{
 		"set -e",
@@ -53,13 +54,25 @@ func TestBuildDownloadScriptDNF(t *testing.T) {
 		"rpm --import",
 		"https://mirrors.aliyun.com/kubernetes-new/core/stable/v1.28/rpm/",
 		"https://mirrors.aliyun.com/docker-ce/linux/centos/9/$basearch/stable",
-		"dnf install -y --downloadonly --downloaddir=/out",
-		"dnf download --resolve --destdir=/out",
-		"dnf install --assumeno",
+		"RPM_ARCH=x86_64",
+		"dnf repoquery -q --available --arch=\"$RPM_ARCH\"",
+		"PKGS_RESOLVED",
+		"--setopt=install_weak_deps=False",
+		"dnf --setopt=install_weak_deps=False install -y --downloadonly --downloaddir=/out $PKGS_RESOLVED",
+		"dnf --setopt=install_weak_deps=False download --resolve --destdir=/out $PKGS_RESOLVED",
 		"cri-tools-missing",
 	} {
 		if !strings.Contains(s, want) {
 			t.Errorf("dnf 下载脚本缺少 %q:\n%s", want, s)
+		}
+	}
+	for _, forbid := range []string{
+		"--forcearch=",
+		"kubeadm-1.31.6.x86_64",
+		"dnf install --assumeno", // assumeno 成功解析仍返回 1，会误杀 set -e
+	} {
+		if strings.Contains(s, forbid) {
+			t.Errorf("dnf 下载脚本不应含 %q:\n%s", forbid, s)
 		}
 	}
 	// dnf 分支（rocky 9 等）不应出现 CentOS 7 专属的 vault 源修复片段；
@@ -88,7 +101,9 @@ func TestBuildDownloadScriptYUM(t *testing.T) {
 		"rpm --import",
 		"/etc/yum.repos.d/kubernetes.repo",
 		"https://mirrors.aliyun.com/kubernetes-new/core/stable/v1.32/rpm/",
-		"https://mirrors.aliyun.com/docker-ce/linux/centos/7/$basearch/stable",
+		"/etc/yum.repos.d/docker-ce.repo",
+		"https://mirrors.tuna.tsinghua.edu.cn/docker-ce/linux/centos/7/$basearch/stable",
+		"Docker CE Stable - $basearch",
 		"yum install -y --downloadonly --downloaddir=/out",
 		"yumdownloader --resolve --destdir=/out",
 		"yum list --available cri-tools",
@@ -186,10 +201,11 @@ func TestFetchSkipK8sContainerdReposYUM(t *testing.T) {
 			t.Errorf("only-addons yum 脚本应含 %q:\n%s", want, script)
 		}
 	}
-	// 不应配置 k8s / containerd 源
+	// 不应配置 k8s / docker-ce 源
 	for _, forbid := range []string{
 		"/etc/yum.repos.d/kubernetes.repo",
 		"/etc/yum.repos.d/containerd.repo",
+		"/etc/yum.repos.d/docker-ce.repo",
 		"[kubernetes]", "[docker-ce-stable]",
 		"mirrors.aliyun.com/kubernetes-new", "download.docker.com",
 	} {
@@ -250,14 +266,18 @@ func TestFetchDefaultIncludesK8sContainerdRepos(t *testing.T) {
 	script := res.Command
 	for _, want := range []string{
 		"/etc/yum.repos.d/kubernetes.repo",
-		"/etc/yum.repos.d/containerd.repo",
+		"/etc/yum.repos.d/docker-ce.repo", // el7 对齐 kubez：docker-ce.repo（非 containerd.repo）
 		"mirrors.aliyun.com/kubernetes-new",
-		"mirrors.aliyun.com/docker-ce",
+		"mirrors.tuna.tsinghua.edu.cn/docker-ce/linux/centos/7", // el7 强制 tuna（aliyun 常 403）
+		"Docker CE Stable - $basearch",
 		"https://vault.centos.org/7.9.2009/os/$basearch/",
 	} {
 		if !strings.Contains(script, want) {
 			t.Errorf("默认 yum 脚本应含 %q:\n%s", want, script)
 		}
+	}
+	if strings.Contains(script, "mirrors.aliyun.com/docker-ce/linux/centos/7") {
+		t.Errorf("el7 不应再走 aliyun docker-ce centos/7（易 403）:\n%s", script)
 	}
 }
 
@@ -325,6 +345,66 @@ func TestFetchContainerdRepoDefaultAliyunDNF(t *testing.T) {
 	} {
 		if !strings.Contains(script, want) {
 			t.Errorf("默认 dnf 脚本应含 %q:\n%s", want, script)
+		}
+	}
+}
+
+func TestFetchKylinDockerCEAddsCentOS7Extras(t *testing.T) {
+	// 回归：Kylin（rhel7）+ tuna docker-ce 源（对齐 kubez openEuler.j2）+ addon docker-ce
+	// 需 CentOS 7 extras，否则 docker-ce-rootless-extras 缺 fuse-overlayfs/slirp4netns。
+	res, err := Fetch(context.Background(), Options{
+		OutDir:         t.TempDir(),
+		BuildImage:     "swr.cn-north-4.myhuaweicloud.com/pixiu-public/kylin:v10-sp3",
+		PkgManager:     "dnf",
+		K8sMinor:       "v1.31",
+		RPMDistro:      "rhel7",
+		ContainerdRepo: "tuna",
+		Arch:           "amd64",
+		Pkgs:           []string{"kubeadm-1.31.6", "containerd.io", "docker-ce"},
+		DryRun:         true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := res.Command
+	for _, want := range []string{
+		"[centos7-extras]",
+		"centos-vault/7.9.2009/extras/$basearch/",
+		"/etc/yum.repos.d/docker-ce.repo",
+		"mirrors.tuna.tsinghua.edu.cn/docker-ce/linux/centos/7/$basearch/stable",
+		"Docker CE Stable - $basearch",
+		"[docker-ce-stable]",
+	} {
+		if !strings.Contains(script, want) {
+			t.Errorf("kylin+docker-ce 脚本应含 %q:\n%s", want, script)
+		}
+	}
+
+	// 无 docker-ce 时不应加 extras
+	res2, err := Fetch(context.Background(), Options{
+		OutDir:         t.TempDir(),
+		BuildImage:     "swr.cn-north-4.myhuaweicloud.com/pixiu-public/kylin:v10-sp3",
+		PkgManager:     "dnf",
+		K8sMinor:       "v1.31",
+		RPMDistro:      "rhel7",
+		ContainerdRepo: "tuna",
+		Arch:           "amd64",
+		Pkgs:           []string{"kubeadm-1.31.6", "containerd.io"},
+		DryRun:         true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(res2.Command, "centos7-extras") {
+		t.Errorf("无 docker-ce 时不应配置 centos7-extras:\n%s", res2.Command)
+	}
+	// 无 addon 时仍应有 tuna docker-ce 源（containerd.io）
+	for _, want := range []string{
+		"/etc/yum.repos.d/docker-ce.repo",
+		"mirrors.tuna.tsinghua.edu.cn/docker-ce/linux/centos/7",
+	} {
+		if !strings.Contains(res2.Command, want) {
+			t.Errorf("kylin containerd.io 脚本应含 %q:\n%s", want, res2.Command)
 		}
 	}
 }

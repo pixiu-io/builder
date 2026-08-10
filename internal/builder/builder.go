@@ -164,7 +164,7 @@ func resolvePackageList(opts Options, cfg *config.Config, pkgManager, k8sVersion
 		return addonPackageList(cfg.AddonPackages, pkgManager)
 	}
 
-	def := packages.BuildPackageList(pkgManager, k8sVersion, cfg.SystemDepsForOS(opts.OS, opts.OSVersion), k8sVersion != "", containerdPkg)
+	def := packages.BuildPackageList(pkgManager, k8sVersion, cfg.SystemDepsForOS(opts.OS, opts.OSVersion), k8sVersion != "", containerdPkg, opts.Arch)
 	// 顶层 addon_packages 额外并入（与核心清单按包名去重）。
 	if !opts.SkipAddons && len(cfg.AddonPackages) > 0 {
 		def = mergeAddonPackages(def, cfg.AddonPackages, pkgManager)

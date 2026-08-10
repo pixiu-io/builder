@@ -94,9 +94,10 @@ type OS struct {
 	// 显式配置（如 openEuler 系统源包名 "containerd"）优先于推断。
 	ContainerdPkg string `yaml:"containerd_pkg"`
 	// ContainerdRepo containerd 源类型：aliyun=阿里云 mirrors.aliyun.com/docker-ce（默认）；
-	// ustc=中科大 mirrors.ustc.edu.cn/docker-ce；docker=官方 download.docker.com（可选）；
+	// ustc=中科大 mirrors.ustc.edu.cn/docker-ce；tuna=清华 mirrors.tuna.tsinghua.edu.cn/docker-ce
+	// （对齐 kubez docker-ce.repo-openEuler.j2）；docker=官方 download.docker.com（可选）；
 	// none=不配置 docker-ce 源，containerd 由系统源（everything 等）提供。
-	// 留空时按发行版推断（ResolveOS）：openEuler 推断为 none，其余默认 aliyun。
+	// 留空时按发行版推断（ResolveOS）：openEuler→none；kylin→tuna；其余→aliyun。
 	ContainerdRepo string `yaml:"containerd_repo"`
 }
 
@@ -426,7 +427,7 @@ func DefaultBuildImage(osName, version string) string {
 
 // InferPkgManager 按发行版名称与版本推断包管理器。
 // centos/rhel/almalinux 主版本为 7 时使用 yum（CentOS 7 无 dnf），
-// 8/9+ 使用 dnf；rocky/fedora/openeuler/amazonlinux 一律 dnf；其余（ubuntu/debian/未知）apt。
+// 8/9+ 使用 dnf；rocky/fedora/openeuler/amazonlinux/kylin 一律 dnf；其余（ubuntu/debian/未知）apt。
 func InferPkgManager(osName, version string) string {
 	switch strings.ToLower(osName) {
 	case "centos", "rhel", "almalinux":
@@ -436,7 +437,7 @@ func InferPkgManager(osName, version string) string {
 			return "yum"
 		}
 		return "dnf"
-	case "rocky", "fedora", "openeuler", "amazonlinux":
+	case "rocky", "fedora", "openeuler", "amazonlinux", "kylin":
 		return "dnf"
 	default:
 		// ubuntu / debian / 未知发行版默认 apt
@@ -483,7 +484,8 @@ func InferRPMDistro(osName, version string) string {
 			return "rhel" + major
 		}
 		return "rhel9"
-	case "openeuler":
+	case "openeuler", "kylin":
+		// openEuler / 银河麒麟 V10 兼容 el7，docker-ce 走 centos/7
 		return "rhel7"
 	case "fedora":
 		return "fedora"
@@ -505,13 +507,19 @@ func InferContainerdPkg(osName string) string {
 
 // InferContainerdRepo 按发行版推断 containerd 源类型：
 // openEuler 对应 download.docker.com/linux/rhel/7/ 实测 404（docker 官方已停止发布 RHEL7 仓库），
-// 返回 "none"（不配置 docker-ce 源，由系统源提供）；其余发行版返回 "aliyun"（国内镜像默认）。
+// 返回 "none"（不配置 docker-ce 源，由系统源提供）；
+// kylin 对齐 kubez-ansible docker-ce.repo-openEuler.j2，返回 "tuna"；
+// 其余发行版返回 "aliyun"（国内镜像默认）。
 // 仅当 builder.yaml 未显式配置 containerd_repo 时生效（显式配置优先）。
 func InferContainerdRepo(osName string) string {
-	if strings.ToLower(osName) == "openeuler" {
+	switch strings.ToLower(osName) {
+	case "openeuler":
 		return "none"
+	case "kylin":
+		return "tuna"
+	default:
+		return "aliyun"
 	}
-	return "aliyun"
 }
 
 // k8sVersionRe 合法 k8s 版本格式：vX.Y.Z（如 v1.31.0、v1.29.5）。

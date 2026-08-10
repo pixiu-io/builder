@@ -56,7 +56,7 @@ func K8sRepos(k8sMinor string) []Repo {
 name=Kubernetes (stable %s)
 baseurl=https://mirrors.aliyun.com/kubernetes-new/core/stable/%s/rpm/
 enabled=1
-gpgcheck=1
+gpgcheck=0
 gpgkey=https://mirrors.aliyun.com/kubernetes-new/core/stable/%s/rpm/repodata/repomd.xml.key`, k8sMinor, k8sMinor, keyMinor),
 		DnfKeyURL: fmt.Sprintf("https://mirrors.aliyun.com/kubernetes-new/core/stable/%s/rpm/repodata/repomd.xml.key", keyMinor),
 	}}
@@ -71,22 +71,136 @@ type containerdMirror struct {
 }
 
 // containerdMirrors 按 repoType 映射 containerd 源镜像。
-// aliyun=阿里云（默认）、ustc=中科大、docker=官方（保留选项）。
+// aliyun=阿里云（默认）、ustc=中科大、tuna=清华（对齐 kubez openEuler/Kylin）、docker=官方。
 // openEuler 使用系统源（repoType=none），不落入本映射。
 var containerdMirrors = map[string]containerdMirror{
 	"aliyun": {host: "mirrors.aliyun.com/docker-ce", rpmDir: "centos"},
 	"ustc":   {host: "mirrors.ustc.edu.cn/docker-ce", rpmDir: "centos"},
+	"tuna":   {host: "mirrors.tuna.tsinghua.edu.cn/docker-ce", rpmDir: "centos"},
 	"docker": {host: "download.docker.com", rpmDir: "rhel"},
+}
+
+// dockerCERepoBlockEL7 生成对齐 kubez-ansible docker-ce.repo-openEuler.j2 的 dnf repo 块。
+// 关键点：固定 linux/centos/7（不用 $releasever，避免 Kylin 上 releasever≠7 指错仓库），
+// 段名/name/gpg 与 j2 一致；stable 启用，其余段保持 enabled=0。
+func dockerCERepoBlockEL7(host string) string {
+	return fmt.Sprintf(`[docker-ce-stable]
+name=Docker CE Stable - $basearch
+baseurl=https://%s/linux/centos/7/$basearch/stable
+enabled=1
+gpgcheck=1
+gpgkey=https://%s/linux/centos/gpg
+
+[docker-ce-stable-debuginfo]
+name=Docker CE Stable - Debuginfo $basearch
+baseurl=https://%s/linux/centos/7/debug-$basearch/stable
+enabled=0
+gpgcheck=1
+gpgkey=https://%s/linux/centos/gpg
+
+[docker-ce-stable-source]
+name=Docker CE Stable - Sources
+baseurl=https://%s/linux/centos/7/source/stable
+enabled=0
+gpgcheck=1
+gpgkey=https://%s/linux/centos/gpg
+
+[docker-ce-test]
+name=Docker CE Test - $basearch
+baseurl=https://%s/linux/centos/7/$basearch/test
+enabled=0
+gpgcheck=1
+gpgkey=https://%s/linux/centos/gpg
+
+[docker-ce-test-debuginfo]
+name=Docker CE Test - Debuginfo $basearch
+baseurl=https://%s/linux/centos/7/debug-$basearch/test
+enabled=0
+gpgcheck=1
+gpgkey=https://%s/linux/centos/gpg
+
+[docker-ce-test-source]
+name=Docker CE Test - Sources
+baseurl=https://%s/linux/centos/7/source/test
+enabled=0
+gpgcheck=1
+gpgkey=https://%s/linux/centos/gpg
+
+[docker-ce-nightly]
+name=Docker CE Nightly - $basearch
+baseurl=https://%s/linux/centos/7/$basearch/nightly
+enabled=0
+gpgcheck=1
+gpgkey=https://%s/linux/centos/gpg
+
+[docker-ce-nightly-debuginfo]
+name=Docker CE Nightly - Debuginfo $basearch
+baseurl=https://%s/linux/centos/7/debug-$basearch/nightly
+enabled=0
+gpgcheck=1
+gpgkey=https://%s/linux/centos/gpg
+
+[docker-ce-nightly-source]
+name=Docker CE Nightly - Sources
+baseurl=https://%s/linux/centos/7/source/nightly
+enabled=0
+gpgcheck=1
+gpgkey=https://%s/linux/centos/gpg`,
+		host, host,
+		host, host,
+		host, host,
+		host, host,
+		host, host,
+		host, host,
+		host, host,
+		host, host,
+		host, host,
+	)
+}
+
+// CentOS7ExtrasRepos 返回 CentOS 7 extras 归档源（vault）。
+// 用途：Kylin / openEuler 等 el7 兼容系统安装 docker-ce 时，
+// docker-ce-rootless-extras 硬依赖 fuse-overlayfs>=0.7、slirp4netns>=0.4，
+// 麒麟/欧拉系统源通常不提供这两包，需从 CentOS 7 extras 拉取。
+// 默认走阿里云 centos-vault，与 builder 国内镜像策略一致。
+func CentOS7ExtrasRepos() []Repo {
+	return []Repo{{
+		Name: "centos7-extras",
+		DnfRepoBlock: `[centos7-extras]
+name=CentOS-7 - Extras (vault)
+baseurl=https://mirrors.aliyun.com/centos-vault/7.9.2009/extras/$basearch/
+enabled=1
+gpgcheck=0`,
+	}}
+}
+
+// PackageListHasPrefix 判断软件包清单是否包含以 name 开头的条目
+//（精确匹配 name，或 name-version / name=version / NEVRA 前缀）。
+func PackageListHasPrefix(pkgs []string, name string) bool {
+	for _, p := range pkgs {
+		if p == name || strings.HasPrefix(p, name+"-") || strings.HasPrefix(p, name+"=") {
+			return true
+		}
+	}
+	return false
+}
+
+// NeedsCentOS7Extras 判断是否需追加 CentOS 7 extras 源：
+// rpmDistro 为 rhel7（Kylin/openEuler 等）且清单含 docker-ce 时返回 true。
+func NeedsCentOS7Extras(rpmDistro string, pkgs []string) bool {
+	return rpmDistro == "rhel7" && PackageListHasPrefix(pkgs, "docker-ce")
 }
 
 // ContainerdRepos 返回 containerd 源（docker-ce 源）。
 // repoType 决定源镜像：aliyun=阿里云 mirrors.aliyun.com/docker-ce（默认，空值同）；
-// ustc=中科大 mirrors.ustc.edu.cn/docker-ce；docker=官方 download.docker.com（保留选项）。
+// ustc=中科大 mirrors.ustc.edu.cn/docker-ce；tuna=清华 mirrors.tuna.tsinghua.edu.cn/docker-ce
+// （对齐 kubez-ansible docker-ce.repo-openEuler.j2）；docker=官方 download.docker.com。
 // 注：containerd.io 包由 docker-ce 源提供。原 packages.containerd.io 域名在当前网络与
 // 公共 DNS（223.5.5.5 / 8.8.8.8）均 NXDOMAIN 无法解析，已改用国内镜像（默认阿里云）提供 containerd.io 包。
 // aptOS 为 apt 发行版家族（ubuntu/debian）；codename 为 apt 版本代号（jammy/bookworm 等）；
-// rpmDistro 为 dnf 发行版标识（rhel9/rhel7 等，rocky→rhel9、openEuler→rhel7），
-// baseurl 段由 {rpmDir}/{大版本} 组成（rhel9→centos/9 或 rhel/9），gpg 段固定用 rpmDir（不带版本号）。
+// rpmDistro 为 dnf 发行版标识（rhel9/rhel7 等，rocky→rhel9、openEuler/Kylin→rhel7）。
+// rhel7：dnf 块对齐 docker-ce.repo-openEuler.j2（固定 centos/7，写入 docker-ce.repo）；
+// 其他：单段 [docker-ce-stable]，baseurl 为 {rpmDir}/{major}。
 func ContainerdRepos(aptOS, codename, rpmDistro, repoType string) []Repo {
 	if aptOS == "" {
 		aptOS = "ubuntu"
@@ -101,6 +215,27 @@ func ContainerdRepos(aptOS, codename, rpmDistro, repoType string) []Repo {
 		major = strings.TrimPrefix(rpmDistro, "rhel")
 	}
 	keyDest := "/etc/apt/keyrings/containerd-apt-keyring.gpg"
+
+	// el7（Kylin/CentOS7 等）：对齐 kubez docker-ce.repo-openEuler.j2。
+	// 固定 centos/7；dnf host 默认强制 tuna——阿里云对部分 IP 拉取 centos/7 包会 403，
+	// 中科大 ustc 的 centos/7 路径常 404；仅 containerd_repo=docker 时走官方。
+	if major == "7" {
+		host := containerdMirrors["tuna"].host
+		if repoType == "docker" {
+			host = "download.docker.com"
+		}
+		return []Repo{{
+			Name: "docker-ce", // 与 kubez dest /etc/yum.repos.d/docker-ce.repo 一致
+			AptLine: fmt.Sprintf(
+				"deb [signed-by=%s] https://%s/linux/%s %s stable",
+				keyDest, m.host, aptOS, codename),
+			AptKeyURL:    fmt.Sprintf("https://%s/linux/%s/gpg", m.host, aptOS),
+			AptKeyDest:   keyDest,
+			DnfRepoBlock: dockerCERepoBlockEL7(host),
+			DnfKeyURL:    fmt.Sprintf("https://%s/linux/centos/gpg", host),
+		}}
+	}
+
 	return []Repo{{
 		Name: "containerd",
 		AptLine: fmt.Sprintf(
@@ -158,25 +293,29 @@ func DnfSourceScript(repos []Repo) string {
 // k8s 三件套（kubeadm/kubelet/kubectl） + 运行时（containerdPkg/cri-tools） + 系统依赖。
 // 注：runc 由 containerd 包（containerd.io 或系统源 containerd）内嵌提供，不单独安装，
 // 避免 docker-ce 源的 containerd.io 与独立 runc 包存在 Conflicts: runc 冲突导致 apt 无法同时解析。
-// pinK8s=true 且 k8sVersion 非空时，对 k8s 三件套按 --kubernetes-version 精确锁定到对应 patch 的包版本：
-// 阿里云 kubernetes-new 镜像（kubernetes OBS 仓库镜像）的 deb/rpm 包版本形如 1.31.6-1.1（version-release），
-// 因此约束为 apt: pkg=1.31.6-1.1、dnf/yum: pkg-1.31.6-1.1。仅锁 <ver>（如 pkg=1.31.6）会匹配同 minor 最新
-// patch 而无法精确锁定；源内无该 patch 时 apt/dnf 依赖解析失败即构建失败，不会静默回退同 minor 最新 patch。
+// pinK8s=true 且 k8sVersion 非空时，对 k8s 三件套按 --kubernetes-version 精确锁定到对应 patch：
+//   - apt：pkg=X.Y.Z-1.1（deb 的 version-release 固定为 1.1）
+//   - dnf/yum：pkg-X.Y.Z（只锁 version，与 kubez-ansible 一致；不写 pkg-X.Y.Z.arch，
+//     因为那不是合法 NEVRA——dnf 会把 1.31.6.x86_64 当成 version。多架构仓库冲突
+//     由下载脚本 repoquery --arch= 解析为 name-ver-rel.arch 后再下载，见 BuildDownloadScript）
+// arch 保留以兼容调用方；当前不写入包名（架构在下载脚本中约束）。
+// 源内无该 patch 时 apt/dnf 依赖解析失败即构建失败，不会静默回退同 minor 最新 patch。
 // 默认 false（或版本为空）使用源内 stable 最新版本。
 // containerdPkg 为空时默认 "containerd.io"（docker-ce 源包名）；openEuler 等系统源场景传 "containerd"。
-func BuildPackageList(pkgManager, k8sVersion string, deps []string, pinK8s bool, containerdPkg string) []string {
+func BuildPackageList(pkgManager, k8sVersion string, deps []string, pinK8s bool, containerdPkg, arch string) []string {
+	_ = arch // 架构约束走下载脚本 repoquery --arch=，不写入包名
 	if containerdPkg == "" {
 		containerdPkg = "containerd.io"
 	}
 	ver := strings.TrimPrefix(k8sVersion, "v")
 	k8sPkgs := []string{"kubeadm", "kubelet", "kubectl"}
 	if pinK8s && ver != "" {
-		k8sPkgVersion := ver + "-1.1"
 		for i, p := range k8sPkgs {
 			if pkgManager == "dnf" || pkgManager == "yum" {
-				k8sPkgs[i] = p + "-" + k8sPkgVersion
+				// 与 kubez-ansible（kubeadm-{{ kube_release }}）一致：只钉 version
+				k8sPkgs[i] = p + "-" + ver
 			} else {
-				k8sPkgs[i] = p + "=" + k8sPkgVersion
+				k8sPkgs[i] = p + "=" + ver + "-1.1"
 			}
 		}
 	}
@@ -186,4 +325,17 @@ func BuildPackageList(pkgManager, k8sVersion string, deps []string, pinK8s bool,
 	out = append(out, containerdPkg, "cri-tools")
 	out = append(out, deps...)
 	return out
+}
+
+// RPMArch 将构建架构（amd64/arm64）映射为 rpm 架构名（x86_64/aarch64）。
+// 未知架构返回空串（调用方可不追加架构后缀）。
+func RPMArch(arch string) string {
+	switch strings.ToLower(strings.TrimSpace(arch)) {
+	case "amd64", "x86_64":
+		return "x86_64"
+	case "arm64", "aarch64":
+		return "aarch64"
+	default:
+		return ""
+	}
 }
