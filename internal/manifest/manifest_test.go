@@ -136,6 +136,44 @@ func TestGenerateExcludesManifestSelf(t *testing.T) {
 	}
 }
 
+func TestApplySourceImages(t *testing.T) {
+	root := buildSampleBundle(t)
+	m, err := Generate(root, Meta{OS: "ubuntu", K8sVersion: "v1.27.3"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// 构造一个 byName 映射中不存在的镜像条目（模拟多 tag 展开项但无 source 映射的场景）。
+	m.Images = append(m.Images, Image{
+		Name:        "kubez-ansible-v2",
+		SourceImage: sourceImageHint("kubez-ansible-v2"),
+		Tar:         "images/addons/kubez-ansible-v2.tar",
+	})
+
+	// 回填 source_image（含 tag）：按 tar 基名匹配。
+	m.ApplySourceImages(map[string]string{
+		"kube-apiserver": "registry.k8s.io/kube-apiserver:v1.27.3",
+		"flannel":        "swr.cn-north-4.myhuaweicloud.com/pixiu-public/flannel/flannel:v0.24.2",
+	})
+	got := map[string]string{}
+	for _, img := range m.Images {
+		got[img.Name] = img.SourceImage
+	}
+	if got["kube-apiserver"] != "registry.k8s.io/kube-apiserver:v1.27.3" {
+		t.Errorf("core source_image 回填异常: %q", got["kube-apiserver"])
+	}
+	if got["flannel"] != "swr.cn-north-4.myhuaweicloud.com/pixiu-public/flannel/flannel:v0.24.2" {
+		t.Errorf("addon source_image 回填异常: %q", got["flannel"])
+	}
+	// 未命中的条目（byName 映射中无此 tar 基名）保持原值（tar 文件名提示）。
+	if got["kubez-ansible-v2"] != "kubez-ansible-v2" {
+		t.Errorf("未命中条目应保持原值，实际 %q", got["kubez-ansible-v2"])
+	}
+	// 空 map 或 nil 为无操作。
+	m.ApplySourceImages(nil)
+	m.ApplySourceImages(map[string]string{})
+}
+
 func TestManifestDeterministic(t *testing.T) {
 	root := buildSampleBundle(t)
 	m1, _ := Generate(root, Meta{OS: "ubuntu", K8sVersion: "v1.27.3"})

@@ -123,6 +123,21 @@ func Generate(bundleRoot string, meta Meta) (*Manifest, error) {
 	return m, nil
 }
 
+// ApplySourceImages 按 tar 基名匹配，将拉取结果中的 source_image（含 tag）回填到镜像条目。
+// byName 为 {tar 基名: source_image} 映射；未命中的条目保持原值（如 sourceImageHint 的提示值）。
+// serve 依赖 source_image 解析 repo 名与 tag，多 tag 场景必须回填为完整镜像引用（如
+// ccr.ccs.tencentyun.com/pixiucloud/kubez-ansible:v2.0.2）才能发布多个 tag。
+func (m *Manifest) ApplySourceImages(byName map[string]string) {
+	if m == nil || len(byName) == 0 {
+		return
+	}
+	for i := range m.Images {
+		if src := byName[m.Images[i].Name]; src != "" {
+			m.Images[i].SourceImage = src
+		}
+	}
+}
+
 // Write 写入 manifest 到指定路径。
 func (m *Manifest) Write(path string) error {
 	data, err := yaml.Marshal(m)

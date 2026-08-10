@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"unicode"
 
 	"gopkg.in/yaml.v3"
 )
@@ -148,10 +149,69 @@ type ServerImages struct {
 }
 
 // Addon 单个附加组件镜像。
+// tag 与 tags 二选一：
+//   - tag：单版本（旧格式，兼容）：保存为 images/{core|addons}/{name}.tar，serve 发布为 {shortname}:{tag}。
+//   - tags：同 image 多版本：构建时展开为多个镜像任务，每个 tag 保存为 {name}-{tag}.tar，
+//     serve 可发布同一 repo 的多个 tag（如 kubez-ansible:v2.0.2 与 kubez-ansible:v3.0.3）。
 type Addon struct {
-	Name  string `yaml:"name"`
-	Image string `yaml:"image"`
-	Tag   string `yaml:"tag"`
+	Name  string   `yaml:"name"`
+	Image string   `yaml:"image"`
+	Tag   string   `yaml:"tag"`
+	Tags  []string `yaml:"tags"`
+}
+
+// Expanded 将 addon 的 tags 字段展开为多个单 tag 条目。
+// 规则：
+//   - Tags 非空：为每个非空 tag 生成一个内部 Addon，Name = 基名 + "-" + SafeTag(tag)，
+//     避免同 name 多 tag 相互覆盖 tar；Tag = 该 tag。
+//   - Tags 为空：保持原 Name / Tag 不变（旧格式兼容）。
+//   - Name 为空时按 Image 短名推导（image 最后一个 / 之后、去掉 tag/digest），提升配置简洁性。
+func (a Addon) Expanded() []Addon {
+	base := a.Name
+	if base == "" {
+		base = ImageShortName(a.Image)
+	}
+	if len(a.Tags) == 0 {
+		a.Name = base
+		return []Addon{a}
+	}
+	out := make([]Addon, 0, len(a.Tags))
+	for _, tag := range a.Tags {
+		tag = strings.TrimSpace(tag)
+		if tag == "" {
+			continue
+		}
+		out = append(out, Addon{Name: base + "-" + SafeTag(tag), Image: a.Image, Tag: tag})
+	}
+	return out
+}
+
+// ImageShortName 提取镜像短名（不含 registry 路径与 tag/digest）。
+func ImageShortName(image string) string {
+	s := image
+	if i := strings.LastIndex(s, "/"); i >= 0 {
+		s = s[i+1:]
+	}
+	if i := strings.Index(s, "@"); i >= 0 {
+		s = s[:i]
+	}
+	if i := strings.Index(s, ":"); i >= 0 {
+		s = s[:i]
+	}
+	return s
+}
+
+// SafeTag 将 tag 安全化为 tar 文件名片段（字母数字 + . _ - 保留，其余替换为 -）。
+func SafeTag(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) || r == '.' || r == '_' || r == '-' {
+			b.WriteRune(r)
+		} else {
+			b.WriteRune('-')
+		}
+	}
+	return b.String()
 }
 
 // AddonPackage 单个附加安装包（name + 可选 version）。

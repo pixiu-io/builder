@@ -2,6 +2,13 @@
 # 单文件包含：build 默认参数、OS 注册表（oses）、k8s 版本参考（versions）、
 # 附加组件镜像（addon_images）、平台服务镜像（server_images）、附加安装包（addon_packages）。
 # 生产默认路径 /etc/pixiu/builder.yaml；本地开发：--configFile ./builder.yaml 或 BUILDER_CONFIG_FILE=./builder.yaml
+# 镜像条目（addon_images / server_images）字段：
+#   name: 镜像保存文件名基名（可省略，省略时按 image 短名推导）
+#   image: 镜像仓库引用（不含 tag）
+#   tag:  单版本 tag（兼容旧格式）
+#   tags: 同 image 多版本 tag 列表；构建时展开为多个镜像任务，各 tag 保存为 images/{core|addons}/{name}-{tag}.tar，
+#         serve 可发布同一 repo 的多个 tag（如 kubez-ansible:v2.0.2 与 kubez-ansible:v3.0.3）
+#   tag 与 tags 二选一；都配置时以 tags 为准。
 
 # ========== build 默认参数（优先级：命令行 > 配置文件 > 内置默认值）==========
 # 本节点即 build 子命令的「命令行配置」：每个 key 对应一个命令行 flag。
@@ -110,7 +117,7 @@ versions:
 
 # ========== 附加组件镜像 ==========
 # 附加组件镜像清单：name → image:tag（仅镜像，不含软件包；附加安装包见下方 addon_packages 节）。
-# name 用作镜像保存文件名（images/addons/{name}.tar）。
+# name 用作镜像保存文件名（images/addons/{name}.tar）；tags 多版本时保存为 {name}-{tag}.tar。
 # CNI 附加组件镜像：flannel（默认 CNI，华为云 SWR pixiu-public 仓库）与 calico（v3.31.3，pixiucloud 仓库）。
 # 仓库不可达时可用 build --skip-addons 跳过附加组件。
 addon_images:
@@ -149,7 +156,11 @@ addon_images:
     tag: "v1.1.1"
 
 # ========== 平台服务镜像 ==========
-# 平台/服务端镜像清单：格式与 addon_images 一致（name → image:tag）。
+# 平台/服务端镜像清单：格式与 addon_images 一致。
+# tag 与 tags 二选一：
+#   - tag：单版本（兼容）：保存为 images/addons/{name}.tar，serve 发布为 {shortname}:{tag}
+#   - tags：同 image 多版本：构建时展开为多个镜像任务，各 tag 保存为 images/addons/{name}-{tag}.tar，
+#     serve 可发布同一 repo 的多个 tag（如 kubez-ansible:v2.0.2 与 kubez-ansible:v3.0.3）
 # 仅 build servers 读取并打包为 pixiu-server-images-{arch}.tar.gz；不与 addon_images 混入。
 # 空配置时 build servers 直接报错。
 server_images:
@@ -159,12 +170,11 @@ server_images:
   - name: pixiu
     image: "crpi-0ecikjs9ylb2hqyo.cn-hangzhou.personal.cr.aliyuncs.com/pixiu-public/pixiu"
     tag: "v2.0.1-beta.5"
-  - name: kubez-ansible-v2
+  - name: kubez-ansible
     image: "ccr.ccs.tencentyun.com/pixiucloud/kubez-ansible"
-    tag: "v2.0.2"
-  - name: kubez-ansible-v3
-    image: "ccr.ccs.tencentyun.com/pixiucloud/kubez-ansible"
-    tag: "v3.0.3"
+    tags:
+      - "v2.0.2"
+      - "v3.0.3"
 
 # ========== 附加安装包 ==========
 # 附加安装包列表（与 addon_images 平级），mode ∈ {packages, all} 且未 --skip-addons 时

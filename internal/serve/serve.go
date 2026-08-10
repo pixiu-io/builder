@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -28,6 +29,9 @@ type Options struct {
 	RepoAddr string
 	// AdvertiseHost 打印给客户端的主机名/IP（不含端口），默认 127.0.0.1。
 	AdvertiseHost string
+	// Namespace registry 发布命名空间（自动导入镜像的引用前缀），默认 pixiu。
+	// 用户直接 push 到 serve registry 的镜像不受影响。
+	Namespace string
 	// SkipImages 不启动 registry / 不导入镜像。
 	SkipImages bool
 	// SkipPackages 不生成 / 不提供软件源。
@@ -44,6 +48,9 @@ type Result struct {
 	DebPackages     int
 	RegistryEnabled bool
 	RepoEnabled     bool
+	// ImageRepository kubeadm init --image-repository 使用的镜像仓库前缀
+	//（RegistryURL + "/" + Namespace，如 192.168.1.10:5000/pixiu）。
+	ImageRepository string
 }
 
 // Run 加载产物、准备源、监听直到 ctx 取消。
@@ -195,8 +202,9 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 			return nil, fmt.Errorf("registry 未就绪: %w", err)
 		}
 
+		res.ImageRepository = res.RegistryURL + "/" + opts.Namespace
 		fmt.Printf("导入镜像到 registry %s ...\n", res.RegistryURL)
-		imgs, err := importImages(ctx, allRoots, pushHost, res.RegistryURL)
+		imgs, err := importImages(ctx, allRoots, pushHost, res.RegistryURL, opts.Namespace)
 		if err != nil {
 			cleanup()
 			return nil, err
@@ -237,7 +245,20 @@ func normalize(opts Options) Options {
 	if opts.AdvertiseHost == "" {
 		opts.AdvertiseHost = LocalIP()
 	}
+	opts.Namespace = sanitizeNamespace(opts.Namespace)
 	return opts
+}
+
+// sanitizeNamespace 清洗 registry 发布命名空间：去首尾空白与斜杠，
+// 清洗为空时回退默认 pixiu。单级 namespace，含非法字符（含 /）时按
+// registry repo 片段规则替换为 -。
+func sanitizeNamespace(ns string) string {
+	ns = strings.TrimSpace(ns)
+	ns = strings.Trim(ns, "/")
+	if ns == "" {
+		return "pixiu"
+	}
+	return sanitizeRepoName(ns)
 }
 
 // LocalIP 返回本机非 loopback 的 IPv4 地址（serve --advertise-host 默认值）。
@@ -321,7 +342,11 @@ func printConfigDemo(w io.Writer, res *Result) {
 		fmt.Fprintf(w, "#    %q\n", res.RegistryURL)
 		fmt.Fprintln(w, "# 2) 拉取 / 初始化:")
 		fmt.Fprintf(w, "docker pull %s\n", pullRef)
-		fmt.Fprintf(w, "kubeadm init --image-repository %s ...\n", res.RegistryURL)
+		repo := res.ImageRepository
+		if repo == "" {
+			repo = res.RegistryURL
+		}
+		fmt.Fprintf(w, "kubeadm init --image-repository %s ...\n", repo)
 	} else {
 		fmt.Fprintln(w, "# 当前未启用 registry（--skip-images 或产物无镜像）")
 	}
@@ -460,7 +485,7 @@ func hotLoad(ctx context.Context, newBundles []string, bundleRoot string, loaded
 		mu.Unlock()
 
 		if !opts.SkipImages {
-			imgs, err := importImages(ctx, []string{root}, pushHost, res.RegistryURL)
+			imgs, err := importImages(ctx, []string{root}, pushHost, res.RegistryURL, opts.Namespace)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "导入 %s 镜像失败: %v\n", b, err)
 			} else {

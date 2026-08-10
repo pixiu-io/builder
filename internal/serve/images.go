@@ -18,8 +18,10 @@ import (
 
 // importImages 将 docker-save tar 以短名推送到本地 registry。
 // pushHost 用于 remote.Write（一般为 127.0.0.1:port）；
-// advertiseHostPort 用于返回给用户的引用（如 192.168.1.10:5000）。
-func importImages(ctx context.Context, roots []string, pushHost, advertiseHostPort string) ([]string, error) {
+// advertiseHostPort 用于返回给用户的引用（如 192.168.1.10:5000）；
+// namespace 为 registry 发布命名空间（镜像引用前缀，如 pixiu）。非空时发布
+// 路径为 <host>:5000/<namespace>/<repo>:<tag>，空则保持 <host>:5000/<repo>:<tag>。
+func importImages(ctx context.Context, roots []string, pushHost, advertiseHostPort, namespace string) ([]string, error) {
 	tars, err := collectImageTars(roots)
 	if err != nil {
 		return nil, err
@@ -39,19 +41,26 @@ func importImages(ctx context.Context, roots []string, pushHost, advertiseHostPo
 			return refs, fmt.Errorf("镜像 tar 不存在 %s: %w", it.Path, err)
 		}
 
-		short := it.Name
-		if short == "" {
-			short = images.ShortName(it.SourceImage)
-		}
+		// repo 名优先取可确认带 tag 的 source_image 短名；旧版 bundle 的 source_image
+		// 可能只是 tar 文件名提示（如 kubez-ansible-v2），此时应回退读取 docker-save
+		// manifest.json 的 RepoTags，避免把 tar 名误当 registry repo 名。
+		short := resolveRepoShortName(it)
 		tag := resolveTag(it)
 		repoName := sanitizeRepoName(short)
+
+		// 发布路径：namespace 非空时加前缀（如 pixiu/pause），用户指定
+		// namespace 时直接 push 到该前缀下；空则保持短名仓库。
+		repoPath := repoName
+		if strings.TrimSpace(namespace) != "" {
+			repoPath = sanitizeRepoName(namespace) + "/" + repoName
+		}
 
 		img, err := tarball.ImageFromPath(it.Path, nil)
 		if err != nil {
 			return refs, fmt.Errorf("读取 docker-save %s 失败: %w", it.Path, err)
 		}
 
-		pushRefStr := fmt.Sprintf("%s/%s:%s", pushHost, repoName, tag)
+		pushRefStr := fmt.Sprintf("%s/%s:%s", pushHost, repoPath, tag)
 		ref, err := name.ParseReference(pushRefStr, name.Insecure)
 		if err != nil {
 			return refs, fmt.Errorf("解析引用 %s 失败: %w", pushRefStr, err)
@@ -59,11 +68,31 @@ func importImages(ctx context.Context, roots []string, pushHost, advertiseHostPo
 		if err := remote.Write(ref, img); err != nil {
 			return refs, fmt.Errorf("推送 %s 失败: %w", pushRefStr, err)
 		}
-		adv := fmt.Sprintf("%s/%s:%s", advertiseHostPort, repoName, tag)
+		adv := fmt.Sprintf("%s/%s:%s", advertiseHostPort, repoPath, tag)
 		refs = append(refs, adv)
 		fmt.Printf("  + %s\n", adv)
 	}
 	return refs, nil
+}
+
+func resolveRepoShortName(it imageTar) string {
+	// 只有 source_image 明确带 tag 时才信任它：新版 manifest 会回填完整 source_image，
+	// 旧版 manifest 可能只是 tar 文件名提示（例如 kubez-ansible-v2），不应作为 repo 名。
+	if tagFromImageRef(it.SourceImage) != "" {
+		if short := images.ShortName(it.SourceImage); short != "" {
+			return short
+		}
+	}
+	if tags, err := dockerTarRepoTags(it.Path); err == nil {
+		for _, t := range tags {
+			if tagFromImageRef(t) != "" {
+				if short := images.ShortName(t); short != "" {
+					return short
+				}
+			}
+		}
+	}
+	return it.Name
 }
 
 func resolveTag(it imageTar) string {
