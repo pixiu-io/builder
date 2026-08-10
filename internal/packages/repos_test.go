@@ -166,15 +166,24 @@ func TestBuildPackageListCustomContainerdPkg(t *testing.T) {
 
 func TestBuildPackageListPin(t *testing.T) {
 	apt := BuildPackageList("apt", "v1.27.3", nil, true, "")
-	if apt[0] != "kubeadm=1.27.3" {
-		t.Errorf("apt 版本约束异常: %v", apt[:3])
+	if apt[0] != "kubeadm=1.27.3-1.1" || apt[1] != "kubelet=1.27.3-1.1" || apt[2] != "kubectl=1.27.3-1.1" {
+		t.Errorf("apt 版本约束异常（应为 X.Y.Z-1.1）: %v", apt[:3])
 	}
 	dnf := BuildPackageList("dnf", "v1.28.2", nil, true, "")
-	if dnf[0] != "kubeadm-1.28.2" {
-		t.Errorf("dnf 版本约束异常: %v", dnf[:3])
+	if dnf[0] != "kubeadm-1.28.2-1.1" || dnf[1] != "kubelet-1.28.2-1.1" || dnf[2] != "kubectl-1.28.2-1.1" {
+		t.Errorf("dnf 版本约束异常（应为 X.Y.Z-1.1）: %v", dnf[:3])
 	}
 	unpin := BuildPackageList("apt", "v1.27.3", nil, false, "")
 	if unpin[0] != "kubeadm" {
 		t.Errorf("默认不 pin 版本: %v", unpin[:3])
+	}
+	// pinK8s=true 但版本为空（--only-addons 未指定 k8s 版本）：不应生成裸 `pkg=` / `pkg-`
+	empty := BuildPackageList("apt", "", nil, true, "")
+	if empty[0] != "kubeadm" || empty[1] != "kubelet" || empty[2] != "kubectl" {
+		t.Errorf("版本为空时不应 pin: %v", empty[:3])
+	}
+	emptyDnf := BuildPackageList("dnf", "", nil, true, "")
+	if emptyDnf[0] != "kubeadm" {
+		t.Errorf("版本为空时不应 pin（dnf）: %v", emptyDnf[:3])
 	}
 }

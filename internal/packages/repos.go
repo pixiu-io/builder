@@ -158,8 +158,11 @@ func DnfSourceScript(repos []Repo) string {
 // k8s 三件套（kubeadm/kubelet/kubectl） + 运行时（containerdPkg/cri-tools） + 系统依赖。
 // 注：runc 由 containerd 包（containerd.io 或系统源 containerd）内嵌提供，不单独安装，
 // 避免 docker-ce 源的 containerd.io 与独立 runc 包存在 Conflicts: runc 冲突导致 apt 无法同时解析。
-// pinK8s=true 时对 k8s 组件做精确版本约束（apt: pkg=<ver>；dnf/yum: pkg-<ver>），
-// 默认 false 使用源内 stable 最新版本。
+// pinK8s=true 且 k8sVersion 非空时，对 k8s 三件套按 --kubernetes-version 精确锁定到对应 patch 的包版本：
+// 阿里云 kubernetes-new 镜像（kubernetes OBS 仓库镜像）的 deb/rpm 包版本形如 1.31.6-1.1（version-release），
+// 因此约束为 apt: pkg=1.31.6-1.1、dnf/yum: pkg-1.31.6-1.1。仅锁 <ver>（如 pkg=1.31.6）会匹配同 minor 最新
+// patch 而无法精确锁定；源内无该 patch 时 apt/dnf 依赖解析失败即构建失败，不会静默回退同 minor 最新 patch。
+// 默认 false（或版本为空）使用源内 stable 最新版本。
 // containerdPkg 为空时默认 "containerd.io"（docker-ce 源包名）；openEuler 等系统源场景传 "containerd"。
 func BuildPackageList(pkgManager, k8sVersion string, deps []string, pinK8s bool, containerdPkg string) []string {
 	if containerdPkg == "" {
@@ -167,12 +170,13 @@ func BuildPackageList(pkgManager, k8sVersion string, deps []string, pinK8s bool,
 	}
 	ver := strings.TrimPrefix(k8sVersion, "v")
 	k8sPkgs := []string{"kubeadm", "kubelet", "kubectl"}
-	if pinK8s {
+	if pinK8s && ver != "" {
+		k8sPkgVersion := ver + "-1.1"
 		for i, p := range k8sPkgs {
 			if pkgManager == "dnf" || pkgManager == "yum" {
-				k8sPkgs[i] = p + "-" + ver
+				k8sPkgs[i] = p + "-" + k8sPkgVersion
 			} else {
-				k8sPkgs[i] = p + "=" + ver
+				k8sPkgs[i] = p + "=" + k8sPkgVersion
 			}
 		}
 	}
