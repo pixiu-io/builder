@@ -426,7 +426,7 @@ func DefaultBuildImage(osName, version string) string {
 
 // InferPkgManager 按发行版名称与版本推断包管理器。
 // centos/rhel/almalinux 主版本为 7 时使用 yum（CentOS 7 无 dnf），
-// 8/9+ 使用 dnf；rocky/fedora/openeuler/amazonlinux 一律 dnf；其余（ubuntu/debian/未知）apt。
+// 8/9+ 使用 dnf；rocky/fedora/openeuler/amazonlinux/kylin 一律 dnf；其余（ubuntu/debian/未知）apt。
 func InferPkgManager(osName, version string) string {
 	switch strings.ToLower(osName) {
 	case "centos", "rhel", "almalinux":
@@ -436,7 +436,7 @@ func InferPkgManager(osName, version string) string {
 			return "yum"
 		}
 		return "dnf"
-	case "rocky", "fedora", "openeuler", "amazonlinux":
+	case "rocky", "fedora", "openeuler", "amazonlinux", "kylin":
 		return "dnf"
 	default:
 		// ubuntu / debian / 未知发行版默认 apt
@@ -483,7 +483,8 @@ func InferRPMDistro(osName, version string) string {
 			return "rhel" + major
 		}
 		return "rhel9"
-	case "openeuler":
+	case "openeuler", "kylin":
+		// openEuler / 银河麒麟 V10 兼容 el7，docker-ce 走 centos/7
 		return "rhel7"
 	case "fedora":
 		return "fedora"

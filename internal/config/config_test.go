@@ -179,6 +179,77 @@ func TestResolveOS(t *testing.T) {
 	}
 }
 
+func TestResolveOSKylin(t *testing.T) {
+	content := `
+oses:
+  - name: kylin
+    versions: ["v10"]
+    pkg_manager: dnf
+    build_images:
+      "v10": swr.cn-north-4.myhuaweicloud.com/pixiu-public/kylin:v10
+    rpm_distro: rhel7
+    containerd_pkg: "containerd.io"
+    containerd_repo: "aliyun"
+    archs: ["amd64", "arm64"]
+versions:
+  - version: v1.31.6
+`
+	cfg, err := Load(writeSample(t, content))
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := cfg.ResolveOS("kylin", "v10")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.FromRegistry {
+		t.Error("kylin 应命中注册表")
+	}
+	if res.PkgManager != "dnf" {
+		t.Errorf("PkgManager = %q, want dnf", res.PkgManager)
+	}
+	if res.BuildImage != "swr.cn-north-4.myhuaweicloud.com/pixiu-public/kylin:v10" {
+		t.Errorf("BuildImage = %q", res.BuildImage)
+	}
+	if res.RPMDistro != "rhel7" {
+		t.Errorf("RPMDistro = %q, want rhel7", res.RPMDistro)
+	}
+	if res.ContainerdPkg != "containerd.io" || res.ContainerdRepo != "aliyun" {
+		t.Errorf("Containerd = %q/%q, want containerd.io/aliyun", res.ContainerdPkg, res.ContainerdRepo)
+	}
+
+	// 未登记时按发行版推断：dnf + rhel7 + containerd.io/aliyun
+	unk, err := cfg.ResolveOS("kylin", "v10-sp3")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// v10-sp3 不在 versions 列表，但 name 仍命中注册表；ImageFor 回退 DefaultBuildImage
+	if !unk.FromRegistry {
+		t.Error("kylin 名称应仍命中注册表")
+	}
+	if unk.PkgManager != "dnf" || unk.RPMDistro != "rhel7" {
+		t.Errorf("未登记版本推导异常: %+v", unk)
+	}
+}
+
+func TestInferRPMDistro(t *testing.T) {
+	cases := []struct {
+		os, ver, want string
+	}{
+		{"rocky", "9", "rhel9"},
+		{"centos", "7", "rhel7"},
+		{"openeuler", "22.03", "rhel7"},
+		{"kylin", "v10", "rhel7"},
+		{"Kylin", "v10", "rhel7"},
+		{"ubuntu", "22.04", ""},
+	}
+	for _, c := range cases {
+		if got := InferRPMDistro(c.os, c.ver); got != c.want {
+			t.Errorf("InferRPMDistro(%q, %q) = %q, want %q", c.os, c.ver, got, c.want)
+		}
+	}
+}
+
 func TestFindK8s(t *testing.T) {
 	cfg, _ := Load(sampleFile(t))
 	ks, ok := cfg.FindK8s("v1.27.3")
@@ -252,6 +323,8 @@ func TestInferPkgManager(t *testing.T) {
 		{"fedora", "39", "dnf"},
 		{"openeuler", "22.03", "dnf"},
 		{"amazonlinux", "2", "dnf"},
+		{"kylin", "v10", "dnf"},
+		{"Kylin", "v10", "dnf"},
 		{"ubuntu", "22.04", "apt"},
 		{"debian", "12", "apt"},
 		{"unknown", "1", "apt"}, // 未知发行版默认 apt
@@ -475,6 +548,7 @@ func TestInferContainerd(t *testing.T) {
 		{"rocky", "containerd.io", "aliyun"},
 		{"ubuntu", "containerd.io", "aliyun"},
 		{"centos", "containerd.io", "aliyun"}, // 未登记 OS 同样走推断
+		{"kylin", "containerd.io", "aliyun"},  // 麒麟走 docker-ce el7，非系统源
 	}
 	for _, c := range cases {
 		if got := InferContainerdPkg(c.os); got != c.wantPkg {

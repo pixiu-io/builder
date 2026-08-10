@@ -44,6 +44,8 @@ func TestRenderInstall(t *testing.T) {
 		"net.bridge.bridge-nf-call-ip6tables = 1",
 		"net.ipv4.ip_forward = 1",
 		"sysctl --system",
+		// 包管理器识别含 kylin（银河麒麟）
+		"rocky|centos|almalinux|fedora|openEuler|kylin",
 		// containerd / kubelet
 		"containerd config default",
 		"SystemdCgroup = true",

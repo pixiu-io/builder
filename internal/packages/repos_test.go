@@ -35,6 +35,10 @@ func TestK8sRepos(t *testing.T) {
 			t.Errorf("k8s dnf repo 不应含 %q:\n%s", forbid, r.DnfRepoBlock)
 		}
 	}
+	// 与 kubez-ansible kubernetes.repo.j2 一致：gpgcheck=0
+	if !strings.Contains(r.DnfRepoBlock, "gpgcheck=0") {
+		t.Errorf("k8s dnf repo 应为 gpgcheck=0（对齐 kubez）:\n%s", r.DnfRepoBlock)
+	}
 	// [kubernetes] 块只保留 name/baseurl/enabled/gpgcheck/gpgkey，以 gpgkey 行收尾
 	if !strings.HasSuffix(strings.TrimSpace(r.DnfRepoBlock), "repomd.xml.key") {
 		t.Errorf("k8s dnf repo 应以 gpgkey 行收尾（不应有多余 exclude 行）:\n%s", r.DnfRepoBlock)
@@ -170,8 +174,8 @@ func TestBuildPackageListPin(t *testing.T) {
 		t.Errorf("apt 版本约束异常（应为 X.Y.Z-1.1）: %v", apt[:3])
 	}
 	dnf := BuildPackageList("dnf", "v1.28.2", nil, true, "")
-	if dnf[0] != "kubeadm-1.28.2-1.1" || dnf[1] != "kubelet-1.28.2-1.1" || dnf[2] != "kubectl-1.28.2-1.1" {
-		t.Errorf("dnf 版本约束异常（应为 X.Y.Z-1.1）: %v", dnf[:3])
+	if dnf[0] != "kubeadm-1.28.2" || dnf[1] != "kubelet-1.28.2" || dnf[2] != "kubectl-1.28.2" {
+		t.Errorf("dnf 版本约束异常（应为 X.Y.Z，不钉 release）: %v", dnf[:3])
 	}
 	unpin := BuildPackageList("apt", "v1.27.3", nil, false, "")
 	if unpin[0] != "kubeadm" {

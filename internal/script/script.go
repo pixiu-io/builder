@@ -48,7 +48,7 @@ detect_pkg_manager() {
     . /etc/os-release
     case "${ID:-}" in
       ubuntu|debian) echo "apt" ;;
-      rocky|centos|almalinux|fedora|openEuler) echo "dnf" ;;
+      rocky|centos|almalinux|fedora|openEuler|kylin) echo "dnf" ;;
       *) echo "unknown:${ID:-}" ;;
     esac
   else
