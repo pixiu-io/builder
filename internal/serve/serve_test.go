@@ -235,6 +235,73 @@ images:
 	}
 }
 
+// TestCollectImageTarsMultiTag 验证 manifest 中同 image 多 tag（不同 tar 名 + 含 tag 的
+// source_image）时 collectImageTars 全部收集、resolveTag 识别各自 tag、repo 短名为同一仓库。
+func TestCollectImageTarsMultiTag(t *testing.T) {
+	root := t.TempDir()
+	imgDir := filepath.Join(root, "images", "addons")
+	if err := os.MkdirAll(imgDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range []string{"kubez-ansible-v2.0.2.tar", "kubez-ansible-v3.0.3.tar"} {
+		if err := os.WriteFile(filepath.Join(imgDir, f), []byte("tar:"+f), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mf := filepath.Join(root, "manifest.yaml")
+	if err := os.WriteFile(mf, []byte(`
+schema_version: 1
+meta: {}
+images:
+  - name: kubez-ansible-v2.0.2
+    source_image: ccr.ccs.tencentyun.com/pixiucloud/kubez-ansible:v2.0.2
+    tar: images/addons/kubez-ansible-v2.0.2.tar
+    size: 10
+  - name: kubez-ansible-v3.0.3
+    source_image: ccr.ccs.tencentyun.com/pixiucloud/kubez-ansible:v3.0.3
+    tar: images/addons/kubez-ansible-v3.0.3.tar
+    size: 10
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	tars, err := collectImageTars([]string{root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tars) != 2 {
+		t.Fatalf("应收集 2 个多 tag tar，实际 %+v", tars)
+	}
+	if resolveTag(tars[0]) != "v2.0.2" || resolveTag(tars[1]) != "v3.0.3" {
+		t.Errorf("resolveTag = %q / %q", resolveTag(tars[0]), resolveTag(tars[1]))
+	}
+	// 同一 repo（source_image 短名）→ serve 发布为 kubez-ansible:v2.0.2 与 kubez-ansible:v3.0.3
+	if s := resolveRepoShortName(tars[0]); s != "kubez-ansible" {
+		t.Errorf("resolveRepoShortName = %q", s)
+	}
+	if s := resolveRepoShortName(tars[1]); s != "kubez-ansible" {
+		t.Errorf("resolveRepoShortName = %q", s)
+	}
+}
+
+func TestResolveRepoShortNameFallsBackToDockerTarRepoTags(t *testing.T) {
+	out, err := exec.Command("go", "list", "-m", "-f", "{{.Dir}}", "github.com/google/go-containerregistry").Output()
+	if err != nil {
+		t.Skipf("go list containerregistry: %v", err)
+	}
+	tarPath := filepath.Join(strings.TrimSpace(string(out)), "pkg/v1/tarball/testdata/test_image_1.tar")
+	if _, err := os.Stat(tarPath); err != nil {
+		t.Skip(err)
+	}
+
+	// 旧版 manifest 的 source_image 可能只是 tar 文件名提示（无 tag），例如 kubez-ansible-v2。
+	// 此时不能把它当 repo 名，应回退读取 docker-save manifest.json 的 RepoTags。
+	it := imageTar{Name: "wrong-tar-name", SourceImage: "wrong-tar-name", Path: tarPath}
+	if got := resolveRepoShortName(it); got != "tarball" {
+		t.Fatalf("resolveRepoShortName = %q, want tarball", got)
+	}
+}
+
 func TestImportImagesShortName(t *testing.T) {
 	out, err := exec.Command("go", "list", "-m", "-f", "{{.Dir}}", "github.com/google/go-containerregistry").Output()
 	if err != nil {
@@ -283,16 +350,86 @@ images:
 	if err := waitHTTP(ctx, "http://"+host+"/v2/"); err != nil {
 		t.Fatal(err)
 	}
-	refs, err := importImages(ctx, []string{root}, host, host)
+	refs, err := importImages(ctx, []string{root}, host, host, "pixiu")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(refs) != 1 {
 		t.Fatalf("refs=%v", refs)
 	}
-	want := host + "/test-image:v1"
+	// 默认/指定 namespace 前缀 pixiu：<host>:5000/pixiu/test-image:v1
+	want := host + "/pixiu/test-image:v1"
 	if refs[0] != want {
 		t.Fatalf("got %q want %q", refs[0], want)
+	}
+}
+
+// TestImportImagesNamespace 验证自定义 namespace：importImages 发布路径带
+// <namespace>/ 前缀；namespace 为空时保持原短名仓库（用户直接 push 场景）。
+func TestImportImagesNamespace(t *testing.T) {
+	out, err := exec.Command("go", "list", "-m", "-f", "{{.Dir}}", "github.com/google/go-containerregistry").Output()
+	if err != nil {
+		t.Skipf("go list containerregistry: %v", err)
+	}
+	tarPath := filepath.Join(strings.TrimSpace(string(out)), "pkg/v1/tarball/testdata/test_image_1.tar")
+	if _, err := os.Stat(tarPath); err != nil {
+		t.Skip(err)
+	}
+
+	root := t.TempDir()
+	imgDir := filepath.Join(root, "images", "core")
+	if err := os.MkdirAll(imgDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	dst := filepath.Join(imgDir, "test-image.tar")
+	if err := linkOrCopy(tarPath, dst); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "manifest.yaml"), []byte(`
+schema_version: 1
+meta: {}
+images:
+  - name: test-image
+    source_image: example.com/test-image:v1
+    tar: images/core/test-image.tar
+    size: 1
+    sha256: ""
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	blobDir := t.TempDir()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	srv := &http.Server{Handler: newRegistryHandler(blobDir)}
+	go srv.Serve(ln)
+	defer srv.Close()
+
+	port := ln.Addr().(*net.TCPAddr).Port
+	host := fmt.Sprintf("127.0.0.1:%d", port)
+	ctx := context.Background()
+	if err := waitHTTP(ctx, "http://"+host+"/v2/"); err != nil {
+		t.Fatal(err)
+	}
+
+	cases := []struct {
+		namespace string
+		want      string
+	}{
+		{"kubez", host + "/kubez/test-image:v1"},
+		{"", host + "/test-image:v1"},
+	}
+	for _, c := range cases {
+		refs, err := importImages(ctx, []string{root}, host, host, c.namespace)
+		if err != nil {
+			t.Fatalf("namespace=%q: %v", c.namespace, err)
+		}
+		if len(refs) != 1 || refs[0] != c.want {
+			t.Fatalf("namespace=%q got %v want %q", c.namespace, refs, c.want)
+		}
 	}
 }
 
@@ -792,10 +929,10 @@ func TestEnsureServeDirCreatesMissing(t *testing.T) {
 	errCh := make(chan error, 1)
 	go func() {
 		_, err := Run(ctx, Options{
-			Dir:          dir,
-			DataDir:      dataDir,
-			RepoAddr:     "127.0.0.1:0",
-			SkipImages:   true, // 空目录仍可启动软件源，等待热加载
+			Dir:           dir,
+			DataDir:       dataDir,
+			RepoAddr:      "127.0.0.1:0",
+			SkipImages:    true, // 空目录仍可启动软件源，等待热加载
 			AdvertiseHost: "127.0.0.1",
 		})
 		errCh <- err
@@ -826,9 +963,10 @@ func TestPrintReadyConfigDemo(t *testing.T) {
 		RepoEnabled:     true,
 		RegistryURL:     "192.168.1.10:5000",
 		RepoURL:         "http://192.168.1.10:8080",
-		Images:          []string{"192.168.1.10:5000/pause:3.10"},
+		Images:          []string{"192.168.1.10:5000/pixiu/pause:3.10"},
 		RPMPackages:     1,
 		DebPackages:     1,
+		ImageRepository: "192.168.1.10:5000/pixiu",
 	})
 	out := buf.String()
 	if strings.Contains(out, "Ctrl+C") {
@@ -839,7 +977,8 @@ func TestPrintReadyConfigDemo(t *testing.T) {
 		"自定义安装包配置 demo",
 		"addon_images:",
 		"addon_packages:",
-		"kubeadm init --image-repository 192.168.1.10:5000",
+		"192.168.1.10:5000/pixiu/pause:3.10",
+		"kubeadm init --image-repository 192.168.1.10:5000/pixiu",
 		"baseurl=http://192.168.1.10:8080/rpm",
 	} {
 		if !strings.Contains(out, want) {

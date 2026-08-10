@@ -57,7 +57,7 @@ go build -o builder ./cmd/builder
 |------|------|
 | `build packages` | 构建软件包离线包。需 `--os` / `--os-version` / `--kubernetes-version`（`--only-addons` 时可省略 k8s 版本）。产物：`pixiu-packages-{os}-{osver}-{arch}-{k8s}.tar.gz`。`--upload` 上传到以 k8s 版本为名的 Release |
 | `build images` | 构建镜像离线包（**无需**操作系统）。需 `--kubernetes-version`（可重复；多版本时并发构建与上传，上限 10）。产物：`pixiu-images-{arch}-{k8s}.tar.gz`。kubeadm 下载与 `--upload` 均只检查/使用 `--github-tag`（未指定默认 `images`；不按 k8s 版本找 Release） |
-| `build servers` | 构建平台服务镜像离线包。只读 `server_images`（格式同 `addon_images`）；**无需** `--os` / `--kubernetes-version`；忽略 `--skip-addons` / `--only-addons`；空配置报错。产物：`pixiu-server-images-{arch}.tar.gz`。`--upload` 默认 tag=`servers` |
+| `build servers` | 构建平台服务镜像离线包。只读 `server_images`（格式同 `addon_images`）；**无需** `--os` / `--kubernetes-version`；忽略 `--skip-addons` / `--only-addons`；空配置报错。产物：`pixiu-server-images-{arch}.tar.gz`。`--upload` 默认 tag=`download` |
 | `upload` | 将已有产物 tar.gz 上传到 GitHub Release。`--file` 可重复；`--github-*` 覆盖配置节 |
 | `sync-kubeadm` | 创建以 k8s 版本为名的 GitHub Release，并上传 kubeadm 二进制。默认单版本；`--all` 同步全部 >= v1.31.0 的正式版本 |
 | `serve` | 加载离线产物，提供本地 OCI registry（`docker pull` 短名）与 yum/dnf/apt HTTP 软件源（纯 Go，无外部工具依赖） |
@@ -74,7 +74,7 @@ go build -o builder ./cmd/builder
 |--------|---------|--------|--------------|
 | `build packages` | 软件包（k8s/运行时/系统依赖）+ 脚本 + manifest | `pixiu-packages-{os}-{osver}-{arch}-{k8s}.tar.gz` | k8s 版本（或 `--github-tag`） |
 | `build images` | 镜像（核心 + 附加组件）+ 脚本 + manifest | `pixiu-images-{arch}-{k8s}.tar.gz` | `--github-tag`（默认 `images`） |
-| `build servers` | 平台服务镜像（仅 `server_images`）+ 脚本 + manifest | `pixiu-server-images-{arch}.tar.gz` | `--github-tag`（默认 `servers`） |
+| `build servers` | 平台服务镜像（仅 `server_images`）+ 脚本 + manifest | `pixiu-server-images-{arch}.tar.gz` | `--github-tag`（默认 `download`） |
 
 被跳过的步骤在构建汇总中标记为 `skipped`（非失败）。`build images` / `build servers` 不需要操作系统参数。
 
@@ -124,11 +124,12 @@ go build -o builder ./cmd/builder
 
 附加组件由两处顶层配置提供，均与 `build packages` / `build images` / `--only-addons` / `--skip-addons` 联动：
 
-- **`addon_images`**：附加组件镜像清单（name → image:tag）。`build images` 且未 `--skip-addons` 时并入镜像清单（与核心镜像去重）；`--only-addons` 时为其镜像主体（核心镜像全去）。
+- **`addon_images`**：附加组件镜像清单（name → image:tag）。`build images` 且未 `--skip-addons` 时并入镜像清单（与核心镜像去重）；`--only-addons` 时为其镜像主体（核心镜像全去）。镜像条目支持单版本 `tag` 与同镜像多版本 `tags` 两种写法：`tags` 会在构建时展开为多个拉取/保存任务，tar 文件名按 `{name}-{tag}.tar` 命名（如 `kubez-ansible-v2.0.2.tar`），manifest 中每个镜像条目的 `source_image` 均为含对应 tag 的完整引用，`builder serve` 可据此发布同一 repo 的多个 tag。
 - **`addon_packages`**：附加安装包列表（对象格式：name + 可选 version）。`build packages` 且未 `--skip-addons` 时并入软件包下载清单（与核心清单按包名去重）；`--only-addons` 时为其软件包主体（核心软件包全去）。`version` 为空（或省略）不锁版本，透传纯包名；非空按目标包管理器语法转译（apt 系 `name=version`、dnf/yum 系 `name-version`），见下方示例。
 
 ```yaml
 # 附加组件镜像（仅镜像；不含软件包）
+# 单版本用 tag（tar 文件名即 {name}.tar）；同一镜像多版本用 tags（构建时展开为多个 tar，文件名 {name}-{tag}.tar）
 addon_images:
   - name: flannel
     image: "swr.cn-north-4.myhuaweicloud.com/pixiu-public/flannel/flannel"
@@ -136,6 +137,9 @@ addon_images:
   - name: metrics-server
     image: "registry.k8s.io/metrics-server/metrics-server"
     tag: "v0.6.4"
+  - name: kubez-ansible
+    image: "ccr.ccs.tencentyun.com/pixiucloud/kubez-ansible"
+    tags: ["v2.0.2", "v3.0.3"]
 
 # 附加安装包（与 addon_images 平级；部署附加组件需要的宿主系统软件包）
 # 对象格式：name = 包名（apt/dnf 通用名，须与目标系统源匹配）；version 可选。
@@ -199,7 +203,7 @@ pixiu-images-{arch}-{k8sver}/                  # build images（不绑定 OS）
 | `build` | build 子命令默认参数（可选；优先级：命令行 > 配置 > 内置默认值） |
 | `oses` | OS 注册表：可用版本、包管理器（apt/dnf）、容器内下载软件包用的构建镜像、架构、apt 版本代号（codename/codenames）、dnf 发行版标识（rpm_distro）、containerd 包名与来源（containerd_pkg / containerd_repo） |
 | `versions` | k8s 版本定义；containerd/runc 为记录用，crictl 用于 cri-tools 包缺失时的静态回退 |
-| `addon_images` | 附加组件镜像清单（name → image:tag；仅镜像，不含软件包；供 `build images`） |
+| `addon_images` | 附加组件镜像清单（name → image:tag；仅镜像，不含软件包；供 `build images`）。镜像条目可用 `tag`（单版本）或 `tags`（同一镜像多版本，构建时展开为多个 tar，文件名 `{name}-{tag}.tar`，serve 可发布多个 tag） |
 | `server_images` | 平台服务镜像清单（格式同 `addon_images`；仅 `build servers` 读取；空配置时报错） |
 | `addon_packages` | 附加安装包列表（对象格式：name + 可选 version；version 空不锁版本、非空按目标包管理器语法转译 name=version / name-version；mode ∈ packages/all 且未跳过附加时并入软件包清单） |
 | `github` | 可选：产物上传到 GitHub Release（owner/repo/tag/token 等；token 建议用环境变量） |
@@ -293,16 +297,23 @@ export GITHUB_TOKEN=ghp_xxx
 
 `--advertise-host` 默认取**本机非 loopback IP**（打印给客户端），无需显式指定；仅在需要对外暴露固定地址时手动覆盖。
 
+`--namespace`（`-n`，默认 `pixiu`）控制 serve **自动导入 bundle 镜像**的 registry 发布命名空间：镜像发布到 `<host>:5000/<namespace>/<repo>:<tag>`（如 `172.16.2.247:5000/pixiu/pause:3.10`）。用户直接 push 到 serve registry 的镜像保持原仓库不变；软件源 `/deb` `/rpm` 不受影响。
+
+```bash
+# 指定发布命名空间 kubez
+./builder serve --bundle ./dist/pixiu-images-*.tar.gz --namespace kubez
+```
+
 默认端口：
-- registry：`0.0.0.0:5000` → `docker pull <host>:5000/kube-apiserver:v1.27.3`
+- registry：`0.0.0.0:5000` → `docker pull <host>:5000/pixiu/kube-apiserver:v1.27.3`
 - 软件源：`0.0.0.0:8080` → `http://<host>:8080/rpm`（dnf）或 `/deb`（apt）
 
 客户端示例：
 
 ```bash
 # 镜像（需将 host:5000 加入 Docker insecure-registries）
-docker pull 192.168.1.10:5000/kube-apiserver:v1.27.3
-kubeadm init --image-repository 192.168.1.10:5000 ...
+docker pull 192.168.1.10:5000/pixiu/kube-apiserver:v1.27.3
+kubeadm init --image-repository 192.168.1.10:5000/pixiu ...
 
 # dnf / yum
 dnf install --repofrompath=pixiu,http://192.168.1.10:8080/rpm kubeadm

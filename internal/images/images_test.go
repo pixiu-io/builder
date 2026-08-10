@@ -503,6 +503,46 @@ func TestFetchOnlyAddons(t *testing.T) {
 	}
 }
 
+// TestFetchMultiTag 验证 tags 多版本字段：同 image 多 tag 各自保存为 {name}-{tag}.tar，
+// SourceImage 为含对应 tag 的完整引用。
+func TestFetchMultiTag(t *testing.T) {
+	binDir := t.TempDir()
+	dockerPath := filepath.Join(binDir, "docker")
+	writeFakeDocker(t, dockerPath)
+
+	outDir := t.TempDir()
+	res, err := Fetch(context.Background(), Options{
+		DockerBin:       dockerPath,
+		BuildImage:      "swr.cn-north-4.myhuaweicloud.com/pixiu-public/ubuntu:22.04",
+		PackImage:       defaultPackImage,
+		K8sVersion:      "v1.27.3",
+		ImageRepository: "registry.k8s.io",
+		Arch:            runtime.GOARCH,
+		CoreImages:      []string{},
+		Addons: []config.Addon{
+			{Name: "kubez-ansible", Image: "ccr.ccs.tencentyun.com/pixiucloud/kubez-ansible", Tags: []string{"v2.0.2", "v3.0.3"}},
+		},
+		ImagesOutDir: outDir,
+	})
+	if err != nil {
+		t.Fatalf("Fetch(多 tag) 失败: %v", err)
+	}
+	if len(res.Addons) != 2 {
+		t.Fatalf("多 tag 应 2 个 addon，实际 %d: %+v", len(res.Addons), res.Addons)
+	}
+	for _, want := range []string{"kubez-ansible-v2.0.2.tar", "kubez-ansible-v3.0.3.tar"} {
+		if _, err := os.Stat(filepath.Join(outDir, "addons", want)); err != nil {
+			t.Errorf("addon tar 缺失 %s: %v", want, err)
+		}
+	}
+	if res.Addons[0].SourceImage != "ccr.ccs.tencentyun.com/pixiucloud/kubez-ansible:v2.0.2" {
+		t.Errorf("addons[0].SourceImage = %q", res.Addons[0].SourceImage)
+	}
+	if res.Addons[1].SourceImage != "ccr.ccs.tencentyun.com/pixiucloud/kubez-ansible:v3.0.3" {
+		t.Errorf("addons[1].SourceImage = %q", res.Addons[1].SourceImage)
+	}
+}
+
 func TestFetchWithCoreFilter(t *testing.T) {
 	// CoreFilter：走 kubeadm 生成后按短名过滤；Addons 空列表时不拉附加组件。
 	binDir := t.TempDir()

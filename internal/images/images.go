@@ -219,9 +219,14 @@ func Fetch(ctx context.Context, opts Options) (*Result, error) {
 	if opts.SkipAddons {
 		res.SkipAddons = true
 	} else {
+		// Addon 可能带 tags 多版本字段：展开为多个单 tag 任务，保证同 image 多 tag 各自
+		// 保存为唯一 tar（builder.resolveImages 已展开，此处再次展开幂等，直接调用本包的
+		// 场景同样支持 tags）。
 		for _, a := range opts.Addons {
-			img := a.Image + ":" + a.Tag
-			jobs = append(jobs, saveJob{Name: a.Name, Image: img, SubDir: "addons"})
+			for _, ea := range a.Expanded() {
+				img := ea.Image + ":" + ea.Tag
+				jobs = append(jobs, saveJob{Name: ea.Name, Image: img, SubDir: "addons"})
+			}
 		}
 	}
 

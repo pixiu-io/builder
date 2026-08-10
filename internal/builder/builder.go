@@ -201,15 +201,32 @@ func (p resolvedImages) summary() string {
 	return strings.Join(parts, " | ")
 }
 
-// dedupAddons 按 Name 去重附加组件清单（保留首次出现）。
+// expandAddons 将 addon 清单中的 tags 字段展开为多个单 tag 条目（tags 展开项 Name 带 tag 后缀，
+// 保证同 image 多 tag 的 tar 文件名唯一，如 kubez-ansible-v2.0.2.tar / kubez-ansible-v3.0.3.tar）。
+func expandAddons(in []config.Addon) []config.Addon {
+	var out []config.Addon
+	for _, a := range in {
+		out = append(out, a.Expanded()...)
+	}
+	return out
+}
+
+// dedupAddons 按 Image:Tag 去重附加组件清单（保留首次出现）。
+// 同 image 多 tag（如 kubez-ansible:v2.0.2 与 :v3.0.3）因引用不同不会被去重；
+// 完全重复的镜像引用（同 image 同 tag）才被折叠。
 func dedupAddons(in []config.Addon) []config.Addon {
 	seen := make(map[string]bool, len(in))
 	out := make([]config.Addon, 0, len(in))
 	for _, a := range in {
-		if a.Name == "" || seen[a.Name] {
+		key := strings.TrimSpace(a.Image) + ":" + strings.TrimSpace(a.Tag)
+		if key == ":" {
+			// 无 image/tag 的异常配置：按 Name 去重兜底。
+			key = "name:" + a.Name
+		}
+		if seen[key] {
 			continue
 		}
-		seen[a.Name] = true
+		seen[key] = true
 		out = append(out, a)
 	}
 	return out
@@ -222,7 +239,7 @@ func dedupAddons(in []config.Addon) []config.Addon {
 //   - --skip-addons 时附加组件全部排除（仅核心镜像）
 func resolveImages(opts Options, cfg *config.Config) (resolvedImages, error) {
 	if opts.Mode == "servers" {
-		addons := dedupAddons(cfg.ServerImages.Addons)
+		addons := dedupAddons(expandAddons(cfg.ServerImages.Addons))
 		if len(addons) == 0 {
 			return resolvedImages{}, fmt.Errorf("server_images 配置为空，请在 builder.yaml 中配置后再执行 build servers")
 		}
@@ -234,13 +251,15 @@ func resolveImages(opts Options, cfg *config.Config) (resolvedImages, error) {
 	if opts.OnlyAddons {
 		return resolvedImages{
 			CoreImages: []string{}, // 空非 nil：明确不拉核心镜像
-			Addons:     dedupAddons(cfg.AddonImages.Addons),
+			Addons:     dedupAddons(expandAddons(cfg.AddonImages.Addons)),
 		}, nil
 	}
 
 	addons := cfg.AddonImages.Addons
 	if opts.SkipAddons {
 		addons = nil
+	} else {
+		addons = dedupAddons(expandAddons(addons))
 	}
 	return resolvedImages{CoreImages: nil, Addons: addons}, nil
 }
@@ -333,6 +352,9 @@ func Build(ctx context.Context, opts Options) (*Result, error) {
 	// pulledImages 记录本次 build 拉取到宿主机的镜像（构建后清理 docker 中间镜像用）。
 	var imgMu sync.Mutex
 	var pulledImages []string
+	// savedImages 记录本次 build 保存的镜像 tar（核心 + addon），用于生成 manifest 时回填
+	// source_image（含 tag），使 serve 能按 source_image 解析 repo 与 tag。
+	var savedImages []images.SavedImage
 	step := func(name, status, msg string) {
 		res.Steps = append(res.Steps, StepResult{Name: name, Status: status, Message: msg})
 	}
@@ -445,6 +467,8 @@ func Build(ctx context.Context, opts Options) (*Result, error) {
 			return stepOut{err: fmt.Errorf("[镜像清单与保存] 中断: %s", imgRes.SkipReason)}
 		}
 		imgMu.Lock()
+		savedImages = append(savedImages, imgRes.Core...)
+		savedImages = append(savedImages, imgRes.Addons...)
 		for _, s := range imgRes.Core {
 			pulledImages = append(pulledImages, s.SourceImage)
 		}
@@ -549,6 +573,18 @@ func Build(ctx context.Context, opts Options) (*Result, error) {
 		HostArch:   hostArch(),
 	}
 
+	// sourceByTar 构造 {tar 基名: source_image} 映射，用于 manifest 回填。
+	// savedImages 的 Name 为 tar 基名（不含 .tar），与 manifest 中镜像条目的 Name 一致。
+	sourceByTar := func() map[string]string {
+		m := make(map[string]string, len(savedImages))
+		for _, s := range savedImages {
+			if s.Name != "" && s.SourceImage != "" {
+				m[s.Name] = s.SourceImage
+			}
+		}
+		return m
+	}
+
 	var packTargets []packTarget // 待打包的独立 bundle（目录名 = tar 顶层名）
 	var extraCleanup []string    // 打包后需清理的额外中间目录（all 模式的拆分 bundle）
 	if opts.Mode == "all" {
@@ -557,14 +593,15 @@ func Build(ctx context.Context, opts Options) (*Result, error) {
 		imgName := ImagesBundleName(opts.Arch, opts.K8sVersion)
 		pkgDir := filepath.Join(opts.WorkDir, pkgName)
 		imgDir := filepath.Join(opts.WorkDir, imgName)
-		if err := materializeSplitBundle(bundleDir, pkgDir, []string{"packages"}, meta); err != nil {
+		if err := materializeSplitBundle(bundleDir, pkgDir, []string{"packages"}, meta, nil); err != nil {
 			return stepFail(4, fmt.Errorf("[生成 manifest] 软件包 bundle 失败: %w", err))
 		}
-		if err := materializeSplitBundle(bundleDir, imgDir, []string{"images"}, meta); err != nil {
+		if err := materializeSplitBundle(bundleDir, imgDir, []string{"images"}, meta, sourceByTar()); err != nil {
 			return stepFail(4, fmt.Errorf("[生成 manifest] 镜像 bundle 失败: %w", err))
 		}
 		// 合并工作目录仍写一份完整 manifest，便于排查
 		if m, err := manifest.Generate(bundleDir, meta); err == nil {
+			m.ApplySourceImages(sourceByTar())
 			_ = m.Write(filepath.Join(bundleDir, manifest.ManifestFileName))
 		}
 		packTargets = []packTarget{
@@ -579,6 +616,7 @@ func Build(ctx context.Context, opts Options) (*Result, error) {
 		if err != nil {
 			return stepFail(4, fmt.Errorf("[生成 manifest] 失败: %w", err))
 		}
+		m.ApplySourceImages(sourceByTar())
 		if err := m.Write(filepath.Join(bundleDir, manifest.ManifestFileName)); err != nil {
 			return stepFail(4, err)
 		}
@@ -700,7 +738,9 @@ func ImagesOSBundleName(osName, osVer, arch, k8sVer string) string {
 }
 
 // materializeSplitBundle 从合并构建目录复制指定子目录 + install，并生成独立 manifest。
-func materializeSplitBundle(srcBundle, dstBundle string, parts []string, meta manifest.Meta) error {
+// sourceImages 为 {tar 基名: source_image} 映射（可为 nil），用于回填 manifest 中镜像条目的
+// source_image（含 tag），使 serve 能按 source_image 解析 repo 与 tag。
+func materializeSplitBundle(srcBundle, dstBundle string, parts []string, meta manifest.Meta, sourceImages map[string]string) error {
 	if err := os.RemoveAll(dstBundle); err != nil {
 		return err
 	}
@@ -731,6 +771,7 @@ func materializeSplitBundle(srcBundle, dstBundle string, parts []string, meta ma
 	if err != nil {
 		return err
 	}
+	m.ApplySourceImages(sourceImages)
 	return m.Write(filepath.Join(dstBundle, manifest.ManifestFileName))
 }
 

@@ -53,7 +53,7 @@ var (
 const githubImagesReleaseTag = "images"
 
 // githubServersReleaseTag build servers 默认使用的 GitHub Release 名/tag。
-const githubServersReleaseTag = "servers"
+const githubServersReleaseTag = "download"
 
 // imagesBuildConcurrency build images 多版本时的最大并发数。
 const imagesBuildConcurrency = 10
@@ -93,6 +93,7 @@ var (
 	serveRegistryAddr  string
 	serveRepoAddr      string
 	serveAdvertiseHost string
+	serveNamespace     string
 	serveSkipImages    bool
 	serveSkipPackages  bool
 )
@@ -222,10 +223,10 @@ func newBuildServersCmd() *cobra.Command {
 		Long: `按配置文件 server_images 拉取并打包平台/服务端镜像为 pixiu-server-images-{arch}.tar.gz。
 无需 --os / --os-version / --kubernetes-version；忽略 --skip-addons / --only-addons。
 server_images 为空时直接报错。
---upload 时上传到 --github-tag（未指定则默认 servers；不存在则自动创建）。`,
+--upload 时上传到 --github-tag（未指定则默认 download；不存在则自动创建）。`,
 		Example: `  builder build servers --arch amd64
   builder build servers --arch amd64 --upload
-  builder build servers --arch amd64 --github-tag servers --upload`,
+  builder build servers --arch amd64 --github-tag download --upload`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runBuild(cmd, "servers")
@@ -275,7 +276,7 @@ func addBuildServersFlags(cmd *cobra.Command) {
 func addGitHubFlags(cmd *cobra.Command) {
 	cmd.Flags().StringVar(&githubOwner, "github-owner", "", "GitHub 仓库所有者（覆盖配置文件 github.owner）")
 	cmd.Flags().StringVar(&githubRepo, "github-repo", "", "GitHub 仓库名（覆盖配置文件 github.repo）")
-	cmd.Flags().StringVar(&githubTag, "github-tag", "", "GitHub Release tag（覆盖配置文件 github.tag；build images 默认 images，build servers 默认 servers；其它命令为空时复用 --kubernetes-version）")
+	cmd.Flags().StringVar(&githubTag, "github-tag", "", "GitHub Release tag（覆盖配置文件 github.tag；build images 默认 images，build servers 默认 download；其它命令为空时复用 --kubernetes-version）")
 	cmd.Flags().StringVar(&githubToken, "github-token", "", "GitHub token（覆盖配置文件 github.token；也可用环境变量 GITHUB_TOKEN/GH_TOKEN）")
 }
 
@@ -1076,7 +1077,7 @@ func imagesGitHubTag() string {
 }
 
 // serversGitHubTag 返回 build servers 使用的 GitHub Release tag：
-// 命令行 --github-tag 优先；未指定时默认 servers。
+// 命令行 --github-tag 优先；未指定时默认 download。
 func serversGitHubTag() string {
 	if tag := strings.TrimSpace(githubTag); tag != "" {
 		return tag
@@ -1172,6 +1173,7 @@ func newServeCmd() *cobra.Command {
 				RegistryAddr:  serveRegistryAddr,
 				RepoAddr:      serveRepoAddr,
 				AdvertiseHost: serveAdvertiseHost,
+				Namespace:     serveNamespace,
 				SkipImages:    serveSkipImages,
 				SkipPackages:  serveSkipPackages,
 			})
@@ -1184,6 +1186,7 @@ func newServeCmd() *cobra.Command {
 	cmd.Flags().StringVar(&serveRegistryAddr, "registry-addr", "0.0.0.0:5000", "OCI registry 监听地址")
 	cmd.Flags().StringVar(&serveRepoAddr, "repo-addr", "0.0.0.0:8080", "软件源 HTTP 监听地址")
 	cmd.Flags().StringVar(&serveAdvertiseHost, "advertise-host", serve.LocalIP(), "打印给客户端的主机名/IP（不含端口），默认本机 IP")
+	cmd.Flags().StringVarP(&serveNamespace, "namespace", "n", "pixiu", "registry 发布命名空间（自动导入镜像的引用前缀，如 <host>:5000/pixiu/pause:3.10）")
 	cmd.Flags().BoolVar(&serveSkipImages, "skip-images", false, "不提供镜像 registry")
 	cmd.Flags().BoolVar(&serveSkipPackages, "skip-packages", false, "不提供软件源")
 	return cmd
@@ -1283,6 +1286,10 @@ func newListImagesCmd() *cobra.Command {
 
 			fmt.Printf("附加组件镜像（%s / %s）:\n", listOS, listK8sVersion)
 			for _, a := range cfg.AddonImages.Addons {
+				if len(a.Tags) > 0 {
+					fmt.Printf("  %-16s %s（tags: %s）\n", a.Name, a.Image, strings.Join(a.Tags, ", "))
+					continue
+				}
 				fmt.Printf("  %-16s %s:%s\n", a.Name, a.Image, a.Tag)
 			}
 			fmt.Println()

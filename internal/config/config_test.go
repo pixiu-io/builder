@@ -874,7 +874,93 @@ addon_packages:
 	}
 }
 
-// TestAddonPackagesExplicitEmptyVersion 验证 version 显式为空（""）时解析为空字符串（不锁版本）。
+// TestAddonTagsParse 验证 addon_images / server_images 支持 tags（同 image 多版本）字段解析，
+// 且与旧格式 tag 并存。
+func TestAddonTagsParse(t *testing.T) {
+	content := `
+oses:
+  - name: ubuntu
+    versions: ["22.04"]
+    pkg_manager: apt
+    build_images:
+      "22.04": swr.cn-north-4.myhuaweicloud.com/pixiu-public/ubuntu:22.04
+    archs: ["amd64"]
+versions:
+  - version: v1.27.3
+addon_images:
+  - name: flannel
+    image: "swr.cn-north-4.myhuaweicloud.com/pixiu-public/flannel/flannel"
+    tag: "v0.24.2"
+  - name: cni
+    image: "ccr.ccs.tencentyun.com/pixiucloud/cni"
+    tags: ["v1.0.0", "v1.1.0"]
+server_images:
+  - name: kubez-ansible
+    image: "ccr.ccs.tencentyun.com/pixiucloud/kubez-ansible"
+    tags: ["v2.0.2", "v3.0.3"]
+`
+	cfg, err := Load(writeSample(t, content))
+	if err != nil {
+		t.Fatalf("Load 失败: %v", err)
+	}
+	if len(cfg.AddonImages.Addons) != 2 {
+		t.Fatalf("addon_images 应 2 项，实际 %d", len(cfg.AddonImages.Addons))
+	}
+	// 旧格式 tag 保持
+	if fl, ok := cfg.FindAddon("flannel"); !ok || fl.Tag != "v0.24.2" {
+		t.Errorf("flannel 解析异常: %+v", fl)
+	}
+	// 新格式 tags 解析
+	cni, ok := cfg.FindAddon("cni")
+	if !ok {
+		t.Fatal("期望找到 cni")
+	}
+	if len(cni.Tags) != 2 || cni.Tags[0] != "v1.0.0" || cni.Tags[1] != "v1.1.0" {
+		t.Errorf("cni.Tags 解析异常: %+v", cni.Tags)
+	}
+	// server_images tags 解析
+	ka, ok := cfg.FindServerImage("kubez-ansible")
+	if !ok {
+		t.Fatal("期望找到 kubez-ansible")
+	}
+	if len(ka.Tags) != 2 || ka.Tags[0] != "v2.0.2" || ka.Tags[1] != "v3.0.3" {
+		t.Errorf("kubez-ansible.Tags 解析异常: %+v", ka.Tags)
+	}
+}
+
+func TestAddonExpanded(t *testing.T) {
+	// tags 展开：同 image 多 tag 生成唯一 Name（基名-tag），避免同名 tar 覆盖。
+	expanded := (Addon{Name: "kubez-ansible", Image: "ccr.ccs.tencentyun.com/pixiucloud/kubez-ansible", Tags: []string{"v2.0.2", "v3.0.3"}}).Expanded()
+	if len(expanded) != 2 {
+		t.Fatalf("Expanded 应 2 项，实际 %+v", expanded)
+	}
+	if expanded[0].Name != "kubez-ansible-v2.0.2" || expanded[0].Tag != "v2.0.2" || expanded[0].Image != "ccr.ccs.tencentyun.com/pixiucloud/kubez-ansible" {
+		t.Errorf("expanded[0] = %+v", expanded[0])
+	}
+	if expanded[1].Name != "kubez-ansible-v3.0.3" || expanded[1].Tag != "v3.0.3" {
+		t.Errorf("expanded[1] = %+v", expanded[1])
+	}
+	// 展开后 Tags 清空，再次 Expanded 幂等
+	once := expanded[0].Expanded()
+	if len(once) != 1 || once[0].Name != "kubez-ansible-v2.0.2" {
+		t.Errorf("展开幂等失败: %+v", once)
+	}
+	// tag 旧格式：原样返回
+	single := (Addon{Name: "flannel", Image: "swr.cn-north-4.myhuaweicloud.com/pixiu-public/flannel/flannel", Tag: "v0.24.2"}).Expanded()
+	if len(single) != 1 || single[0].Name != "flannel" || single[0].Tag != "v0.24.2" {
+		t.Errorf("旧格式展开异常: %+v", single)
+	}
+	// Name 为空：按 image 短名推导
+	anon := (Addon{Image: "ccr.ccs.tencentyun.com/pixiucloud/kubez-ansible", Tag: "v2.0.2"}).Expanded()
+	if len(anon) != 1 || anon[0].Name != "kubez-ansible" {
+		t.Errorf("Name 推导异常: %+v", anon)
+	}
+	// tags 中空 tag 被跳过
+	withEmpty := (Addon{Name: "x", Image: "r/x", Tags: []string{"v1", "", "v2"}}).Expanded()
+	if len(withEmpty) != 2 {
+		t.Errorf("空 tag 应被跳过: %+v", withEmpty)
+	}
+}
 func TestAddonPackagesExplicitEmptyVersion(t *testing.T) {
 	content := `
 oses:

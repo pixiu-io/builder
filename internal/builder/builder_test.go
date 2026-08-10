@@ -1529,7 +1529,8 @@ func TestResolveImagesServers(t *testing.T) {
 	cfg.ServerImages.Addons = []config.Addon{
 		{Name: "pixiu", Image: "example.com/pixiu", Tag: "v1"},
 		{Name: "mysql", Image: "example.com/mysql", Tag: "5.7"},
-		{Name: "pixiu", Image: "example.com/pixiu-dup", Tag: "v2"}, // 同名去重
+		{Name: "pixiu", Image: "example.com/pixiu", Tag: "v1"}, // 同 image+tag：按引用去重
+		{Name: "kubez-ansible", Image: "example.com/kubez-ansible", Tags: []string{"v2.0.2", "v3.0.3"}},
 	}
 	p, err := resolveImages(Options{Config: cfg, Mode: "servers", Arch: "amd64"}, cfg)
 	if err != nil {
@@ -1538,12 +1539,25 @@ func TestResolveImagesServers(t *testing.T) {
 	if p.CoreImages == nil || len(p.CoreImages) != 0 {
 		t.Fatalf("servers 核心镜像应为空非 nil，实际 %#v", p.CoreImages)
 	}
-	if len(p.Addons) != 2 || p.Addons[0].Name != "pixiu" || p.Addons[1].Name != "mysql" {
-		t.Fatalf("servers addons = %+v", p.Addons)
+	if len(p.Addons) != 4 {
+		t.Fatalf("servers addons 应 4 个，实际 %+v", p.Addons)
+	}
+	if p.Addons[0].Name != "pixiu" || p.Addons[0].Tag != "v1" {
+		t.Errorf("addons[0] = %+v", p.Addons[0])
+	}
+	if p.Addons[1].Name != "mysql" || p.Addons[1].Tag != "5.7" {
+		t.Errorf("addons[1] = %+v", p.Addons[1])
+	}
+	// tags 展开：同 image 多 tag 生成两个条目，Name 带 tag 后缀避免 tar 冲突。
+	if p.Addons[2].Name != "kubez-ansible-v2.0.2" || p.Addons[2].Image != "example.com/kubez-ansible" || p.Addons[2].Tag != "v2.0.2" {
+		t.Errorf("addons[2] = %+v", p.Addons[2])
+	}
+	if p.Addons[3].Name != "kubez-ansible-v3.0.3" || p.Addons[3].Image != "example.com/kubez-ansible" || p.Addons[3].Tag != "v3.0.3" {
+		t.Errorf("addons[3] = %+v", p.Addons[3])
 	}
 	// 忽略 skip/only-addons
 	p2, err := resolveImages(Options{Config: cfg, Mode: "servers", SkipAddons: true, OnlyAddons: true}, cfg)
-	if err != nil || len(p2.Addons) != 2 {
+	if err != nil || len(p2.Addons) != 4 {
 		t.Fatalf("servers 应忽略 skip/only-addons: err=%v addons=%+v", err, p2.Addons)
 	}
 	cfg.ServerImages.Addons = nil
@@ -1571,6 +1585,54 @@ func TestBuildDryRunServers(t *testing.T) {
 	}
 	checkStep(t, res, "容器内软件包下载", "skipped", "servers 构建跳过软件包")
 	checkStep(t, res, "镜像清单与保存", "ok", "")
+}
+
+// TestBuildServersMultiTag 端到端验证 server_images 的 tags 多版本：
+//   - 同 image 多 tag 各自保存为 {name}-{tag}.tar（不覆盖）；
+//   - manifest 中每个条目的 source_image 为完整引用（含 tag），serve 据此发布多个 tag。
+func TestBuildServersMultiTag(t *testing.T) {
+	cfg := loadSampleConfig(t)
+	cfg.ServerImages.Addons = []config.Addon{
+		{Name: "mysql", Image: "example.com/mysql", Tag: "5.7"},
+		{Name: "kubez-ansible", Image: "ccr.ccs.tencentyun.com/pixiucloud/kubez-ansible", Tags: []string{"v2.0.2", "v3.0.3"}},
+	}
+	binDir := t.TempDir()
+	binPath := filepath.Join(binDir, "docker")
+	writeBuilderImagesFakeDocker(t, binPath)
+
+	res, err := Build(context.Background(), Options{
+		Config: cfg, Arch: "amd64", Mirror: mirror.Official,
+		WorkDir: filepath.Join(t.TempDir(), "work"), OutDir: filepath.Join(t.TempDir(), "dist"),
+		DockerBin: binPath, Mode: "servers", KeepFiles: true,
+	})
+	if err != nil {
+		t.Fatalf("build servers 多 tag 失败: %v", err)
+	}
+	// 各 tag 生成独立 tar，互不覆盖
+	for _, tar := range []string{"mysql.tar", "kubez-ansible-v2.0.2.tar", "kubez-ansible-v3.0.3.tar"} {
+		if _, err := os.Stat(filepath.Join(res.BundleDir, "images", "addons", tar)); err != nil {
+			t.Errorf("addon tar 缺失 %s: %v", tar, err)
+		}
+	}
+	// manifest source_image 含 tag（serve 据此解析 repo 名与 tag）
+	m, err := manifest.Load(filepath.Join(res.BundleDir, manifest.ManifestFileName))
+	if err != nil {
+		t.Fatalf("读取 manifest 失败: %v", err)
+	}
+	byName := map[string]string{}
+	for _, img := range m.Images {
+		byName[img.Name] = img.SourceImage
+	}
+	if byName["mysql"] != "example.com/mysql:5.7" {
+		t.Errorf("mysql source_image = %q", byName["mysql"])
+	}
+	if byName["kubez-ansible-v2.0.2"] != "ccr.ccs.tencentyun.com/pixiucloud/kubez-ansible:v2.0.2" {
+		t.Errorf("kubez-ansible-v2.0.2 source_image = %q", byName["kubez-ansible-v2.0.2"])
+	}
+	if byName["kubez-ansible-v3.0.3"] != "ccr.ccs.tencentyun.com/pixiucloud/kubez-ansible:v3.0.3" {
+		t.Errorf("kubez-ansible-v3.0.3 source_image = %q", byName["kubez-ansible-v3.0.3"])
+	}
+	checkStep(t, res, "镜像清单与保存", "ok", "server_images")
 }
 
 func TestResolveImagesOnlyAddons(t *testing.T) {
