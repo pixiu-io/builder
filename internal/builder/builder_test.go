@@ -304,7 +304,7 @@ func TestBuildDryRunPackagesPinK8sVersion(t *testing.T) {
 }
 
 func TestBuildDryRunPackagesPinK8sVersionDnf(t *testing.T) {
-	// dnf/yum：只钉 version（kubeadm-1.31.6）；架构由下载脚本 --forcearch 约束。
+	// dnf/yum：只钉 version（kubeadm-1.31.6）；架构由下载脚本 repoquery --arch= 约束。
 	cfg := loadSampleConfig(t)
 	var buf bytes.Buffer
 	res, err := Build(context.Background(), Options{
@@ -491,7 +491,8 @@ func TestBuildOpenEulerPackagesNoDockerRepo(t *testing.T) {
 		"mirrors.aliyun.com/kubernetes-new",
 		"dnf makecache",
 		"kubectl-1.35.7 containerd cri-tools",
-		"--forcearch=x86_64",
+		"RPM_ARCH=x86_64",
+		"dnf repoquery -q --available --arch=\"$RPM_ARCH\"",
 	} {
 		if !strings.Contains(script, want) {
 			t.Errorf("openEuler 脚本应含 %q:\n%s", want, script)
@@ -503,6 +504,7 @@ func TestBuildOpenEulerPackagesNoDockerRepo(t *testing.T) {
 		"[docker-ce-stable]",
 		"containerd.repo",
 		"rhel/7/$basearch/stable",
+		"--forcearch=",
 	} {
 		if strings.Contains(script, forbid) {
 			t.Errorf("openEuler 脚本不应含 %q:\n%s", forbid, script)
@@ -577,7 +579,8 @@ func TestBuildOpenEulerInferPackagesNoDockerRepo(t *testing.T) {
 		"mirrors.aliyun.com/kubernetes-new",
 		"dnf makecache",
 		"kubectl-1.35.7 containerd cri-tools",
-		"--forcearch=x86_64",
+		"RPM_ARCH=x86_64",
+		"dnf repoquery -q --available --arch=\"$RPM_ARCH\"",
 	} {
 		if !strings.Contains(script, want) {
 			t.Errorf("openEuler（推断）脚本应含 %q:\n%s", want, script)
@@ -589,6 +592,7 @@ func TestBuildOpenEulerInferPackagesNoDockerRepo(t *testing.T) {
 		"[docker-ce-stable]",
 		"containerd.repo",
 		"rhel/7/$basearch/stable",
+		"--forcearch=",
 	} {
 		if strings.Contains(script, forbid) {
 			t.Errorf("openEuler（推断）脚本不应含 %q:\n%s", forbid, script)

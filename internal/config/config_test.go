@@ -189,7 +189,7 @@ oses:
       "v10": swr.cn-north-4.myhuaweicloud.com/pixiu-public/kylin:v10
     rpm_distro: rhel7
     containerd_pkg: "containerd.io"
-    containerd_repo: "aliyun"
+    containerd_repo: "tuna"
     archs: ["amd64", "arm64"]
 versions:
   - version: v1.31.6
@@ -214,11 +214,11 @@ versions:
 	if res.RPMDistro != "rhel7" {
 		t.Errorf("RPMDistro = %q, want rhel7", res.RPMDistro)
 	}
-	if res.ContainerdPkg != "containerd.io" || res.ContainerdRepo != "aliyun" {
-		t.Errorf("Containerd = %q/%q, want containerd.io/aliyun", res.ContainerdPkg, res.ContainerdRepo)
+	if res.ContainerdPkg != "containerd.io" || res.ContainerdRepo != "tuna" {
+		t.Errorf("Containerd = %q/%q, want containerd.io/tuna", res.ContainerdPkg, res.ContainerdRepo)
 	}
 
-	// 未登记时按发行版推断：dnf + rhel7 + containerd.io/aliyun
+	// 未登记版本：仍命中注册表，透传 tuna（条目已配置）
 	unk, err := cfg.ResolveOS("kylin", "v10-sp3")
 	if err != nil {
 		t.Fatal(err)
@@ -229,6 +229,9 @@ versions:
 	}
 	if unk.PkgManager != "dnf" || unk.RPMDistro != "rhel7" {
 		t.Errorf("未登记版本推导异常: %+v", unk)
+	}
+	if unk.ContainerdRepo != "tuna" {
+		t.Errorf("未登记版本 ContainerdRepo = %q, want tuna", unk.ContainerdRepo)
 	}
 }
 
@@ -548,7 +551,7 @@ func TestInferContainerd(t *testing.T) {
 		{"rocky", "containerd.io", "aliyun"},
 		{"ubuntu", "containerd.io", "aliyun"},
 		{"centos", "containerd.io", "aliyun"}, // 未登记 OS 同样走推断
-		{"kylin", "containerd.io", "aliyun"},  // 麒麟走 docker-ce el7，非系统源
+		{"kylin", "containerd.io", "tuna"}, // 对齐 kubez docker-ce.repo-openEuler.j2
 	}
 	for _, c := range cases {
 		if got := InferContainerdPkg(c.os); got != c.wantPkg {

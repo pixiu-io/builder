@@ -76,6 +76,36 @@ func TestContainerdRepos(t *testing.T) {
 		}
 	}
 
+	// tuna + rhel7：对齐 kubez-ansible docker-ce.repo-openEuler.j2
+	tuna := ContainerdRepos("", "", "rhel7", "tuna")
+	if tuna[0].Name != "docker-ce" {
+		t.Errorf("el7 repo Name = %q, want docker-ce", tuna[0].Name)
+	}
+	for _, want := range []string{
+		"Docker CE Stable - $basearch",
+		"https://mirrors.tuna.tsinghua.edu.cn/docker-ce/linux/centos/7/$basearch/stable",
+		"https://mirrors.tuna.tsinghua.edu.cn/docker-ce/linux/centos/gpg",
+		"[docker-ce-nightly-source]",
+		"enabled=0",
+	} {
+		if !strings.Contains(tuna[0].DnfRepoBlock+tuna[0].DnfKeyURL, want) {
+			t.Errorf("tuna el7 repo 缺少 %q:\n%s", want, tuna[0].DnfRepoBlock)
+		}
+	}
+	// 不应使用 $releasever（Kylin 上会指错仓库）
+	if strings.Contains(tuna[0].DnfRepoBlock, "$releasever") {
+		t.Errorf("el7 docker-ce repo 不应含 $releasever:\n%s", tuna[0].DnfRepoBlock)
+	}
+
+	// el7 即使配置 aliyun，dnf 也强制 tuna（规避阿里云 centos/7 包 403）
+	aliyunEL7 := ContainerdRepos("", "", "rhel7", "aliyun")
+	if !strings.Contains(aliyunEL7[0].DnfRepoBlock, "mirrors.tuna.tsinghua.edu.cn/docker-ce/linux/centos/7") {
+		t.Errorf("el7+aliyun 应强制 tuna dnf host:\n%s", aliyunEL7[0].DnfRepoBlock)
+	}
+	if strings.Contains(aliyunEL7[0].DnfRepoBlock, "mirrors.aliyun.com/docker-ce") {
+		t.Errorf("el7 dnf 不应再含 aliyun docker-ce:\n%s", aliyunEL7[0].DnfRepoBlock)
+	}
+
 	// docker 官方保留（download.docker.com，rpm 段为 rhel）
 	docker := ContainerdRepos("ubuntu", "jammy", "rhel9", "docker")
 	for _, want := range []string{
@@ -175,7 +205,7 @@ func TestBuildPackageListPin(t *testing.T) {
 	}
 	dnf := BuildPackageList("dnf", "v1.28.2", nil, true, "", "amd64")
 	if dnf[0] != "kubeadm-1.28.2" || dnf[1] != "kubelet-1.28.2" || dnf[2] != "kubectl-1.28.2" {
-		t.Errorf("dnf 版本约束异常（应为 X.Y.Z，架构走 --forcearch）: %v", dnf[:3])
+		t.Errorf("dnf 版本约束异常（应为 X.Y.Z，架构走 repoquery --arch=）: %v", dnf[:3])
 	}
 	dnfArm := BuildPackageList("dnf", "v1.28.2", nil, true, "", "arm64")
 	if dnfArm[0] != "kubeadm-1.28.2" {
@@ -208,6 +238,42 @@ func TestRPMArch(t *testing.T) {
 	for _, c := range cases {
 		if got := RPMArch(c.in); got != c.want {
 			t.Errorf("RPMArch(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+func TestCentOS7ExtrasRepos(t *testing.T) {
+	repos := CentOS7ExtrasRepos()
+	if len(repos) != 1 {
+		t.Fatalf("期望 1 个 repo，实际 %d", len(repos))
+	}
+	r := repos[0]
+	for _, want := range []string{
+		"[centos7-extras]",
+		"mirrors.aliyun.com/centos-vault/7.9.2009/extras/$basearch/",
+		"gpgcheck=0",
+	} {
+		if !strings.Contains(r.DnfRepoBlock, want) {
+			t.Errorf("centos7-extras 缺少 %q:\n%s", want, r.DnfRepoBlock)
+		}
+	}
+}
+
+func TestNeedsCentOS7Extras(t *testing.T) {
+	cases := []struct {
+		distro string
+		pkgs   []string
+		want   bool
+	}{
+		{"rhel7", []string{"kubeadm", "docker-ce"}, true},
+		{"rhel7", []string{"docker-ce-26.1.4"}, true},
+		{"rhel7", []string{"kubeadm", "containerd.io"}, false},
+		{"rhel9", []string{"docker-ce"}, false},
+		{"", []string{"docker-ce"}, false},
+	}
+	for _, c := range cases {
+		if got := NeedsCentOS7Extras(c.distro, c.pkgs); got != c.want {
+			t.Errorf("NeedsCentOS7Extras(%q, %v) = %v, want %v", c.distro, c.pkgs, got, c.want)
 		}
 	}
 }

@@ -38,7 +38,8 @@ type Options struct {
 	// openEuler 等从系统源安装的发行版传 "containerd"。
 	ContainerdPkg string
 	// ContainerdRepo containerd 源类型：aliyun=阿里云 mirrors.aliyun.com/docker-ce（默认，空值同）；
-	// ustc=中科大 mirrors.ustc.edu.cn/docker-ce；docker=官方 download.docker.com（可选）；
+	// ustc=中科大 mirrors.ustc.edu.cn/docker-ce；tuna=清华 mirrors.tuna.tsinghua.edu.cn/docker-ce
+	// （对齐 kubez docker-ce.repo-openEuler.j2）；docker=官方 download.docker.com（可选）；
 	// none=不配置 docker-ce 源，containerd 由系统源（everything 等）提供。
 	ContainerdRepo string
 	// Pkgs 待下载软件包清单（k8s + 运行时 + 系统依赖）。
@@ -116,8 +117,9 @@ type DownloadScriptOpts struct {
 	ArchiveDir string
 	// CheckCrictl 是否在脚本内检测 cri-tools 包可用性并写缺失标记。
 	CheckCrictl bool
-	// Arch 构建架构（amd64/arm64）。dnf 分支会映射为 --forcearch，避免 kubernetes-new
-	// 多架构扁平仓库在 Kylin 等系统上把 aarch64/x86_64 一并纳入解析。
+	// Arch 构建架构（amd64/arm64）。dnf 分支会映射为 RPM 架构，经 repoquery --arch=
+	// 解析成唯一 NEVRA，避免 kubernetes-new 多架构扁平仓库在 Kylin 等系统上把
+	// aarch64/x86_64 一并纳入解析（仅 --forcearch 不够）。
 	Arch string
 }
 
@@ -169,24 +171,47 @@ func BuildDownloadScript(opts DownloadScriptOpts) string {
 	var b strings.Builder
 	switch opts.PkgManager {
 	case "dnf":
-		// kubernetes-new rpm 为多架构扁平仓库；Kylin 等系统上仅 pin version 会把异架构包一并纳入
-		// 解析并报 "does not have a compatible architecture"。用 --forcearch 固定目标架构。
-		// 注意：不能写成 kubeadm-1.31.6.x86_64（非法 NEVRA，dnf 会把 .x86_64 当成 version）。
-		forceArch := ""
-		if ra := RPMArch(opts.Arch); ra != "" {
-			forceArch = "--forcearch=" + ra + " "
-		}
+		// kubernetes-new rpm 是「单 repodata + 多架构包」扁平仓库。
+		// 仅 pin version（kubeadm-1.31.6）时，dnf 会把 aarch64/ppc64le/s390x/x86_64
+		// 全部当作候选，在 Kylin 等系统上报：
+		//   conflicting requests / does not have a compatible architecture
+		// --forcearch 只覆盖 arch/basearch 变量，并不过滤候选包（dnf5 文档也要求再加 --arch）。
+		// 正确做法：repoquery --arch=<rpmArch> 解析成唯一 NEVRA（name-ver-rel.arch）再下载。
+		// 切记不要写 kubeadm-1.31.6.x86_64：那不是合法 NEVRA，.x86_64 会被当成 version。
+		rpmArch := RPMArch(opts.Arch)
 		b.WriteString("set -e\n")
 		b.WriteString(DnfSourceScript(opts.Repos))
 		b.WriteString("dnf makecache\n")
 		b.WriteString("dnf -y install dnf-plugins-core\n")
 		b.WriteString("mkdir -p " + opts.ArchiveDir + "\n")
-		b.WriteString(fmt.Sprintf("if dnf %sinstall -y --downloadonly --downloaddir=%s %s 2>/dev/null; then :\n", forceArch, opts.ArchiveDir, pkgs))
-		b.WriteString(fmt.Sprintf("else\n  dnf %sdownload --resolve --destdir=%s %s\nfi\n", forceArch, opts.ArchiveDir, pkgs))
-		// 依赖闭包验证：--assumeno 模拟安装，返回 0 表示闭包完整
-		b.WriteString(fmt.Sprintf("dnf %sinstall --assumeno %s >/dev/null\n", forceArch, pkgs))
+		// install_weak_deps=False：跳过 docker-ce 的弱依赖 docker-compose-plugin 等
+		//（镜像站对 compose-plugin 常 403，且 k8s/containerd 离线包不需要）。
+		const dnfWeak = "--setopt=install_weak_deps=False "
+		if rpmArch != "" {
+			// 将包规格解析为当前架构的唯一 NEVRA；解析失败则保留原名（虚拟包/provides）。
+			b.WriteString(fmt.Sprintf(`RPM_ARCH=%s
+PKGS_RESOLVED=""
+for p in %s; do
+  n=$(dnf repoquery -q --available --arch="$RPM_ARCH" --latest-limit=1 --qf '%%{name}-%%{version}-%%{release}.%%{arch}' "$p" 2>/dev/null | head -n1 || true)
+  if [ -n "$n" ]; then PKGS_RESOLVED="$PKGS_RESOLVED $n"; else PKGS_RESOLVED="$PKGS_RESOLVED $p"; fi
+done
+PKGS_RESOLVED=$(echo "$PKGS_RESOLVED" | sed 's/^ *//')
+`, rpmArch, pkgs))
+			pkgsVar := "$PKGS_RESOLVED"
+			b.WriteString(fmt.Sprintf("if dnf %sinstall -y --downloadonly --downloaddir=%s %s; then :\n", dnfWeak, opts.ArchiveDir, pkgsVar))
+			b.WriteString(fmt.Sprintf("else\n  dnf %sdownload --resolve --destdir=%s %s\nfi\n", dnfWeak, opts.ArchiveDir, pkgsVar))
+			// 注意：不调用 dnf install --assumeno。依赖闭包已由 downloadonly/download --resolve 验证；
+			// --assumeno 在解析成功但拒绝安装时仍返回 1，并打印 "Operation aborted."，在 set -e 下会误杀成功流程。
+		} else {
+			b.WriteString(fmt.Sprintf("if dnf %sinstall -y --downloadonly --downloaddir=%s %s; then :\n", dnfWeak, opts.ArchiveDir, pkgs))
+			b.WriteString(fmt.Sprintf("else\n  dnf %sdownload --resolve --destdir=%s %s\nfi\n", dnfWeak, opts.ArchiveDir, pkgs))
+		}
 		if opts.CheckCrictl {
-			b.WriteString(fmt.Sprintf("if ! dnf %slist --available cri-tools >/dev/null 2>&1; then touch /out/cri-tools-missing; fi\n", forceArch))
+			if rpmArch != "" {
+				b.WriteString(fmt.Sprintf("if ! dnf repoquery -q --available --arch=%s cri-tools >/dev/null 2>&1; then touch /out/cri-tools-missing; fi\n", rpmArch))
+			} else {
+				b.WriteString("if ! dnf list --available cri-tools >/dev/null 2>&1; then touch /out/cri-tools-missing; fi\n")
+			}
 		}
 	case "yum": // CentOS 7 等无 dnf，仅 yum。源配置与 dnf 相同（/etc/yum.repos.d/ + rpm --import）。
 		b.WriteString("set -e\n")
@@ -255,6 +280,11 @@ func Fetch(ctx context.Context, opts Options) (*Result, error) {
 		} else {
 			repos = append(K8sRepos(opts.K8sMinor), ContainerdRepos(opts.AptOS, opts.Codename, opts.RPMDistro, opts.ContainerdRepo)...)
 		}
+	}
+	// Kylin/openEuler（rhel7）装 docker-ce 时，rootless-extras 依赖 fuse-overlayfs/slirp4netns，
+	// 系统源通常没有，需追加 CentOS 7 extras vault（见 CentOS7ExtrasRepos）。
+	if NeedsCentOS7Extras(opts.RPMDistro, opts.Pkgs) {
+		repos = append(repos, CentOS7ExtrasRepos()...)
 	}
 	script := BuildDownloadScript(DownloadScriptOpts{
 		PkgManager:  opts.PkgManager,
