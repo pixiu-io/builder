@@ -156,12 +156,15 @@ func mergeAddonPackages(core []string, addons []config.AddonPackage, pkgManager 
 //   - 非 only-addons：核心始终为默认清单（BuildPackageList：kubeadm/kubelet/kubectl +
 //     containerdPkg + cri-tools + 系统依赖）；mode ∈ {packages, all} 且未 --skip-addons 时
 //     并入顶层 addon_packages（按包名与核心去重，核心优先）
+//
+// 非 only-addons 且指定了 k8s 版本时，核心 k8s 三件套按 k8sVersion 精确 pin 到对应 patch
+// （BuildPackageList pinK8s=true），避免从源内拉取同 minor 的最新 patch。
 func resolvePackageList(opts Options, cfg *config.Config, pkgManager, k8sVersion, containerdPkg string) []string {
 	if opts.OnlyAddons {
 		return addonPackageList(cfg.AddonPackages, pkgManager)
 	}
 
-	def := packages.BuildPackageList(pkgManager, k8sVersion, cfg.SystemDepsForOS(opts.OS, opts.OSVersion), false, containerdPkg)
+	def := packages.BuildPackageList(pkgManager, k8sVersion, cfg.SystemDepsForOS(opts.OS, opts.OSVersion), k8sVersion != "", containerdPkg)
 	// 顶层 addon_packages 额外并入（与核心清单按包名去重）。
 	if !opts.SkipAddons && len(cfg.AddonPackages) > 0 {
 		def = mergeAddonPackages(def, cfg.AddonPackages, pkgManager)
