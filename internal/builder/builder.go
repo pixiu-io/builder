@@ -159,6 +159,9 @@ func mergeAddonPackages(core []string, addons []config.AddonPackage, pkgManager 
 //
 // 非 only-addons 且指定了 k8s 版本时，核心 k8s 三件套按 k8sVersion 精确 pin 到对应 patch
 // （BuildPackageList pinK8s=true），避免从源内拉取同 minor 的最新 patch。
+//
+// 注：openEuler 等系统 containerd 与 addon docker-ce（→containerd.io）Conflicts 时，
+// 清单仍同时保留两者；下载脚本分两批拉取（见 packages.SplitSystemContainerdAndDockerCE）。
 func resolvePackageList(opts Options, cfg *config.Config, pkgManager, k8sVersion, containerdPkg string) []string {
 	if opts.OnlyAddons {
 		return addonPackageList(cfg.AddonPackages, pkgManager)

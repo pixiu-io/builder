@@ -54,8 +54,7 @@ func TestBuildDownloadScriptDNF(t *testing.T) {
 		"rpm --import",
 		"https://mirrors.aliyun.com/kubernetes-new/core/stable/v1.28/rpm/",
 		"https://mirrors.aliyun.com/docker-ce/linux/centos/9/$basearch/stable",
-		"RPM_ARCH=x86_64",
-		"dnf repoquery -q --available --arch=\"$RPM_ARCH\"",
+		`dnf repoquery -q --available --arch="x86_64"`,
 		"PKGS_RESOLVED",
 		"--setopt=install_weak_deps=False",
 		"dnf --setopt=install_weak_deps=False install -y --downloadonly --downloaddir=/out $PKGS_RESOLVED",
@@ -308,15 +307,47 @@ func TestFetchContainerdRepoNoneDNF(t *testing.T) {
 			t.Errorf("containerd_repo=none 脚本应含 %q:\n%s", want, script)
 		}
 	}
-	// 不应配置 docker containerd 源
+	// 不应配置 docker-ce 源（本用例清单无 docker-ce）
 	for _, forbid := range []string{
 		"/etc/yum.repos.d/containerd.repo",
+		"/etc/yum.repos.d/docker-ce.repo",
 		"[docker-ce-stable]",
 		"download.docker.com",
 		"rhel/7/$basearch/stable",
 	} {
 		if strings.Contains(script, forbid) {
 			t.Errorf("containerd_repo=none 脚本不应含 %q:\n%s", forbid, script)
+		}
+	}
+}
+
+func TestFetchOpenEulerDockerCEAddonAddsTunaRepo(t *testing.T) {
+	// 回归：openEuler containerd_repo=none，但 addon 含 docker-ce 时需追加 tuna centos/7 源
+	// （对齐 kubez docker-ce.repo-openEuler.j2），否则 No match: docker-ce。
+	res, err := Fetch(context.Background(), Options{
+		OutDir:         t.TempDir(),
+		BuildImage:     "swr.cn-north-4.myhuaweicloud.com/pixiu-public/openeuler:22.03-lts-sp3",
+		PkgManager:     "dnf",
+		K8sMinor:       "v1.31",
+		RPMDistro:      "rhel7",
+		ContainerdRepo: "none",
+		Arch:           "amd64",
+		Pkgs:           []string{"kubeadm-1.31.6", "containerd", "cri-tools", "docker-ce"},
+		DryRun:         true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := res.Command
+	for _, want := range []string{
+		"/etc/yum.repos.d/kubernetes.repo",
+		"/etc/yum.repos.d/docker-ce.repo",
+		"mirrors.tuna.tsinghua.edu.cn/docker-ce/linux/centos/7/$basearch/stable",
+		"[centos7-extras]",
+		"--setopt=install_weak_deps=False",
+	} {
+		if !strings.Contains(script, want) {
+			t.Errorf("openEuler+docker-ce addon 脚本应含 %q:\n%s", want, script)
 		}
 	}
 }

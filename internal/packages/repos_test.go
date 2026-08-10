@@ -277,3 +277,53 @@ func TestNeedsCentOS7Extras(t *testing.T) {
 		}
 	}
 }
+
+func TestSplitSystemContainerdAndDockerCE(t *testing.T) {
+	// 无需拆分
+	p, d := SplitSystemContainerdAndDockerCE([]string{"kubeadm", "containerd", "cri-tools"})
+	if d != nil || len(p) != 3 {
+		t.Fatalf("无 docker-ce 不应拆分: primary=%v docker=%v", p, d)
+	}
+	p, d = SplitSystemContainerdAndDockerCE([]string{"kubeadm", "containerd.io", "docker-ce"})
+	if d != nil {
+		t.Fatalf("containerd.io+docker-ce 同栈不应拆分: docker=%v", d)
+	}
+
+	// openEuler：系统 containerd + docker-ce → 两批
+	p, d = SplitSystemContainerdAndDockerCE([]string{"kubeadm-1.31.6", "containerd", "cri-tools", "docker-ce", "ipset"})
+	if d == nil {
+		t.Fatal("应拆出 dockerBatch")
+	}
+	if !PackageListHasPrefix(p, "containerd") || PackageListHasPrefix(p, "docker-ce") {
+		t.Errorf("primary 应含 containerd、不含 docker-ce: %v", p)
+	}
+	if !PackageListHasPrefix(d, "docker-ce") || !PackageListHasPrefix(d, "containerd.io") {
+		t.Errorf("dockerBatch 应含 docker-ce + containerd.io: %v", d)
+	}
+	if PackageListHasPrefix(d, "kubeadm") {
+		t.Errorf("dockerBatch 不应含 kubeadm: %v", d)
+	}
+}
+
+func TestBuildDownloadScriptDNFSplitsContainerdAndDockerCE(t *testing.T) {
+	s := BuildDownloadScript(DownloadScriptOpts{
+		PkgManager: "dnf",
+		Repos:      append(K8sRepos("v1.31"), CentOS7ExtrasRepos()...),
+		Pkgs:       []string{"kubeadm-1.31.6", "containerd", "cri-tools", "docker-ce"},
+		Arch:       "amd64",
+	})
+	if !strings.Contains(s, "分两批下载") {
+		t.Errorf("应注明分两批下载:\n%s", s)
+	}
+	// 两批：第一批含 containerd；第二批含 containerd.io + docker-ce
+	if !strings.Contains(s, "for p in kubeadm-1.31.6 containerd cri-tools;") {
+		t.Errorf("第一批应含系统 containerd、不含 docker-ce:\n%s", s)
+	}
+	if !strings.Contains(s, "for p in containerd.io docker-ce;") {
+		t.Errorf("第二批应含 containerd.io docker-ce:\n%s", s)
+	}
+	// downloadonly 应出现两次
+	if strings.Count(s, "--downloadonly") != 2 {
+		t.Errorf("--downloadonly 应出现 2 次，实际 %d:\n%s", strings.Count(s, "--downloadonly"), s)
+	}
+}

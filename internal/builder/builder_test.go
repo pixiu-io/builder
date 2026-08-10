@@ -491,8 +491,7 @@ func TestBuildOpenEulerPackagesNoDockerRepo(t *testing.T) {
 		"mirrors.aliyun.com/kubernetes-new",
 		"dnf makecache",
 		"kubectl-1.35.7 containerd cri-tools",
-		"RPM_ARCH=x86_64",
-		"dnf repoquery -q --available --arch=\"$RPM_ARCH\"",
+		`dnf repoquery -q --available --arch="x86_64"`,
 	} {
 		if !strings.Contains(script, want) {
 			t.Errorf("openEuler 脚本应含 %q:\n%s", want, script)
@@ -579,8 +578,7 @@ func TestBuildOpenEulerInferPackagesNoDockerRepo(t *testing.T) {
 		"mirrors.aliyun.com/kubernetes-new",
 		"dnf makecache",
 		"kubectl-1.35.7 containerd cri-tools",
-		"RPM_ARCH=x86_64",
-		"dnf repoquery -q --available --arch=\"$RPM_ARCH\"",
+		`dnf repoquery -q --available --arch="x86_64"`,
 	} {
 		if !strings.Contains(script, want) {
 			t.Errorf("openEuler（推断）脚本应含 %q:\n%s", want, script)
@@ -1456,6 +1454,26 @@ func TestResolvePackageListOnlyAddons(t *testing.T) {
 	got = resolvePackageList(Options{Config: emptyCfg, OS: "ubuntu", OnlyAddons: true}, emptyCfg, "apt", "v1.27.3", "containerd.io")
 	if len(got) != 0 {
 		t.Errorf("only-addons 且无 addon_packages 应为空，实际 %v", got)
+	}
+}
+
+func TestResolvePackageListOpenEulerKeepsDockerCEAddon(t *testing.T) {
+	// openEuler 核心用系统 containerd，addon 仍保留 docker-ce；下载阶段分两批规避 Conflicts。
+	cfg := loadSampleConfig(t)
+	cfg.AddonPackages = []config.AddonPackage{
+		{Name: "ipset"},
+		{Name: "docker-ce"},
+		{Name: "vim"},
+	}
+	got := resolvePackageList(Options{Config: cfg, OS: "openEuler"}, cfg, "dnf", "v1.31.6", "containerd")
+	found := map[string]bool{}
+	for _, p := range got {
+		found[p] = true
+	}
+	for _, want := range []string{"containerd", "docker-ce", "ipset", "vim", "kubeadm-1.31.6"} {
+		if !found[want] {
+			t.Errorf("清单应含 %q: %v", want, got)
+		}
 	}
 }
 

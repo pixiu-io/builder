@@ -191,6 +191,46 @@ func NeedsCentOS7Extras(rpmDistro string, pkgs []string) bool {
 	return rpmDistro == "rhel7" && PackageListHasPrefix(pkgs, "docker-ce")
 }
 
+// IsSystemContainerdPkg 判断是否为系统源 containerd 包（containerd / containerd-version），
+// 排除 docker-ce 源的 containerd.io。
+func IsSystemContainerdPkg(p string) bool {
+	p = strings.TrimSpace(p)
+	if p == "containerd" {
+		return true
+	}
+	return strings.HasPrefix(p, "containerd-") && !strings.HasPrefix(p, "containerd.io")
+}
+
+// SplitSystemContainerdAndDockerCE 在同清单同时含系统 containerd 与 docker-ce 时拆成两批下载：
+//   primary：去掉 docker-ce*（保留系统 containerd + k8s 等）
+//   dockerBatch：docker-ce* + containerd.io（docker-ce 硬依赖；与系统 containerd Conflicts）
+// 无需拆分时返回 (pkgs, nil)。离线包可同时收录两套运行时 RPM，安装时二选一。
+func SplitSystemContainerdAndDockerCE(pkgs []string) (primary, dockerBatch []string) {
+	hasSys, hasDocker := false, false
+	for _, p := range pkgs {
+		if IsSystemContainerdPkg(p) {
+			hasSys = true
+		}
+		if PackageListHasPrefix([]string{p}, "docker-ce") {
+			hasDocker = true
+		}
+	}
+	if !(hasSys && hasDocker) {
+		return pkgs, nil
+	}
+	for _, p := range pkgs {
+		if PackageListHasPrefix([]string{p}, "docker-ce") {
+			dockerBatch = append(dockerBatch, p)
+			continue
+		}
+		primary = append(primary, p)
+	}
+	if !PackageListHasPrefix(dockerBatch, "containerd.io") {
+		dockerBatch = append([]string{"containerd.io"}, dockerBatch...)
+	}
+	return primary, dockerBatch
+}
+
 // ContainerdRepos 返回 containerd 源（docker-ce 源）。
 // repoType 决定源镜像：aliyun=阿里云 mirrors.aliyun.com/docker-ce（默认，空值同）；
 // ustc=中科大 mirrors.ustc.edu.cn/docker-ce；tuna=清华 mirrors.tuna.tsinghua.edu.cn/docker-ce
