@@ -162,7 +162,7 @@ fi
 `
 
 // BuildDownloadScript 构造容器内完整下载脚本：
-// 配置源（k8s + containerd）→ 更新缓存 → 递归下载 → 依赖闭包验证 → cri-tools 检测。
+// 配置源（k8s + containerd）→ 更新缓存 → 递归下载 → cri-tools 检测。
 func BuildDownloadScript(opts DownloadScriptOpts) string {
 	if opts.ArchiveDir == "" {
 		opts.ArchiveDir = "/out"
@@ -178,6 +178,8 @@ func BuildDownloadScript(opts DownloadScriptOpts) string {
 		// --forcearch 只覆盖 arch/basearch 变量，并不过滤候选包（dnf5 文档也要求再加 --arch）。
 		// 正确做法：repoquery --arch=<rpmArch> 解析成唯一 NEVRA（name-ver-rel.arch）再下载。
 		// 切记不要写 kubeadm-1.31.6.x86_64：那不是合法 NEVRA，.x86_64 会被当成 version。
+		//
+		// openEuler 等：系统 containerd 与 docker-ce（→containerd.io）Conflicts，须分两批下载。
 		rpmArch := RPMArch(opts.Arch)
 		b.WriteString("set -e\n")
 		b.WriteString(DnfSourceScript(opts.Repos))
@@ -187,24 +189,15 @@ func BuildDownloadScript(opts DownloadScriptOpts) string {
 		// install_weak_deps=False：跳过 docker-ce 的弱依赖 docker-compose-plugin 等
 		//（镜像站对 compose-plugin 常 403，且 k8s/containerd 离线包不需要）。
 		const dnfWeak = "--setopt=install_weak_deps=False "
-		if rpmArch != "" {
-			// 将包规格解析为当前架构的唯一 NEVRA；解析失败则保留原名（虚拟包/provides）。
-			b.WriteString(fmt.Sprintf(`RPM_ARCH=%s
-PKGS_RESOLVED=""
-for p in %s; do
-  n=$(dnf repoquery -q --available --arch="$RPM_ARCH" --latest-limit=1 --qf '%%{name}-%%{version}-%%{release}.%%{arch}' "$p" 2>/dev/null | head -n1 || true)
-  if [ -n "$n" ]; then PKGS_RESOLVED="$PKGS_RESOLVED $n"; else PKGS_RESOLVED="$PKGS_RESOLVED $p"; fi
-done
-PKGS_RESOLVED=$(echo "$PKGS_RESOLVED" | sed 's/^ *//')
-`, rpmArch, pkgs))
-			pkgsVar := "$PKGS_RESOLVED"
-			b.WriteString(fmt.Sprintf("if dnf %sinstall -y --downloadonly --downloaddir=%s %s; then :\n", dnfWeak, opts.ArchiveDir, pkgsVar))
-			b.WriteString(fmt.Sprintf("else\n  dnf %sdownload --resolve --destdir=%s %s\nfi\n", dnfWeak, opts.ArchiveDir, pkgsVar))
-			// 注意：不调用 dnf install --assumeno。依赖闭包已由 downloadonly/download --resolve 验证；
-			// --assumeno 在解析成功但拒绝安装时仍返回 1，并打印 "Operation aborted."，在 set -e 下会误杀成功流程。
-		} else {
-			b.WriteString(fmt.Sprintf("if dnf %sinstall -y --downloadonly --downloaddir=%s %s; then :\n", dnfWeak, opts.ArchiveDir, pkgs))
-			b.WriteString(fmt.Sprintf("else\n  dnf %sdownload --resolve --destdir=%s %s\nfi\n", dnfWeak, opts.ArchiveDir, pkgs))
+		primary, dockerBatch := SplitSystemContainerdAndDockerCE(opts.Pkgs)
+		batches := [][]string{primary}
+		if len(dockerBatch) > 0 {
+			batches = append(batches, dockerBatch)
+			b.WriteString("# 系统 containerd 与 docker-ce/containerd.io Conflicts：分两批下载到同一目录\n")
+		}
+		for _, batch := range batches {
+			batchPkgs := strings.Join(batch, " ")
+			writeDnfDownloadBatch(&b, opts.ArchiveDir, batchPkgs, rpmArch, dnfWeak)
 		}
 		if opts.CheckCrictl {
 			if rpmArch != "" {
@@ -246,6 +239,26 @@ PKGS_RESOLVED=$(echo "$PKGS_RESOLVED" | sed 's/^ *//')
 	return b.String()
 }
 
+// writeDnfDownloadBatch 写入一批 dnf 下载命令（可选按 arch repoquery 解析 NEVRA）。
+// 注意：不调用 dnf install --assumeno——依赖闭包已由 downloadonly/download --resolve 验证；
+// --assumeno 在解析成功但拒绝安装时仍返回 1，并打印 "Operation aborted."，在 set -e 下会误杀成功流程。
+func writeDnfDownloadBatch(b *strings.Builder, archiveDir, batchPkgs, rpmArch, dnfWeak string) {
+	if rpmArch != "" {
+		b.WriteString(fmt.Sprintf(`PKGS_RESOLVED=""
+for p in %s; do
+  n=$(dnf repoquery -q --available --arch="%s" --latest-limit=1 --qf '%%{name}-%%{version}-%%{release}.%%{arch}' "$p" 2>/dev/null | head -n1 || true)
+  if [ -n "$n" ]; then PKGS_RESOLVED="$PKGS_RESOLVED $n"; else PKGS_RESOLVED="$PKGS_RESOLVED $p"; fi
+done
+PKGS_RESOLVED=$(echo "$PKGS_RESOLVED" | sed 's/^ *//')
+`, batchPkgs, rpmArch))
+		b.WriteString(fmt.Sprintf("if dnf %sinstall -y --downloadonly --downloaddir=%s $PKGS_RESOLVED; then :\n", dnfWeak, archiveDir))
+		b.WriteString(fmt.Sprintf("else\n  dnf %sdownload --resolve --destdir=%s $PKGS_RESOLVED\nfi\n", dnfWeak, archiveDir))
+		return
+	}
+	b.WriteString(fmt.Sprintf("if dnf %sinstall -y --downloadonly --downloaddir=%s %s; then :\n", dnfWeak, archiveDir, batchPkgs))
+	b.WriteString(fmt.Sprintf("else\n  dnf %sdownload --resolve --destdir=%s %s\nfi\n", dnfWeak, archiveDir, batchPkgs))
+}
+
 // Fetch 在容器内下载软件包并收集到 OutDir 下。
 // docker 不可用时返回 skipped 结果而非错误。
 // 若容器内检测到 cri-tools 包不可用，则回退下载 crictl 静态 tar 到 OutDir/runtime/。
@@ -272,11 +285,14 @@ func Fetch(ctx context.Context, opts Options) (*Result, error) {
 
 	repos := []Repo{}
 	if !opts.SkipK8sContainerdRepos {
-		// containerd_repo=none（openEuler 系统源场景）：只配置 k8s 源，不配置 docker-ce 源
-		// （docker 官方无 rhel/7 仓库，配置会导致 dnf makecache 失败）；否则按配置的
-		// 镜像源（默认阿里云 mirrors.aliyun.com/docker-ce，可配置 ustc/docker）追加 containerd 源。
+		// containerd_repo=none（openEuler 系统源场景）：核心只配置 k8s 源，containerd 走系统源，
+		// 不配 docker-ce 源。但 addon_packages 常含 docker-ce（builder.yaml 顶层），此时需追加
+		// 对齐 kubez docker-ce.repo-openEuler.j2 的 tuna+centos/7 源，否则 dnf 报 No match: docker-ce。
 		if opts.ContainerdRepo == "none" {
 			repos = K8sRepos(opts.K8sMinor)
+			if PackageListHasPrefix(opts.Pkgs, "docker-ce") {
+				repos = append(repos, ContainerdRepos(opts.AptOS, opts.Codename, "rhel7", "tuna")...)
+			}
 		} else {
 			repos = append(K8sRepos(opts.K8sMinor), ContainerdRepos(opts.AptOS, opts.Codename, opts.RPMDistro, opts.ContainerdRepo)...)
 		}

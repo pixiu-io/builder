@@ -88,7 +88,9 @@ oses:
     # openEuler 对应 download.docker.com/linux/rhel/7/ 为 404（docker 官方已停止发布 RHEL7 仓库），
     # 因此 containerd 改为从系统源（everything 仓库，含 containerd-1.2.0-315.oe2203sp3）安装：
     #   containerd_pkg: "containerd"（系统源包名，非 docker-ce 源的 containerd.io）
-    #   containerd_repo: "none"（不配置 download.docker.com 源，避免 dnf makecache 失败）
+    #   containerd_repo: "none"（不配置 docker-ce 源，containerd 走系统源）
+    #   若 addon 含 docker-ce：自动追加 tuna centos/7 源；下载时与系统 containerd 分两批
+    #   （二者 Conflicts），离线包可同时收录，安装时二选一。
     containerd_pkg: "containerd"
     containerd_repo: "none"
     archs: ["amd64", "arm64"]
