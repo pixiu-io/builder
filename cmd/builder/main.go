@@ -45,6 +45,7 @@ var (
 	buildKeepFiles   bool
 	buildVerbose     bool
 	buildKubeadmDir  string
+	buildPackImage   string
 	buildUpload      bool
 )
 
@@ -256,6 +257,7 @@ func addBuildCommonFlags(cmd *cobra.Command, withOS bool) {
 	cmd.Flags().BoolVar(&buildKeepFiles, "keep-files", false, "构建完成后保留中间文件（默认清理）")
 	cmd.Flags().BoolVarP(&buildVerbose, "verbose", "v", false, "打印详细过程日志")
 	cmd.Flags().StringVar(&buildKubeadmDir, "kubeadm-dir", "./kube", "kubeadm 二进制缓存目录")
+	cmd.Flags().StringVar(&buildPackImage, "pack-image", "", "镜像打包工具容器镜像（含 docker CLI；默认 pixiukit/docker:24-cli，ARM 宿主需配置对应架构镜像）")
 	cmd.Flags().BoolVar(&buildUpload, "upload", false, "构建完成后将产物上传到 GitHub Release")
 	addGitHubFlags(cmd)
 }
@@ -269,6 +271,7 @@ func addBuildServersFlags(cmd *cobra.Command) {
 	cmd.Flags().BoolVar(&buildDryRun, "dry-run", false, "仅演练管线，不执行真实下载/拉取")
 	cmd.Flags().BoolVar(&buildKeepFiles, "keep-files", false, "构建完成后保留中间文件（默认清理）")
 	cmd.Flags().BoolVarP(&buildVerbose, "verbose", "v", false, "打印详细过程日志")
+	cmd.Flags().StringVar(&buildPackImage, "pack-image", "", "镜像打包工具容器镜像（含 docker CLI；默认 pixiukit/docker:24-cli，ARM 宿主需配置对应架构镜像）")
 	cmd.Flags().BoolVar(&buildUpload, "upload", false, "构建完成后将产物上传到 GitHub Release（默认 tag=servers）")
 	addGitHubFlags(cmd)
 }
@@ -296,6 +299,7 @@ type buildFlagValues struct {
 	KeepFiles  bool
 	Verbose    bool
 	KubeadmDir string
+	PackImage  string
 }
 
 // buildFlagChanged 记录各 flag 是否被命令行显式设置（true 表示命令行值优先）。
@@ -315,6 +319,7 @@ type buildFlagChanged struct {
 	KeepFiles  bool
 	Verbose    bool
 	KubeadmDir bool
+	PackImage  bool
 }
 
 // buildOptions build 子命令合并后的生效参数（Mirror 保持字符串，由调用方解析为 mirror.Mirror）。
@@ -335,6 +340,8 @@ type buildOptions struct {
 	KubeadmDir string
 	// DeferDockerImageCleanup 多版本并发构建时置 true：各版本不立刻 docker rmi。
 	DeferDockerImageCleanup bool
+	// PackImage 镜像打包容器镜像，为空时 images 包用内置默认。
+	PackImage string
 }
 
 // resolveBuildOptions 按"命令行 > 配置文件 build 节 > flag 内置默认值"合并 build 参数。
@@ -356,6 +363,7 @@ func resolveBuildOptions(cfg *config.Config, vals buildFlagValues, changed build
 		KeepFiles:  resolveBool(changed.KeepFiles, vals.KeepFiles, cfg.Build.KeepFiles),
 		Verbose:    resolveBool(changed.Verbose, vals.Verbose, cfg.Build.Verbose),
 		KubeadmDir: resolveString(changed.KubeadmDir, vals.KubeadmDir, cfg.Build.KubeadmDir),
+		PackImage:  resolveString(changed.PackImage, vals.PackImage, cfg.Build.PackImage),
 	}
 }
 
@@ -447,6 +455,7 @@ func runBuild(cmd *cobra.Command, mode string) error {
 		KeepFiles:  buildKeepFiles,
 		Verbose:    buildVerbose,
 		KubeadmDir: buildKubeadmDir,
+		PackImage:  buildPackImage,
 	}, buildFlagChanged{
 		OS:         cmd.Flags().Changed("os"),
 		OSVersion:  cmd.Flags().Changed("os-version"),
@@ -462,6 +471,7 @@ func runBuild(cmd *cobra.Command, mode string) error {
 		KeepFiles:  cmd.Flags().Changed("keep-files"),
 		Verbose:    cmd.Flags().Changed("verbose"),
 		KubeadmDir: cmd.Flags().Changed("kubeadm-dir"),
+		PackImage:  cmd.Flags().Changed("pack-image"),
 	})
 	opts.Mode = mode
 
@@ -666,6 +676,7 @@ func runBuildOne(ctx context.Context, cfg *config.Config, opts buildOptions, mir
 		DeferDockerImageCleanup: opts.DeferDockerImageCleanup,
 		Verbose:                 opts.Verbose,
 		KubeadmBin:              kubeadmBin,
+		PackImage:               opts.PackImage,
 		Out:                     out,
 	})
 	if err != nil {

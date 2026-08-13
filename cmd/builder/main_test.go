@@ -203,3 +203,47 @@ func TestNormalizeK8sVersions(t *testing.T) {
 		t.Errorf("normalizeK8sVersions = %v, want %s", got, want)
 	}
 }
+
+// TestResolveBuildOptionsPackImagePriority 验证 --pack-image 合并优先级：命令行显式 > 配置 build.pack_image > 空。
+func TestResolveBuildOptionsPackImagePriority(t *testing.T) {
+	cfg := &config.Config{
+		Build: config.BuildOptions{PackImage: "cfg-pack-image"},
+	}
+
+	cases := []struct {
+		name    string
+		cfg     *config.Config
+		vals    buildFlagValues
+		changed buildFlagChanged
+		want    string
+	}{
+		{
+			name:    "命令行显式优先于配置",
+			cfg:     cfg,
+			vals:    buildFlagValues{PackImage: "cli-pack-image"},
+			changed: buildFlagChanged{PackImage: true},
+			want:    "cli-pack-image",
+		},
+		{
+			name: "配置值回落（命令行未显式）",
+			cfg:  cfg,
+			vals: buildFlagValues{},
+			want: "cfg-pack-image",
+		},
+		{
+			name: "全部为空回落到空（images 包内置默认兜底）",
+			cfg:  &config.Config{},
+			vals: buildFlagValues{},
+			want: "",
+		},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := resolveBuildOptions(c.cfg, c.vals, c.changed)
+			if got.PackImage != c.want {
+				t.Errorf("resolveBuildOptions.PackImage = %q, want %q", got.PackImage, c.want)
+			}
+		})
+	}
+}
