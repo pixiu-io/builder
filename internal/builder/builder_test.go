@@ -937,6 +937,44 @@ func TestBuildModeImages(t *testing.T) {
 	}
 }
 
+func TestBuildImagesPackImage(t *testing.T) {
+	// builder.Options.PackImage 应透传到 images.Fetch：镜像打包容器 docker run 使用的镜像名为自定义值。
+	cfg := loadSampleConfig(t)
+	binDir := t.TempDir()
+	binPath := filepath.Join(binDir, "docker")
+	argsLog := filepath.Join(binDir, "args.log")
+	writeBuilderImagesFakeDockerWithArgsLog(t, binPath, argsLog)
+	kubeadmPath := filepath.Join(binDir, "kubeadm")
+	writeBuilderFakeKubeadm(t, kubeadmPath)
+
+	customPackImage := "swr.cn-north-4.myhuaweicloud.com/pixiu-public/pixiukit/docker:24-cli-arm"
+	res, err := Build(context.Background(), Options{
+		Config:     cfg,
+		Arch:       "amd64",
+		K8sVersion: "v1.27.3",
+		Mirror:     mirror.Official,
+		WorkDir:    filepath.Join(t.TempDir(), "work"),
+		OutDir:     filepath.Join(t.TempDir(), "dist"),
+		DockerBin:  binPath,
+		KubeadmBin: kubeadmPath,
+		Mode:       "images",
+		KeepFiles:  true,
+		PackImage:  customPackImage,
+	})
+	if err != nil {
+		t.Fatalf("build images（自定义 PackImage）失败: %v", err)
+	}
+	checkStep(t, res, "镜像清单与保存", "ok", "")
+
+	data, err := os.ReadFile(argsLog)
+	if err != nil {
+		t.Fatalf("读取 fake docker args.log 失败: %v", err)
+	}
+	if !strings.Contains(string(data), customPackImage) {
+		t.Errorf("docker run 参数应包含自定义 PackImage %q（透传到 images.Fetch）:\n%s", customPackImage, data)
+	}
+}
+
 func TestBuildModeImagesWithoutOS(t *testing.T) {
 	// --mode images 未指定 OS：使用默认构建容器，产物名为 pixiu-images-{arch}-{k8s}。
 	cfg := loadSampleConfig(t)
@@ -1279,6 +1317,26 @@ func writeBuilderImagesFakeDockerWithRMILog(t *testing.T, binPath, rmiLog string
   info)`, 1)
 	if patched == string(data) {
 		t.Fatal("未能给 fake docker 注入 rmi 分支")
+	}
+	if err := os.WriteFile(binPath, []byte(patched), 0o755); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// writeBuilderImagesFakeDockerWithArgsLog 同 writeBuilderImagesFakeDocker，额外把每次调用的全部参数
+// 追加记录到 argsLog（供断言 docker run 命令构造，如 PackImage 透传）。
+func writeBuilderImagesFakeDockerWithArgsLog(t *testing.T, binPath, argsLog string) {
+	t.Helper()
+	writeBuilderImagesFakeDocker(t, binPath)
+	data, err := os.ReadFile(binPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	patched := strings.Replace(string(data), `#!/bin/sh`, `#!/bin/sh
+ARGSLOG="`+argsLog+`"
+echo "$@" >> "$ARGSLOG"`, 1)
+	if patched == string(data) {
+		t.Fatal("未能给 fake docker 注入 args 日志")
 	}
 	if err := os.WriteFile(binPath, []byte(patched), 0o755); err != nil {
 		t.Fatal(err)

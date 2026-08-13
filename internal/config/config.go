@@ -58,6 +58,10 @@ type BuildOptions struct {
 	Verbose bool `yaml:"verbose"`
 	// KubeadmDir kubeadm 二进制缓存目录，默认 ./kube。
 	KubeadmDir string `yaml:"kubeadm_dir"`
+	// PackImage 镜像打包工具容器镜像（含 docker CLI，经挂载 sock 操作宿主机 daemon）。
+	// 为空时 images 包回落到内置默认（swr...pixiukit/docker:24-cli）。
+	// 在 ARM/其他架构宿主机上请配置对应架构镜像，避免 exec format error。
+	PackImage string `yaml:"pack_image"`
 }
 
 // GitHubConfig 产物上传到 GitHub Release 的参数。

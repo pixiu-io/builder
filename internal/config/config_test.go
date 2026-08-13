@@ -828,6 +828,40 @@ build:
 	}
 }
 
+// TestBuildPackImageParse 验证 build 节 pack_image 能被 yaml 解析；未配置时为空串（回落到 images 包内置默认）。
+func TestBuildPackImageParse(t *testing.T) {
+	content := `
+oses:
+  - name: ubuntu
+    versions: ["22.04"]
+    pkg_manager: apt
+    build_images:
+      "22.04": swr.cn-north-4.myhuaweicloud.com/pixiu-public/ubuntu:22.04
+    archs: ["amd64"]
+versions:
+  - version: v1.27.3
+build:
+  pack_image: swr.cn-north-4.myhuaweicloud.com/pixiu-public/pixiukit/docker:24-cli-arm
+`
+	cfg, err := Load(writeSample(t, content))
+	if err != nil {
+		t.Fatalf("Load 失败: %v", err)
+	}
+	want := "swr.cn-north-4.myhuaweicloud.com/pixiu-public/pixiukit/docker:24-cli-arm"
+	if cfg.Build.PackImage != want {
+		t.Errorf("build.pack_image 解析异常: got %q, want %q", cfg.Build.PackImage, want)
+	}
+
+	// 未配置时保持空串（零值，images 包回落内置默认）
+	cfg2, err := Load(sampleFile(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg2.Build.PackImage != "" {
+		t.Errorf("未配置 pack_image 应为空串，实际 %q", cfg2.Build.PackImage)
+	}
+}
+
 // TestAddonImagesNoPackagesField 验证 addon_images 节不再解析 per-addon packages（该字段已移除，
 // 附加安装包统一由顶层 addon_packages 提供）。
 func TestAddonImagesNoPackagesField(t *testing.T) {

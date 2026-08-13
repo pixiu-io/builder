@@ -56,6 +56,8 @@ type Options struct {
 	DeferDockerImageCleanup bool
 	// DockerBin docker 命令路径，默认 "docker"；测试注入用。
 	DockerBin string
+	// PackImage 镜像打包容器镜像，为空时 images 包用内置默认。
+	PackImage string
 	// Verbose 打印详细过程日志（镜像下载/pull 进度等）；默认 false=精简输出。
 	Verbose bool
 	// KubeadmBin 可选 kubeadm 二进制路径；为空时镜像阶段按 KubeadmMode 获取（测试注入用）。
@@ -461,6 +463,7 @@ func Build(ctx context.Context, opts Options) (*Result, error) {
 			SkipAddons:        opts.Mode != "servers" && opts.SkipAddons, // servers 忽略 --skip-addons
 			ImagesOutDir:      filepath.Join(bundleDir, "images"),
 			DockerBin:         opts.DockerBin,
+			PackImage:         opts.PackImage,
 			Verbose:           opts.Verbose,
 		})
 		if err != nil {
