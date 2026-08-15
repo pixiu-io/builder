@@ -37,7 +37,8 @@ const k8sSigningKeyMinor = "v1.31"
 
 // K8sRepos 返回 k8s 组件源。
 // k8sMinor 形如 v1.27，由 k8s 版本前两段推导（决定软件包仓库路径）。
-// apt 系与 dnf/yum 系均使用阿里云 kubernetes-new 镜像，避免构建环境访问 pkgs.k8s.io 不稳定。
+// apt 系与 dnf/yum 系均优先阿里云 kubernetes-new，并配置同布局 OBS 镜像 failover：
+// 部分云厂商出口 IP 拉取阿里云/清华包会 403，dnf 会按 baseurl 列表依次尝试。
 // GPG/RPM 签名密钥固定从 k8sSigningKeyMinor 仓库拉取，避免旧版仓库密钥过期。
 func K8sRepos(k8sMinor string) []Repo {
 	if k8sMinor == "" {
@@ -45,6 +46,12 @@ func K8sRepos(k8sMinor string) []Repo {
 	}
 	keyMinor := k8sSigningKeyMinor
 	keyDest := "/etc/apt/keyrings/kubernetes-apt-keyring.gpg"
+	rpmBase := joinRepoBaseURLs([]string{
+		fmt.Sprintf("https://mirrors.aliyun.com/kubernetes-new/core/stable/%s/rpm/", k8sMinor),
+		fmt.Sprintf("https://mirrors.ustc.edu.cn/kubernetes/core:/stable:/%s/rpm/", k8sMinor),
+		fmt.Sprintf("https://mirrors.tuna.tsinghua.edu.cn/kubernetes/core:/stable:/%s/rpm/", k8sMinor),
+		fmt.Sprintf("https://pkgs.k8s.io/core:/stable:/%s/rpm/", k8sMinor),
+	})
 	return []Repo{{
 		Name: "kubernetes",
 		AptLine: fmt.Sprintf(
@@ -54,12 +61,27 @@ func K8sRepos(k8sMinor string) []Repo {
 		AptKeyDest: keyDest,
 		DnfRepoBlock: fmt.Sprintf(`[kubernetes]
 name=Kubernetes (stable %s)
-baseurl=https://mirrors.aliyun.com/kubernetes-new/core/stable/%s/rpm/
+baseurl=%s
 enabled=1
 gpgcheck=0
-gpgkey=https://mirrors.aliyun.com/kubernetes-new/core/stable/%s/rpm/repodata/repomd.xml.key`, k8sMinor, k8sMinor, keyMinor),
+gpgkey=https://mirrors.aliyun.com/kubernetes-new/core/stable/%s/rpm/repodata/repomd.xml.key`, k8sMinor, rpmBase, keyMinor),
 		DnfKeyURL: fmt.Sprintf("https://mirrors.aliyun.com/kubernetes-new/core/stable/%s/rpm/repodata/repomd.xml.key", keyMinor),
 	}}
+}
+
+// joinRepoBaseURLs 将多个 baseurl 格式化为 yum/dnf repo 续行写法。
+// 下载失败（含 403）时 dnf 会依次尝试后续镜像。
+func joinRepoBaseURLs(urls []string) string {
+	if len(urls) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString(urls[0])
+	for _, u := range urls[1:] {
+		b.WriteString("\n        ")
+		b.WriteString(u)
+	}
+	return b.String()
 }
 
 // containerdMirror 描述 containerd（docker-ce）软件源镜像：URL 前缀与 dnf rpm 路径段。
@@ -71,22 +93,51 @@ type containerdMirror struct {
 }
 
 // containerdMirrors 按 repoType 映射 containerd 源镜像。
-// aliyun=阿里云（默认）、ustc=中科大、tuna=清华（对齐 kubez openEuler/Kylin）、docker=官方。
+// aliyun=阿里云（默认）、ustc=中科大、tuna=清华（对齐 kubez openEuler/Kylin）、
+// huawei=华为云（华为云 ECS 上 tuna/aliyun 常 403）、docker=官方。
 // openEuler 使用系统源（repoType=none），不落入本映射。
 var containerdMirrors = map[string]containerdMirror{
 	"aliyun": {host: "mirrors.aliyun.com/docker-ce", rpmDir: "centos"},
 	"ustc":   {host: "mirrors.ustc.edu.cn/docker-ce", rpmDir: "centos"},
 	"tuna":   {host: "mirrors.tuna.tsinghua.edu.cn/docker-ce", rpmDir: "centos"},
+	"huawei": {host: "mirrors.huaweicloud.com/docker-ce", rpmDir: "centos"},
 	"docker": {host: "download.docker.com", rpmDir: "rhel"},
+}
+
+// el7DockerCEMirrorHosts 返回 el7 docker-ce 镜像 host 列表（preferred 优先，去重）。
+// 不含 ustc：centos/7/aarch64 在中科大常 404。
+// 含华为云/腾讯云：云主机出口访问高校/阿里云镜像站时易被 403。
+func el7DockerCEMirrorHosts(preferred string) []string {
+	preferred = strings.TrimSpace(preferred)
+	candidates := []string{
+		preferred,
+		"mirrors.huaweicloud.com/docker-ce",
+		"mirrors.aliyun.com/docker-ce",
+		"mirrors.tuna.tsinghua.edu.cn/docker-ce",
+		"mirrors.cloud.tencent.com/docker-ce",
+	}
+	seen := make(map[string]bool, len(candidates))
+	out := make([]string, 0, len(candidates))
+	for _, h := range candidates {
+		if h == "" || seen[h] {
+			continue
+		}
+		seen[h] = true
+		out = append(out, h)
+	}
+	return out
 }
 
 // dockerCERepoBlockEL7 生成对齐 kubez-ansible docker-ce.repo-openEuler.j2 的 dnf repo 块。
 // 关键点：固定 linux/centos/7（不用 $releasever，避免 Kylin 上 releasever≠7 指错仓库），
-// 段名/name/gpg 与 j2 一致；stable 启用，其余段保持 enabled=0。
-func dockerCERepoBlockEL7(host string) string {
+// 段名/name/gpg 与 j2 一致；stable 启用并配置多镜像 baseurl failover，其余段 enabled=0。
+func dockerCERepoBlockEL7(preferredHost string) string {
+	hosts := el7DockerCEMirrorHosts(preferredHost)
+	primary := hosts[0]
+	stableBase := joinRepoBaseURLs(el7DockerCEStableURLs(hosts))
 	return fmt.Sprintf(`[docker-ce-stable]
 name=Docker CE Stable - $basearch
-baseurl=https://%s/linux/centos/7/$basearch/stable
+baseurl=%s
 enabled=1
 gpgcheck=1
 gpgkey=https://%s/linux/centos/gpg
@@ -146,29 +197,46 @@ baseurl=https://%s/linux/centos/7/source/nightly
 enabled=0
 gpgcheck=1
 gpgkey=https://%s/linux/centos/gpg`,
-		host, host,
-		host, host,
-		host, host,
-		host, host,
-		host, host,
-		host, host,
-		host, host,
-		host, host,
-		host, host,
+		stableBase, primary,
+		primary, primary,
+		primary, primary,
+		primary, primary,
+		primary, primary,
+		primary, primary,
+		primary, primary,
+		primary, primary,
+		primary, primary,
 	)
 }
 
-// CentOS7ExtrasRepos 返回 CentOS 7 extras 归档源（vault）。
+func el7DockerCEStableURLs(hosts []string) []string {
+	out := make([]string, 0, len(hosts))
+	for _, h := range hosts {
+		out = append(out, "https://"+h+"/linux/centos/7/$basearch/stable")
+	}
+	return out
+}
+
+// CentOS7ExtrasRepos 返回 CentOS 7 extras 归档源（vault / altarch）。
 // 用途：Kylin / openEuler 等 el7 兼容系统安装 docker-ce 时，
 // docker-ce-rootless-extras 硬依赖 fuse-overlayfs>=0.7、slirp4netns>=0.4，
 // 麒麟/欧拉系统源通常不提供这两包，需从 CentOS 7 extras 拉取。
-// 默认走阿里云 centos-vault，与 builder 国内镜像策略一致。
-func CentOS7ExtrasRepos() []Repo {
+// 默认走阿里云镜像，与 builder 国内镜像策略一致。
+//
+// arch 为构建架构（amd64/arm64）：
+//   - x86_64：centos-vault/7.9.2009/extras（主线归档）
+//   - aarch64：centos-altarch/7.9.2009/extras（CentOS 7 非 x86 走 altarch；
+//     vault 主线 extras/aarch64 在阿里云为 404，会导致 dnf makecache 失败）
+func CentOS7ExtrasRepos(arch string) []Repo {
+	base := "https://mirrors.aliyun.com/centos-vault/7.9.2009/extras/$basearch/"
+	if RPMArch(arch) == "aarch64" {
+		base = "https://mirrors.aliyun.com/centos-altarch/7.9.2009/extras/$basearch/"
+	}
 	return []Repo{{
 		Name: "centos7-extras",
 		DnfRepoBlock: `[centos7-extras]
 name=CentOS-7 - Extras (vault)
-baseurl=https://mirrors.aliyun.com/centos-vault/7.9.2009/extras/$basearch/
+baseurl=` + base + `
 enabled=1
 gpgcheck=0`,
 	}}
@@ -257,13 +325,24 @@ func ContainerdRepos(aptOS, codename, rpmDistro, repoType string) []Repo {
 	keyDest := "/etc/apt/keyrings/containerd-apt-keyring.gpg"
 
 	// el7（Kylin/CentOS7 等）：对齐 kubez docker-ce.repo-openEuler.j2。
-	// 固定 centos/7；dnf host 默认强制 tuna——阿里云对部分 IP 拉取 centos/7 包会 403，
-	// 中科大 ustc 的 centos/7 路径常 404；仅 containerd_repo=docker 时走官方。
+	// 固定 centos/7；dnf 按 containerd_repo 优选镜像，并追加华为云/阿里云/清华/腾讯云
+	// 作为 baseurl failover（云主机出口对单一镜像站常 403）。
+	// 仅 containerd_repo=docker 时走官方单源。
 	if major == "7" {
-		host := containerdMirrors["tuna"].host
 		if repoType == "docker" {
-			host = "download.docker.com"
+			host := "download.docker.com"
+			return []Repo{{
+				Name: "docker-ce",
+				AptLine: fmt.Sprintf(
+					"deb [signed-by=%s] https://%s/linux/%s %s stable",
+					keyDest, m.host, aptOS, codename),
+				AptKeyURL:    fmt.Sprintf("https://%s/linux/%s/gpg", m.host, aptOS),
+				AptKeyDest:   keyDest,
+				DnfRepoBlock: dockerCERepoBlockEL7(host),
+				DnfKeyURL:    fmt.Sprintf("https://%s/linux/centos/gpg", host),
+			}}
 		}
+		preferred := m.host
 		return []Repo{{
 			Name: "docker-ce", // 与 kubez dest /etc/yum.repos.d/docker-ce.repo 一致
 			AptLine: fmt.Sprintf(
@@ -271,8 +350,8 @@ func ContainerdRepos(aptOS, codename, rpmDistro, repoType string) []Repo {
 				keyDest, m.host, aptOS, codename),
 			AptKeyURL:    fmt.Sprintf("https://%s/linux/%s/gpg", m.host, aptOS),
 			AptKeyDest:   keyDest,
-			DnfRepoBlock: dockerCERepoBlockEL7(host),
-			DnfKeyURL:    fmt.Sprintf("https://%s/linux/centos/gpg", host),
+			DnfRepoBlock: dockerCERepoBlockEL7(preferred),
+			DnfKeyURL:    fmt.Sprintf("https://%s/linux/centos/gpg", preferred),
 		}}
 	}
 

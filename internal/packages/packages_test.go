@@ -101,6 +101,9 @@ func TestBuildDownloadScriptYUM(t *testing.T) {
 		"/etc/yum.repos.d/kubernetes.repo",
 		"https://mirrors.aliyun.com/kubernetes-new/core/stable/v1.32/rpm/",
 		"/etc/yum.repos.d/docker-ce.repo",
+		"https://mirrors.aliyun.com/kubernetes-new/core/stable/v1.32/rpm/",
+		"https://mirrors.aliyun.com/docker-ce/linux/centos/7/$basearch/stable", // 空 repoType 默认优选 aliyun
+		"https://mirrors.huaweicloud.com/docker-ce/linux/centos/7/$basearch/stable",
 		"https://mirrors.tuna.tsinghua.edu.cn/docker-ce/linux/centos/7/$basearch/stable",
 		"Docker CE Stable - $basearch",
 		"yum install -y --downloadonly --downloaddir=/out",
@@ -267,16 +270,15 @@ func TestFetchDefaultIncludesK8sContainerdRepos(t *testing.T) {
 		"/etc/yum.repos.d/kubernetes.repo",
 		"/etc/yum.repos.d/docker-ce.repo", // el7 对齐 kubez：docker-ce.repo（非 containerd.repo）
 		"mirrors.aliyun.com/kubernetes-new",
-		"mirrors.tuna.tsinghua.edu.cn/docker-ce/linux/centos/7", // el7 强制 tuna（aliyun 常 403）
+		"pkgs.k8s.io/core:/stable:",
+		"mirrors.aliyun.com/docker-ce/linux/centos/7", // 空 repoType 默认优选 aliyun
+		"mirrors.huaweicloud.com/docker-ce/linux/centos/7",
 		"Docker CE Stable - $basearch",
 		"https://vault.centos.org/7.9.2009/os/$basearch/",
 	} {
 		if !strings.Contains(script, want) {
 			t.Errorf("默认 yum 脚本应含 %q:\n%s", want, script)
 		}
-	}
-	if strings.Contains(script, "mirrors.aliyun.com/docker-ce/linux/centos/7") {
-		t.Errorf("el7 不应再走 aliyun docker-ce centos/7（易 403）:\n%s", script)
 	}
 }
 
@@ -403,12 +405,40 @@ func TestFetchKylinDockerCEAddsCentOS7Extras(t *testing.T) {
 		"centos-vault/7.9.2009/extras/$basearch/",
 		"/etc/yum.repos.d/docker-ce.repo",
 		"mirrors.tuna.tsinghua.edu.cn/docker-ce/linux/centos/7/$basearch/stable",
+		"mirrors.huaweicloud.com/docker-ce/linux/centos/7/$basearch/stable",
 		"Docker CE Stable - $basearch",
 		"[docker-ce-stable]",
 	} {
 		if !strings.Contains(script, want) {
 			t.Errorf("kylin+docker-ce 脚本应含 %q:\n%s", want, script)
 		}
+	}
+
+	// arm64：CentOS 7 extras 走 altarch（主线 vault extras/aarch64 404）
+	resArm, err := Fetch(context.Background(), Options{
+		OutDir:         t.TempDir(),
+		BuildImage:     "swr.cn-north-4.myhuaweicloud.com/pixiu-public/kylin:v10-sp3",
+		PkgManager:     "dnf",
+		K8sMinor:       "v1.31",
+		RPMDistro:      "rhel7",
+		ContainerdRepo: "tuna",
+		Arch:           "arm64",
+		Pkgs:           []string{"kubeadm-1.31.6", "containerd.io", "docker-ce"},
+		DryRun:         true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"[centos7-extras]",
+		"centos-altarch/7.9.2009/extras/$basearch/",
+	} {
+		if !strings.Contains(resArm.Command, want) {
+			t.Errorf("kylin arm64+docker-ce 脚本应含 %q:\n%s", want, resArm.Command)
+		}
+	}
+	if strings.Contains(resArm.Command, "centos-vault/7.9.2009/extras") {
+		t.Errorf("kylin arm64 不应使用 centos-vault 主线 extras:\n%s", resArm.Command)
 	}
 
 	// 无 docker-ce 时不应加 extras
@@ -429,10 +459,11 @@ func TestFetchKylinDockerCEAddsCentOS7Extras(t *testing.T) {
 	if strings.Contains(res2.Command, "centos7-extras") {
 		t.Errorf("无 docker-ce 时不应配置 centos7-extras:\n%s", res2.Command)
 	}
-	// 无 addon 时仍应有 tuna docker-ce 源（containerd.io）
+	// 无 addon 时仍应有 docker-ce 源（containerd.io）；tuna 优选 + 华为云 failover
 	for _, want := range []string{
 		"/etc/yum.repos.d/docker-ce.repo",
 		"mirrors.tuna.tsinghua.edu.cn/docker-ce/linux/centos/7",
+		"mirrors.huaweicloud.com/docker-ce/linux/centos/7",
 	} {
 		if !strings.Contains(res2.Command, want) {
 			t.Errorf("kylin containerd.io 脚本应含 %q:\n%s", want, res2.Command)
