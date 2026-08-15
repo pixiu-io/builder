@@ -67,8 +67,9 @@ oses:
     containerd_pkg: "containerd"
     containerd_repo: "none"
     archs: ["amd64", "arm64"]
-  # 银河麒麟 V10（CentOS 7 / el7 兼容）：dnf + docker-ce centos/7 源的 containerd.io
+	// 银河麒麟 V10（CentOS 7 / el7 兼容）：dnf + docker-ce centos/7 源的 containerd.io
   # （与 kubez-ansible 中 Kylin Linux Advanced Server 安装路径一致）
+  # containerd_repo=huawei：华为云 ECS 上 tuna/aliyun 拉包常 403；未配置时仍走多镜像 failover
   - name: kylin
     versions: ["v10"]
     pkg_manager: dnf
@@ -76,7 +77,7 @@ oses:
       "v10": swr.cn-north-4.myhuaweicloud.com/pixiu-public/caoyingjun/kylin:v10-sp3
     rpm_distro: rhel7
     containerd_pkg: "containerd.io"
-    containerd_repo: "aliyun"
+    containerd_repo: "huawei"
     archs: ["amd64", "arm64"]
 
 
