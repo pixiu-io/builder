@@ -316,6 +316,11 @@ export GITHUB_TOKEN=ghp_xxx
 - registry：`0.0.0.0:5000` → `docker pull <host>:5000/pixiu/kube-apiserver:v1.27.3`
 - 软件源：`0.0.0.0:8080` → `http://<host>:8080/rpm`（dnf）或 `/deb`（apt）
 
+端口可用 `--registry-port` / `--repo-port` 单独覆盖（地址段保持 0.0.0.0 不变）：
+```bash
+./builder serve --bundle ./x.tar.gz --registry-port 8088 --repo-port 8089
+```
+
 客户端示例：
 
 ```bash
