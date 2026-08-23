@@ -92,7 +92,9 @@ var (
 	serveDir           string
 	serveDataDir       string
 	serveRegistryAddr  string
+	serveRegistryPort  string
 	serveRepoAddr      string
+	serveRepoPort      string
 	serveAdvertiseHost string
 	serveNamespace     string
 	serveSkipImages    bool
@@ -1175,6 +1177,12 @@ func newServeCmd() *cobra.Command {
 			if len(serveBundles) == 0 && serveDir == "" {
 				return fmt.Errorf("请通过 --bundle 指定离线包，或 --dir 指定离线包目录")
 			}
+			if cmd.Flags().Changed("registry-addr") && cmd.Flags().Changed("registry-port") {
+				return fmt.Errorf("--registry-addr 与 --registry-port 不能同时指定")
+			}
+			if cmd.Flags().Changed("repo-addr") && cmd.Flags().Changed("repo-port") {
+				return fmt.Errorf("--repo-addr 与 --repo-port 不能同时指定")
+			}
 			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 			defer stop()
 			_, err := serve.Run(ctx, serve.Options{
@@ -1182,7 +1190,9 @@ func newServeCmd() *cobra.Command {
 				Dir:           serveDir,
 				DataDir:       serveDataDir,
 				RegistryAddr:  serveRegistryAddr,
+				RegistryPort:  serveRegistryPort,
 				RepoAddr:      serveRepoAddr,
+				RepoPort:      serveRepoPort,
 				AdvertiseHost: serveAdvertiseHost,
 				Namespace:     serveNamespace,
 				SkipImages:    serveSkipImages,
@@ -1195,7 +1205,9 @@ func newServeCmd() *cobra.Command {
 	cmd.Flags().StringVar(&serveDir, "dir", "", "离线包目录：不存在则自动创建；加载其下所有 *.tar.gz 并轮询热加载新包（3s）")
 	cmd.Flags().StringVar(&serveDataDir, "data-dir", "./serve-data", "工作目录（解压、repodata、registry blob）")
 	cmd.Flags().StringVar(&serveRegistryAddr, "registry-addr", "0.0.0.0:5000", "OCI registry 监听地址")
+	cmd.Flags().StringVar(&serveRegistryPort, "registry-port", "", "registry 端口（覆盖 --registry-addr 端口，地址段不变）")
 	cmd.Flags().StringVar(&serveRepoAddr, "repo-addr", "0.0.0.0:8080", "软件源 HTTP 监听地址")
+	cmd.Flags().StringVar(&serveRepoPort, "repo-port", "", "软件源 HTTP 端口（覆盖 --repo-addr 端口，地址段不变）")
 	cmd.Flags().StringVar(&serveAdvertiseHost, "advertise-host", serve.LocalIP(), "打印给客户端的主机名/IP（不含端口），默认本机 IP")
 	cmd.Flags().StringVarP(&serveNamespace, "namespace", "n", "pixiu", "registry 发布命名空间（自动导入镜像的引用前缀，如 <host>:5000/pixiu/pause:3.10）")
 	cmd.Flags().BoolVar(&serveSkipImages, "skip-images", false, "不提供镜像 registry")

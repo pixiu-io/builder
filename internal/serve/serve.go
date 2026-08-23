@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -25,8 +26,12 @@ type Options struct {
 	DataDir string
 	// RegistryAddr registry 监听地址，默认 0.0.0.0:5000。
 	RegistryAddr string
+	// RegistryPort 覆盖 RegistryAddr 的端口（host 不变，为空表示不覆盖）。
+	RegistryPort string
 	// RepoAddr 软件源 HTTP 监听地址，默认 0.0.0.0:8080。
 	RepoAddr string
+	// RepoPort 覆盖 RepoAddr 的端口（host 不变，为空表示不覆盖）。
+	RepoPort string
 	// AdvertiseHost 打印给客户端的主机名/IP（不含端口），默认 127.0.0.1。
 	AdvertiseHost string
 	// Namespace registry 发布命名空间（自动导入镜像的引用前缀），默认 pixiu。
@@ -55,7 +60,10 @@ type Result struct {
 
 // Run 加载产物、准备源、监听直到 ctx 取消。
 func Run(ctx context.Context, opts Options) (*Result, error) {
-	opts = normalize(opts)
+	opts, err := normalize(opts)
+	if err != nil {
+		return nil, err
+	}
 	if len(opts.Bundles) == 0 && opts.Dir == "" {
 		return nil, fmt.Errorf("请通过 --bundle 指定离线包，或 --dir 指定离线包目录")
 	}
@@ -232,7 +240,22 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 	return res, nil
 }
 
-func normalize(opts Options) Options {
+func normalize(opts Options) (Options, error) {
+	// 纯端口 flag 优先合并：只替换地址端口，host 不变。
+	if opts.RegistryPort != "" {
+		a, err := applyPort(opts.RegistryAddr, opts.RegistryPort)
+		if err != nil {
+			return opts, err
+		}
+		opts.RegistryAddr = a
+	}
+	if opts.RepoPort != "" {
+		a, err := applyPort(opts.RepoAddr, opts.RepoPort)
+		if err != nil {
+			return opts, err
+		}
+		opts.RepoAddr = a
+	}
 	if opts.DataDir == "" {
 		opts.DataDir = "./serve-data"
 	}
@@ -246,7 +269,28 @@ func normalize(opts Options) Options {
 		opts.AdvertiseHost = LocalIP()
 	}
 	opts.Namespace = sanitizeNamespace(opts.Namespace)
-	return opts
+	return opts, nil
+}
+
+// applyPort 用 port 覆盖 addr 的端口：成功解析时取 addr 的 host 部分，
+// addr 无端口（SplitHostPort 失败）则整段视为 host；addr 为空时 host 为空串。
+func applyPort(addr, port string) (string, error) {
+	p, err := strconv.Atoi(port)
+	if err != nil {
+		return "", fmt.Errorf("端口 %q 非法: %w", port, err)
+	}
+	if p < 0 || p > 65535 {
+		return "", fmt.Errorf("端口 %d 超出范围 0-65535", p)
+	}
+	var host string
+	if addr != "" {
+		if h, _, err := net.SplitHostPort(addr); err == nil {
+			host = h
+		} else {
+			host = addr
+		}
+	}
+	return net.JoinHostPort(host, port), nil
 }
 
 // sanitizeNamespace 清洗 registry 发布命名空间：去首尾空白与斜杠，
