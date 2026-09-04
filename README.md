@@ -287,11 +287,14 @@ export GITHUB_TOKEN=ghp_xxx
 
 将 builder 产物加载为常驻服务：镜像走本地 registry（短名），软件包走 HTTP yum/dnf/apt 源。不依赖 `createrepo` / `apt-ftparchive`。
 
+`--bundle` / `--dir` 同时支持 **builder 离线包**（含 `manifest.yaml`）与 **单镜像 docker save 的 `.tar.gz`**（含 `manifest.json`，如 `docker save img:tag | gzip > img.tar.gz`），可混放；`--dir` 热加载对新放入的单镜像包同样生效。repo/tag 优先取 docker-save 内 `RepoTags`。
+
 ```bash
-# packages + images 两个 tar 一起加载
+# packages + images + 单镜像 save 混放
 ./builder serve \
   --bundle ./dist/pixiu-packages-centos-8-amd64-v1.27.3.tar.gz \
   --bundle ./dist/pixiu-images-centos-8-amd64-v1.27.3.tar.gz \
+  --bundle ./extra/pause.tar.gz \
   --advertise-host 192.168.1.10
 
 # 已解压目录

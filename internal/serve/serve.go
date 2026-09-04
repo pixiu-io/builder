@@ -18,9 +18,10 @@ import (
 
 // Options 控制 serve 行为。
 type Options struct {
-	// Bundles 离线包路径（目录或 .tar.gz），可多个（packages + images）。
+	// Bundles 离线包路径（目录或 .tar.gz），可多个。
+	// 支持 builder 产物（含 manifest.yaml）与单镜像 docker save 的 .tar.gz，可混放。
 	Bundles []string
-	// Dir 离线包目录：启动时加载其下所有 *.tar.gz，并轮询热加载新出现的包。
+	// Dir 离线包目录：启动时加载其下所有 *.tar.gz（builder 包与单镜像 save 可混放），并轮询热加载。
 	Dir string
 	// DataDir 工作目录（解压、repodata、registry blob）。
 	DataDir string
