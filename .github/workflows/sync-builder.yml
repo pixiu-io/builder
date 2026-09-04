@@ -1,4 +1,4 @@
-name: sync builder command
+name: sync builder cmd
 
 on:
   push:
