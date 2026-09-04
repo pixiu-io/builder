@@ -30,6 +30,9 @@ build:
   dry_run: false            # 对应 --dry-run：仅演练管线，不真实下载/拉取
   keep_files: false         # 对应 --keep-files：默认 false=构建完成后清理中间文件与 docker 中间镜像；true=保留
   verbose: false            # 对应 --verbose/-v：默认 false=精简输出；true=打印详细过程日志（镜像下载/pull 进度等）
+  pack_image: ""            # 对应 --pack-image：镜像打包阶段工具镜像（含 docker CLI，容器内 docker pull + save）；
+                            #   为空回落内置默认 swr.cn-north-4.myhuaweicloud.com/pixiu-public/pixiukit/docker:24-cli；
+                            #   ARM/aarch64 宿主机必须配置 arm64 兼容镜像，否则 exec format error
   kubeadm_dir: "./kube"      # 对应 --kubeadm-dir：kubeadm 二进制缓存目录，文件名 kubeadm-{version}-linux-{arch}
 
 

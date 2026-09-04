@@ -298,9 +298,9 @@ func Fetch(ctx context.Context, opts Options) (*Result, error) {
 		}
 	}
 	// Kylin/openEuler（rhel7）装 docker-ce 时，rootless-extras 依赖 fuse-overlayfs/slirp4netns，
-	// 系统源通常没有，需追加 CentOS 7 extras vault（见 CentOS7ExtrasRepos）。
+	// 系统源通常没有，需追加 CentOS 7 extras vault/altarch（见 CentOS7ExtrasRepos）。
 	if NeedsCentOS7Extras(opts.RPMDistro, opts.Pkgs) {
-		repos = append(repos, CentOS7ExtrasRepos()...)
+		repos = append(repos, CentOS7ExtrasRepos(opts.Arch)...)
 	}
 	script := BuildDownloadScript(DownloadScriptOpts{
 		PkgManager:  opts.PkgManager,

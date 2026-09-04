@@ -45,6 +45,7 @@ var (
 	buildKeepFiles   bool
 	buildVerbose     bool
 	buildKubeadmDir  string
+	buildPackImage   string
 	buildUpload      bool
 )
 
@@ -91,7 +92,9 @@ var (
 	serveDir           string
 	serveDataDir       string
 	serveRegistryAddr  string
+	serveRegistryPort  string
 	serveRepoAddr      string
+	serveRepoPort      string
 	serveAdvertiseHost string
 	serveNamespace     string
 	serveSkipImages    bool
@@ -256,6 +259,7 @@ func addBuildCommonFlags(cmd *cobra.Command, withOS bool) {
 	cmd.Flags().BoolVar(&buildKeepFiles, "keep-files", false, "构建完成后保留中间文件（默认清理）")
 	cmd.Flags().BoolVarP(&buildVerbose, "verbose", "v", false, "打印详细过程日志")
 	cmd.Flags().StringVar(&buildKubeadmDir, "kubeadm-dir", "./kube", "kubeadm 二进制缓存目录")
+	cmd.Flags().StringVar(&buildPackImage, "pack-image", "", "镜像打包工具容器镜像（含 docker CLI；默认 pixiukit/docker:24-cli，ARM 宿主需配置对应架构镜像）")
 	cmd.Flags().BoolVar(&buildUpload, "upload", false, "构建完成后将产物上传到 GitHub Release")
 	addGitHubFlags(cmd)
 }
@@ -269,6 +273,7 @@ func addBuildServersFlags(cmd *cobra.Command) {
 	cmd.Flags().BoolVar(&buildDryRun, "dry-run", false, "仅演练管线，不执行真实下载/拉取")
 	cmd.Flags().BoolVar(&buildKeepFiles, "keep-files", false, "构建完成后保留中间文件（默认清理）")
 	cmd.Flags().BoolVarP(&buildVerbose, "verbose", "v", false, "打印详细过程日志")
+	cmd.Flags().StringVar(&buildPackImage, "pack-image", "", "镜像打包工具容器镜像（含 docker CLI；默认 pixiukit/docker:24-cli，ARM 宿主需配置对应架构镜像）")
 	cmd.Flags().BoolVar(&buildUpload, "upload", false, "构建完成后将产物上传到 GitHub Release（默认 tag=servers）")
 	addGitHubFlags(cmd)
 }
@@ -296,6 +301,7 @@ type buildFlagValues struct {
 	KeepFiles  bool
 	Verbose    bool
 	KubeadmDir string
+	PackImage  string
 }
 
 // buildFlagChanged 记录各 flag 是否被命令行显式设置（true 表示命令行值优先）。
@@ -315,6 +321,7 @@ type buildFlagChanged struct {
 	KeepFiles  bool
 	Verbose    bool
 	KubeadmDir bool
+	PackImage  bool
 }
 
 // buildOptions build 子命令合并后的生效参数（Mirror 保持字符串，由调用方解析为 mirror.Mirror）。
@@ -335,6 +342,8 @@ type buildOptions struct {
 	KubeadmDir string
 	// DeferDockerImageCleanup 多版本并发构建时置 true：各版本不立刻 docker rmi。
 	DeferDockerImageCleanup bool
+	// PackImage 镜像打包容器镜像，为空时 images 包用内置默认。
+	PackImage string
 }
 
 // resolveBuildOptions 按"命令行 > 配置文件 build 节 > flag 内置默认值"合并 build 参数。
@@ -356,6 +365,7 @@ func resolveBuildOptions(cfg *config.Config, vals buildFlagValues, changed build
 		KeepFiles:  resolveBool(changed.KeepFiles, vals.KeepFiles, cfg.Build.KeepFiles),
 		Verbose:    resolveBool(changed.Verbose, vals.Verbose, cfg.Build.Verbose),
 		KubeadmDir: resolveString(changed.KubeadmDir, vals.KubeadmDir, cfg.Build.KubeadmDir),
+		PackImage:  resolveString(changed.PackImage, vals.PackImage, cfg.Build.PackImage),
 	}
 }
 
@@ -447,6 +457,7 @@ func runBuild(cmd *cobra.Command, mode string) error {
 		KeepFiles:  buildKeepFiles,
 		Verbose:    buildVerbose,
 		KubeadmDir: buildKubeadmDir,
+		PackImage:  buildPackImage,
 	}, buildFlagChanged{
 		OS:         cmd.Flags().Changed("os"),
 		OSVersion:  cmd.Flags().Changed("os-version"),
@@ -462,6 +473,7 @@ func runBuild(cmd *cobra.Command, mode string) error {
 		KeepFiles:  cmd.Flags().Changed("keep-files"),
 		Verbose:    cmd.Flags().Changed("verbose"),
 		KubeadmDir: cmd.Flags().Changed("kubeadm-dir"),
+		PackImage:  cmd.Flags().Changed("pack-image"),
 	})
 	opts.Mode = mode
 
@@ -666,6 +678,7 @@ func runBuildOne(ctx context.Context, cfg *config.Config, opts buildOptions, mir
 		DeferDockerImageCleanup: opts.DeferDockerImageCleanup,
 		Verbose:                 opts.Verbose,
 		KubeadmBin:              kubeadmBin,
+		PackImage:               opts.PackImage,
 		Out:                     out,
 	})
 	if err != nil {
@@ -1164,6 +1177,12 @@ func newServeCmd() *cobra.Command {
 			if len(serveBundles) == 0 && serveDir == "" {
 				return fmt.Errorf("请通过 --bundle 指定离线包，或 --dir 指定离线包目录")
 			}
+			if cmd.Flags().Changed("registry-addr") && cmd.Flags().Changed("registry-port") {
+				return fmt.Errorf("--registry-addr 与 --registry-port 不能同时指定")
+			}
+			if cmd.Flags().Changed("repo-addr") && cmd.Flags().Changed("repo-port") {
+				return fmt.Errorf("--repo-addr 与 --repo-port 不能同时指定")
+			}
 			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 			defer stop()
 			_, err := serve.Run(ctx, serve.Options{
@@ -1171,7 +1190,9 @@ func newServeCmd() *cobra.Command {
 				Dir:           serveDir,
 				DataDir:       serveDataDir,
 				RegistryAddr:  serveRegistryAddr,
+				RegistryPort:  serveRegistryPort,
 				RepoAddr:      serveRepoAddr,
+				RepoPort:      serveRepoPort,
 				AdvertiseHost: serveAdvertiseHost,
 				Namespace:     serveNamespace,
 				SkipImages:    serveSkipImages,
@@ -1184,7 +1205,9 @@ func newServeCmd() *cobra.Command {
 	cmd.Flags().StringVar(&serveDir, "dir", "", "离线包目录：不存在则自动创建；加载其下所有 *.tar.gz 并轮询热加载新包（3s）")
 	cmd.Flags().StringVar(&serveDataDir, "data-dir", "./serve-data", "工作目录（解压、repodata、registry blob）")
 	cmd.Flags().StringVar(&serveRegistryAddr, "registry-addr", "0.0.0.0:5000", "OCI registry 监听地址")
+	cmd.Flags().StringVar(&serveRegistryPort, "registry-port", "", "registry 端口（覆盖 --registry-addr 端口，地址段不变）")
 	cmd.Flags().StringVar(&serveRepoAddr, "repo-addr", "0.0.0.0:8080", "软件源 HTTP 监听地址")
+	cmd.Flags().StringVar(&serveRepoPort, "repo-port", "", "软件源 HTTP 端口（覆盖 --repo-addr 端口，地址段不变）")
 	cmd.Flags().StringVar(&serveAdvertiseHost, "advertise-host", serve.LocalIP(), "打印给客户端的主机名/IP（不含端口），默认本机 IP")
 	cmd.Flags().StringVarP(&serveNamespace, "namespace", "n", "pixiu", "registry 发布命名空间（自动导入镜像的引用前缀，如 <host>:5000/pixiu/pause:3.10）")
 	cmd.Flags().BoolVar(&serveSkipImages, "skip-images", false, "不提供镜像 registry")

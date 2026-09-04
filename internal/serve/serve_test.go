@@ -870,6 +870,37 @@ func TestServeHotLoadIncompleteFile(t *testing.T) {
 	}
 }
 
+func TestApplyPort(t *testing.T) {
+	cases := []struct {
+		addr, port string
+		want       string
+		wantErr    bool
+	}{
+		{"0.0.0.0:5000", "8088", "0.0.0.0:8088", false},
+		{"", "8088", ":8088", false},
+		{"127.0.0.1", "9000", "127.0.0.1:9000", false}, // addr 无端口，整段为 host
+		{"0.0.0.0:5000", "0", "0.0.0.0:0", false},       // 动态端口允许
+		{"0.0.0.0:5000", "abc", "", true},
+		{"0.0.0.0:5000", "70000", "", true},
+	}
+	for _, c := range cases {
+		got, err := applyPort(c.addr, c.port)
+		if c.wantErr {
+			if err == nil {
+				t.Errorf("applyPort(%q, %q) 应返回错误，实际成功: %q", c.addr, c.port, got)
+			}
+			continue
+		}
+		if err != nil {
+			t.Errorf("applyPort(%q, %q) 不应报错: %v", c.addr, c.port, err)
+			continue
+		}
+		if got != c.want {
+			t.Errorf("applyPort(%q, %q)=%q want %q", c.addr, c.port, got, c.want)
+		}
+	}
+}
+
 func waitFor(t *testing.T, timeout time.Duration, cond func() bool, msg string) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)

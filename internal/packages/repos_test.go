@@ -18,10 +18,13 @@ func TestK8sRepos(t *testing.T) {
 		"https://mirrors.aliyun.com/kubernetes-new/core/stable/v1.31/deb/Release.key",
 		"[kubernetes]",
 		"https://mirrors.aliyun.com/kubernetes-new/core/stable/v1.27/rpm/",
+		"https://mirrors.ustc.edu.cn/kubernetes/core:/stable:/v1.27/rpm/",
+		"https://mirrors.tuna.tsinghua.edu.cn/kubernetes/core:/stable:/v1.27/rpm/",
+		"https://pkgs.k8s.io/core:/stable:/v1.27/rpm/",
 		"https://mirrors.aliyun.com/kubernetes-new/core/stable/v1.31/rpm/repodata/repomd.xml.key",
 	} {
 		if !strings.Contains(r.AptLine+r.AptKeyURL+r.DnfRepoBlock+r.DnfKeyURL, want) {
-			t.Errorf("k8s repo 缺少 %q\nAptKeyURL=%s\nDnfKeyURL=%s", want, r.AptKeyURL, r.DnfKeyURL)
+			t.Errorf("k8s repo 缺少 %q\nAptKeyURL=%s\nDnfKeyURL=%s\nDnfRepoBlock=%s", want, r.AptKeyURL, r.DnfKeyURL, r.DnfRepoBlock)
 		}
 	}
 	if strings.Contains(r.AptKeyURL, "v1.27") {
@@ -76,7 +79,7 @@ func TestContainerdRepos(t *testing.T) {
 		}
 	}
 
-	// tuna + rhel7：对齐 kubez-ansible docker-ce.repo-openEuler.j2
+	// tuna + rhel7：优选 tuna，并追加华为云等 failover（云主机出口常 403 单一镜像）
 	tuna := ContainerdRepos("", "", "rhel7", "tuna")
 	if tuna[0].Name != "docker-ce" {
 		t.Errorf("el7 repo Name = %q, want docker-ce", tuna[0].Name)
@@ -84,6 +87,8 @@ func TestContainerdRepos(t *testing.T) {
 	for _, want := range []string{
 		"Docker CE Stable - $basearch",
 		"https://mirrors.tuna.tsinghua.edu.cn/docker-ce/linux/centos/7/$basearch/stable",
+		"https://mirrors.huaweicloud.com/docker-ce/linux/centos/7/$basearch/stable",
+		"https://mirrors.aliyun.com/docker-ce/linux/centos/7/$basearch/stable",
 		"https://mirrors.tuna.tsinghua.edu.cn/docker-ce/linux/centos/gpg",
 		"[docker-ce-nightly-source]",
 		"enabled=0",
@@ -92,18 +97,28 @@ func TestContainerdRepos(t *testing.T) {
 			t.Errorf("tuna el7 repo 缺少 %q:\n%s", want, tuna[0].DnfRepoBlock)
 		}
 	}
+	// tuna 应排在 baseurl 第一行
+	if !strings.Contains(tuna[0].DnfRepoBlock, "baseurl=https://mirrors.tuna.tsinghua.edu.cn/docker-ce/linux/centos/7/$basearch/stable\n") {
+		t.Errorf("tuna 应作为首选 baseurl:\n%s", tuna[0].DnfRepoBlock)
+	}
 	// 不应使用 $releasever（Kylin 上会指错仓库）
 	if strings.Contains(tuna[0].DnfRepoBlock, "$releasever") {
 		t.Errorf("el7 docker-ce repo 不应含 $releasever:\n%s", tuna[0].DnfRepoBlock)
 	}
 
-	// el7 即使配置 aliyun，dnf 也强制 tuna（规避阿里云 centos/7 包 403）
+	// el7+aliyun：尊重配置优选 aliyun，同时带 failover（不再强制单源 tuna）
 	aliyunEL7 := ContainerdRepos("", "", "rhel7", "aliyun")
-	if !strings.Contains(aliyunEL7[0].DnfRepoBlock, "mirrors.tuna.tsinghua.edu.cn/docker-ce/linux/centos/7") {
-		t.Errorf("el7+aliyun 应强制 tuna dnf host:\n%s", aliyunEL7[0].DnfRepoBlock)
+	if !strings.Contains(aliyunEL7[0].DnfRepoBlock, "baseurl=https://mirrors.aliyun.com/docker-ce/linux/centos/7/$basearch/stable\n") {
+		t.Errorf("el7+aliyun 应以 aliyun 为首选 baseurl:\n%s", aliyunEL7[0].DnfRepoBlock)
 	}
-	if strings.Contains(aliyunEL7[0].DnfRepoBlock, "mirrors.aliyun.com/docker-ce") {
-		t.Errorf("el7 dnf 不应再含 aliyun docker-ce:\n%s", aliyunEL7[0].DnfRepoBlock)
+	if !strings.Contains(aliyunEL7[0].DnfRepoBlock, "mirrors.huaweicloud.com/docker-ce") {
+		t.Errorf("el7 dnf 应含华为云 failover:\n%s", aliyunEL7[0].DnfRepoBlock)
+	}
+
+	// huawei + rhel7
+	huawei := ContainerdRepos("", "", "rhel7", "huawei")
+	if !strings.Contains(huawei[0].DnfRepoBlock, "baseurl=https://mirrors.huaweicloud.com/docker-ce/linux/centos/7/$basearch/stable\n") {
+		t.Errorf("el7+huawei 应以华为云为首选:\n%s", huawei[0].DnfRepoBlock)
 	}
 
 	// docker 官方保留（download.docker.com，rpm 段为 rhel）
@@ -243,18 +258,30 @@ func TestRPMArch(t *testing.T) {
 }
 
 func TestCentOS7ExtrasRepos(t *testing.T) {
-	repos := CentOS7ExtrasRepos()
-	if len(repos) != 1 {
-		t.Fatalf("期望 1 个 repo，实际 %d", len(repos))
+	cases := []struct {
+		arch string
+		want string
+	}{
+		{"amd64", "mirrors.aliyun.com/centos-vault/7.9.2009/extras/$basearch/"},
+		{"x86_64", "mirrors.aliyun.com/centos-vault/7.9.2009/extras/$basearch/"},
+		{"arm64", "mirrors.aliyun.com/centos-altarch/7.9.2009/extras/$basearch/"},
+		{"aarch64", "mirrors.aliyun.com/centos-altarch/7.9.2009/extras/$basearch/"},
+		{"", "mirrors.aliyun.com/centos-vault/7.9.2009/extras/$basearch/"}, // 未知/空默认 vault
 	}
-	r := repos[0]
-	for _, want := range []string{
-		"[centos7-extras]",
-		"mirrors.aliyun.com/centos-vault/7.9.2009/extras/$basearch/",
-		"gpgcheck=0",
-	} {
-		if !strings.Contains(r.DnfRepoBlock, want) {
-			t.Errorf("centos7-extras 缺少 %q:\n%s", want, r.DnfRepoBlock)
+	for _, c := range cases {
+		repos := CentOS7ExtrasRepos(c.arch)
+		if len(repos) != 1 {
+			t.Fatalf("arch=%q 期望 1 个 repo，实际 %d", c.arch, len(repos))
+		}
+		r := repos[0]
+		for _, want := range []string{"[centos7-extras]", c.want, "gpgcheck=0"} {
+			if !strings.Contains(r.DnfRepoBlock, want) {
+				t.Errorf("arch=%q centos7-extras 缺少 %q:\n%s", c.arch, want, r.DnfRepoBlock)
+			}
+		}
+		// arm64 不得再指向主线 vault extras（该路径 aarch64 404）
+		if RPMArch(c.arch) == "aarch64" && strings.Contains(r.DnfRepoBlock, "centos-vault/7.9.2009/extras") {
+			t.Errorf("arch=%q 不应使用 centos-vault 主线 extras:\n%s", c.arch, r.DnfRepoBlock)
 		}
 	}
 }
@@ -308,7 +335,7 @@ func TestSplitSystemContainerdAndDockerCE(t *testing.T) {
 func TestBuildDownloadScriptDNFSplitsContainerdAndDockerCE(t *testing.T) {
 	s := BuildDownloadScript(DownloadScriptOpts{
 		PkgManager: "dnf",
-		Repos:      append(K8sRepos("v1.31"), CentOS7ExtrasRepos()...),
+		Repos:      append(K8sRepos("v1.31"), CentOS7ExtrasRepos("amd64")...),
 		Pkgs:       []string{"kubeadm-1.31.6", "containerd", "cri-tools", "docker-ce"},
 		Arch:       "amd64",
 	})

@@ -1,0 +1,154 @@
+# builder 配置文件
+# 单文件包含三节：OS 注册表（oses）、k8s 版本参考（versions）、附加组件镜像（addons）。
+# 可整体更换配置目录（--config-dir 或环境变量 BUILDER_CONFIG_DIR）。
+
+# ========== OS 注册表 ==========
+# 定义各 OS 的可用版本、包管理器、构建镜像（容器内下载软件包用）、
+# 架构，以及软件源所需的版本代号（codename / codenames）与 rpm 发行版标识（rpm_distro）。
+# 提示：versions/build_images 为初始值，加载器不做镜像可用性验证，按需自行核对。
+# 包源说明：
+#   - k8s 组件（kubeadm/kubelet/kubectl）来自官方 pkgs.k8s.io，仓库由 k8s 版本自动推导（v1.27.3 → v1.27）
+#   - containerd/cri-tools 来自官方 packages.containerd.io；
+#     apt 源需要 codename，dnf 源需要 rpm_distro（rocky→rhel9、openEuler→rhel7，按 containerd 官方 rpm 仓库规则）
+#   - 具体源 URL 以 pkgs.k8s.io / packages.containerd.io 官方文档为准，本配置为初始值（未实测）
+#
+#
+#
+
+
+build:
+  kubeadm_mode: "local"
+  kubeadm_remote_host: "agent"
+  pack_image: "swr.cn-north-4.myhuaweicloud.com/pixiu-public/caoyingjun/docker:24-cli"
+
+
+
+oses:
+  - name: ubuntu
+    versions: ["20.04", "22.04", "24.04"]
+    pkg_manager: apt
+    build_images:
+      "20.04": swr.cn-north-4.myhuaweicloud.com/pixiu-public/ubuntu:20.04
+      "22.04": swr.cn-north-4.myhuaweicloud.com/pixiu-public/caoyingjun/ubuntu:22.04
+      "24.04": swr.cn-north-4.myhuaweicloud.com/pixiu-public/caoyingjun/ubuntu:24.04
+    codenames:
+      "20.04": focal
+      "22.04": jammy
+      "24.04": noble
+    containerd_repo: ustc    # 中科大镜像 mirrors.ustc.edu.cn/docker-ce（默认 aliyun，可配置 ustc/docker/none）
+    archs: ["amd64", "arm64"]
+  - name: debian
+    versions: ["11", "12"]
+    pkg_manager: apt
+    build_images:
+      "11": swr.cn-north-4.myhuaweicloud.com/pixiu-public/debian:11
+      "12": swr.cn-north-4.myhuaweicloud.com/pixiu-public/debian:12
+    codenames:
+      "11": bullseye
+      "12": bookworm
+    archs: ["amd64", "arm64"]
+  - name: rocky
+    versions: ["9"]
+    pkg_manager: dnf
+    build_images:
+      "9": swr.cn-north-4.myhuaweicloud.com/pixiu-public/rockylinux:9
+    rpm_distro: rhel9
+    archs: ["amd64", "arm64"]
+  - name: openEuler
+    versions: ["22.03"]
+    pkg_manager: dnf
+    build_images:
+      "22.03": swr.cn-north-4.myhuaweicloud.com/pixiu-public/openeuler:22.03-lts-sp3
+    rpm_distro: rhel7
+    # openEuler 对应 download.docker.com/linux/rhel/7/ 为 404（docker 官方已停止发布 RHEL7 仓库），
+    # 因此 containerd 改为从系统源（everything 仓库，含 containerd-1.2.0-315.oe2203sp3）安装：
+    #   containerd_pkg: "containerd"（系统源包名，非 docker-ce 源的 containerd.io）
+    #   containerd_repo: "none"（不配置 download.docker.com 源，避免 dnf makecache 失败）
+    containerd_pkg: "containerd"
+    containerd_repo: "none"
+    archs: ["amd64", "arm64"]
+	// 银河麒麟 V10（CentOS 7 / el7 兼容）：dnf + docker-ce centos/7 源的 containerd.io
+  # （与 kubez-ansible 中 Kylin Linux Advanced Server 安装路径一致）
+  # containerd_repo=huawei：华为云 ECS 上 tuna/aliyun 拉包常 403；未配置时仍走多镜像 failover
+  - name: kylin
+    versions: ["v10"]
+    pkg_manager: dnf
+    build_images:
+      "v10": swr.cn-north-4.myhuaweicloud.com/pixiu-public/caoyingjun/kylin:v10-sp3
+    rpm_distro: rhel7
+    containerd_pkg: "containerd.io"
+    containerd_repo: "huawei"
+    archs: ["amd64", "arm64"]
+
+
+
+# k8s 版本参考清单（可选）。
+# build 支持任意合法 vX.Y.Z 版本（如 v1.29.5、v1.30.2），无需在此注册；
+# 本清单仅用于：
+#   1) list-k8s 展示常见参考版本；
+#   2) 已知版本的 crictl 回退版本覆盖（cri-tools 包缺失时使用清单中的 crictl 值）。
+# 包源仓库由 version 自动推导（v1.27.3 → pkgs.k8s.io v1.27），无需额外字段。
+# containerd / runc 以包管理器源内软件包为准（此处的版本字段仅供记录参考）；
+# 未注册版本的 crictl 回退版本自动推导为与 k8s 版本对齐（v1.29.5 → 1.29.5）。
+versions:
+  - version: v1.27.3
+    containerd: "1.7.13"
+    crictl: "1.27.1"
+    runc: "1.1.7"
+  - version: v1.28.2
+    containerd: "1.7.13"
+    crictl: "1.28.0"
+    runc: "1.1.7"
+  - version: v1.31.0
+    containerd: "1.7.13"
+    crictl: "1.31.0"
+    runc: "1.1.7"
+
+# ========== 附加组件镜像 ==========
+# 附加组件镜像清单：name → image:tag
+# name 用作镜像保存文件名（images/addons/{name}.tar）
+addon_images:
+  - name: flannel
+    image: "swr.cn-north-4.myhuaweicloud.com/pixiu-public/caoyingjun/flannel"
+    tag: "v0.25.4"
+  - name: flannel-cni-plugin
+    image: "swr.cn-north-4.myhuaweicloud.com/pixiu-public/caoyingjun/flannel-cni-plugin"
+    tag: "v1.4.1-flannel1"
+  - name: cni
+    image: "swr.cn-north-4.myhuaweicloud.com/pixiu-public/caoyingjun/cni"
+    tag: "v3.31.3"
+  - name: node
+    image: "swr.cn-north-4.myhuaweicloud.com/pixiu-public/caoyingjun/node"
+    tag: "v3.31.3"
+  - name: kube-controllers
+    image: "swr.cn-north-4.myhuaweicloud.com/pixiu-public/caoyingjun/kube-controllers"
+    tag: "v3.31.3"
+  - name: typha
+    image: "swr.cn-north-4.myhuaweicloud.com/pixiu-public/caoyingjun/typha"
+    tag: "v3.31.3"
+
+
+server_images:
+  - name: mysql
+    image: "swr.cn-north-4.myhuaweicloud.com/pixiu-public/caoyingjun/mysql"
+    tag: "8.4"
+  - name: pixiu
+    image: "crpi-0ecikjs9ylb2hqyo.cn-hangzhou.personal.cr.aliyuncs.com/pixiu-public/pixiu"
+    tag: "v2.0.1-beta.5-arm64"
+  - name: kubez-ansible
+    image: "crpi-0ecikjs9ylb2hqyo.cn-hangzhou.personal.cr.aliyuncs.com/pixiu-public/kubez-ansible"
+    tags:
+      - "v3.0.4-arm64"
+
+addon_packages:
+  - name: conntrack
+  - name: vim
+  - name: docker-ce
+  - name: ipvsadm
+  - name: ipset
+
+github:
+  owner: ""                   # 仓库所有者（或通过 --github-owner 覆盖）
+  repo: ""                    # 仓库名（或通过 --github-repo 覆盖）
+  tag: ""                     # Release tag，如 v1.27.3（或通过 --github-tag 覆盖）
+  token: ""                   # GitHub PAT（建议用环境变量 GITHUB_TOKEN / GH_TOKEN，勿明文写入）

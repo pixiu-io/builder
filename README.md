@@ -96,6 +96,13 @@ go build -o builder ./cmd/builder
 ./builder build servers --arch amd64 --upload
 ```
 
+镜像打包阶段的工具容器（含 docker CLI，容器内 `docker pull` + save）可用 `--pack-image` 指定，默认为 `swr.cn-north-4.myhuaweicloud.com/pixiu-public/pixiukit/docker:24-cli`（仅 amd64）。ARM/aarch64 宿主机构建 arm64 镜像时，默认镜像会因 `exec format error` 失败，须显式指定 arm64 兼容镜像：
+
+```bash
+# ARM64 宿主构建 arm64 镜像（默认 pack 镜像仅 amd64，需显式指定 arm64 兼容镜像）
+./builder build images --kubernetes-version v1.31.6 --arch arm64 --pack-image <your-registry>/pixiukit/docker:24-cli-arm64
+```
+
 多版本并发时，各版本构建过程中**不立刻** `docker rmi`（避免先完成的版本删掉后完成版本仍在用的共享镜像）；全部结束后对中间镜像去重再统一清理（`--keep-files` 时仍保留）。
 
 ## 自定义附加组件（addon_packages / addon_images）
@@ -235,6 +242,7 @@ build:
   dry_run: false
   keep_files: false      # 默认 false=构建完成后清理中间文件与 docker 中间镜像；true=保留
   verbose: false         # 默认 false=精简输出；true=打印详细过程日志（镜像下载/pull 进度等）
+  pack_image: ""         # 镜像打包阶段工具镜像（含 docker CLI，容器内 docker pull + save）；空=内置默认 swr.cn-north-4.myhuaweicloud.com/pixiu-public/pixiukit/docker:24-cli；ARM/aarch64 宿主须配置 arm64 兼容镜像，否则 exec format error
   kubeadm_dir: "./kube"  # kubeadm 二进制缓存目录；文件名 kubeadm-{version}-linux-{arch}
 ```
 
@@ -307,6 +315,11 @@ export GITHUB_TOKEN=ghp_xxx
 默认端口：
 - registry：`0.0.0.0:5000` → `docker pull <host>:5000/pixiu/kube-apiserver:v1.27.3`
 - 软件源：`0.0.0.0:8080` → `http://<host>:8080/rpm`（dnf）或 `/deb`（apt）
+
+端口可用 `--registry-port` / `--repo-port` 单独覆盖（地址段保持 0.0.0.0 不变）：
+```bash
+./builder serve --bundle ./x.tar.gz --registry-port 8088 --repo-port 8089
+```
 
 客户端示例：
 
@@ -394,7 +407,7 @@ go test ./...    # 单元测试
 - 依赖本机 docker；docker 不可用时 build 直接失败中断，不产出离线包；可用 `build packages` 显式跳过镜像阶段。
 - 附加组件镜像 flannel 已切换到华为云 SWR pixiu-public 仓库（`swr.cn-north-4.myhuaweicloud.com/pixiu-public/flannel/flannel:v0.24.2`）；metrics-server 等镜像使用当前 builder.yaml 中配置的 pixiucloud 仓库。网络不支持外部仓库时可用 `--skip-addons` 跳过附加组件（addon_images 与 addon_packages 均不进产物，核心镜像 + 核心软件包仍完整），未显式跳过时附加组件拉取失败仍中断。
 - 核心镜像清单通过官方 kubeadm 静态二进制生成（`kubeadm config images list`，Linux 宿主机直跑；其它平台挂载进构建容器）。
-- 镜像打包在 `swr.cn-north-4.myhuaweicloud.com/pixiu-public/pixiukit/docker:24-cli` 容器内执行（`--name builder-images-<id>`，挂载 `/var/run/docker.sock` 与输出目录）；软件包下载容器名为 `builder-packages-<id>`，便于 `docker ps` 区分阶段。
+- 镜像打包在 `--pack-image` 指定的工具容器内执行（默认 `swr.cn-north-4.myhuaweicloud.com/pixiu-public/pixiukit/docker:24-cli`，含 docker CLI，`docker pull` + save；容器名 `--name builder-images-<id>`，挂载 `/var/run/docker.sock` 与输出目录）。默认 pack 镜像仅 amd64，ARM/aarch64 宿主须用 `--pack-image` 指定 arm64 兼容镜像，否则 `exec format error`；软件包下载容器名为 `builder-packages-<id>`，便于 `docker ps` 区分阶段。
 - 容器内真实执行依赖 docker，本机无 docker 时仅 dry-run 演练 + 单测；apt 系 k8s 源使用阿里云 `mirrors.aliyun.com/kubernetes-new`，containerd 源默认阿里云镜像（`mirrors.aliyun.com/docker-ce`）已用 curl 实测可达，openEuler 系统源（everything 仓库）的 containerd 包已确认 repomd 200 可达。
 - CentOS 7（yum）依赖 downloadonly 插件与 yumdownloader；CentOS 7 已 EOL，默认源已由脚本自动切换 vault.centos.org（见上文软件源说明），且官方 docker 源对应 rhel/7 在 download.docker.com 为 404（默认阿里云镜像路径段为 centos/7），非 only-addons 场景的 containerd 包下载存在兼容性风险（系统依赖包经 vault 可正常下载，containerd.io 需 docker-ce 源提供）；`--only-addons` 不配置 k8s/containerd 源，不受该 rhel/7 源限制。
 - openEuler 已通过 `containerd_pkg: containerd` + `containerd_repo: none` 从系统源安装 containerd，规避官方 download.docker.com 无 rhel/7 仓库导致的 `dnf makecache` 失败；即使配置未显式声明这两个字段，也会按发行版自动推断为系统源（containerd + none），旧配置兼容；其他 dnf 系（rocky 等）默认走阿里云镜像 `containerd.io` 包。
