@@ -1201,8 +1201,8 @@ func newServeCmd() *cobra.Command {
 			return err
 		},
 	}
-	cmd.Flags().StringArrayVar(&serveBundles, "bundle", nil, "离线包目录或 tar.gz（可重复，例如 packages + images）")
-	cmd.Flags().StringVar(&serveDir, "dir", "", "离线包目录：不存在则自动创建；加载其下所有 *.tar.gz 并轮询热加载新包（3s）")
+	cmd.Flags().StringArrayVar(&serveBundles, "bundle", nil, "离线包目录或 tar.gz（可重复；支持 builder 产物与单镜像 docker save 的 .tar.gz，可混放）")
+	cmd.Flags().StringVar(&serveDir, "dir", "", "离线包目录：不存在则自动创建；加载其下所有 *.tar.gz（builder 包与单镜像 save 可混放）并轮询热加载（3s）")
 	cmd.Flags().StringVar(&serveDataDir, "data-dir", "./serve-data", "工作目录（解压、repodata、registry blob）")
 	cmd.Flags().StringVar(&serveRegistryAddr, "registry-addr", "0.0.0.0:5000", "OCI registry 监听地址")
 	cmd.Flags().StringVar(&serveRegistryPort, "registry-port", "", "registry 端口（覆盖 --registry-addr 端口，地址段不变）")

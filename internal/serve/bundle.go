@@ -1,6 +1,8 @@
 package serve
 
 import (
+	"archive/tar"
+	"compress/gzip"
 	"fmt"
 	"io"
 	"os"
@@ -27,6 +29,8 @@ func loadBundles(inputs []string, destRoot string) ([]string, error) {
 	return roots, nil
 }
 
+// resolveBundle 加载离线包：支持 builder 产物（含 manifest.yaml）与单镜像
+// docker save 的 .tar.gz（含 manifest.json）。二者可经 --bundle / --dir 混放。
 func resolveBundle(path, extractDir string) (string, error) {
 	info, err := os.Stat(path)
 	if err != nil {
@@ -42,17 +46,121 @@ func resolveBundle(path, extractDir string) (string, error) {
 	if !strings.HasSuffix(path, ".tar.gz") {
 		return "", fmt.Errorf("必须是目录或 .tar.gz")
 	}
+	kind, err := peekTarGzKind(path)
+	if err != nil {
+		return "", fmt.Errorf("读取 tar.gz 失败: %w", err)
+	}
 	if err := os.MkdirAll(extractDir, 0o755); err != nil {
 		return "", err
+	}
+	// 单镜像 docker-save：只 gunzip 成 .tar，避免整包 Untar 占磁盘。
+	if kind == "docker-save" {
+		return materializeDockerSaveBundle(path, extractDir)
 	}
 	if err := builder.UntarGz(path, extractDir); err != nil {
 		return "", fmt.Errorf("解压失败: %w", err)
 	}
-	root := findManifestDir(extractDir)
-	if root == "" {
-		return "", fmt.Errorf("tar.gz 中未找到 manifest.yaml")
+	if root := findManifestDir(extractDir); root != "" {
+		return root, nil
 	}
-	return root, nil
+	if isDockerSaveDir(extractDir) {
+		return materializeDockerSaveBundle(path, extractDir)
+	}
+	return "", fmt.Errorf("tar.gz 既不是 builder 离线包（缺 manifest.yaml），也不是 docker save 镜像（缺 manifest.json）")
+}
+
+// peekTarGzKind 扫描 tar.gz 成员名，区分 builder 离线包与 docker save。
+// 优先 manifest.yaml（bundle）；否则有 manifest.json 则为 docker-save。
+func peekTarGzKind(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	gz, err := gzip.NewReader(f)
+	if err != nil {
+		return "", err
+	}
+	defer gz.Close()
+	tr := tar.NewReader(gz)
+	hasYAML, hasJSON := false, false
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return "", err
+		}
+		base := filepath.Base(hdr.Name)
+		switch base {
+		case manifest.ManifestFileName:
+			hasYAML = true
+		case "manifest.json":
+			hasJSON = true
+		}
+		if hasYAML {
+			return "bundle", nil
+		}
+	}
+	if hasJSON {
+		return "docker-save", nil
+	}
+	return "", nil
+}
+
+// isDockerSaveDir 判断目录是否为 docker save 解压结果（根目录含 manifest.json）。
+func isDockerSaveDir(dir string) bool {
+	st, err := os.Stat(filepath.Join(dir, "manifest.json"))
+	return err == nil && !st.IsDir()
+}
+
+// materializeDockerSaveBundle 将单镜像 docker-save .tar.gz 落成伪 bundle：
+// images/addons/<name>.tar（未压缩，供 ImageFromPath / RepoTags 读取）。
+func materializeDockerSaveBundle(tarGzPath, extractDir string) (string, error) {
+	name := tarGzBaseName(tarGzPath)
+	imgDir := filepath.Join(extractDir, "images", "addons")
+	if err := os.MkdirAll(imgDir, 0o755); err != nil {
+		return "", err
+	}
+	dest := filepath.Join(imgDir, name+".tar")
+	if err := gunzipFile(tarGzPath, dest); err != nil {
+		return "", fmt.Errorf("还原 docker-save tar 失败: %w", err)
+	}
+	return extractDir, nil
+}
+
+// tarGzBaseName 返回 foo.tar.gz → foo。
+func tarGzBaseName(path string) string {
+	base := filepath.Base(path)
+	if len(base) >= 7 && strings.EqualFold(base[len(base)-7:], ".tar.gz") {
+		base = base[:len(base)-7]
+	}
+	if strings.TrimSpace(base) == "" || base == "." {
+		return "image"
+	}
+	return base
+}
+
+// gunzipFile 将 .gz 文件解压为普通文件（用于 docker-save .tar.gz → .tar）。
+func gunzipFile(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	gz, err := gzip.NewReader(in)
+	if err != nil {
+		return err
+	}
+	defer gz.Close()
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+	_, err = io.Copy(out, gz)
+	return err
 }
 
 func findManifestDir(root string) string {

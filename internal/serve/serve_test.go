@@ -6,6 +6,7 @@ import (
 	"compress/gzip"
 	"context"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -1016,4 +1017,185 @@ func TestPrintReadyConfigDemo(t *testing.T) {
 			t.Errorf("就绪输出缺少 %q\n%s", want, out)
 		}
 	}
+}
+
+func TestTarGzBaseName(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"/tmp/pause.tar.gz", "pause"},
+		{"pause.tar.gz", "pause"},
+		{"PAUSE.TAR.GZ", "PAUSE"},
+		{".tar.gz", "image"},
+	}
+	for _, c := range cases {
+		if got := tarGzBaseName(c.in); got != c.want {
+			t.Errorf("tarGzBaseName(%q)=%q want %q", c.in, got, c.want)
+		}
+	}
+}
+
+func containerRegistryTestTar(t *testing.T) string {
+	t.Helper()
+	out, err := exec.Command("go", "list", "-m", "-f", "{{.Dir}}", "github.com/google/go-containerregistry").Output()
+	if err != nil {
+		t.Skipf("go list containerregistry: %v", err)
+	}
+	tarPath := filepath.Join(strings.TrimSpace(string(out)), "pkg/v1/tarball/testdata/test_image_1.tar")
+	if _, err := os.Stat(tarPath); err != nil {
+		t.Skip(err)
+	}
+	return tarPath
+}
+
+func TestPeekAndResolveDockerSaveTarGz(t *testing.T) {
+	tarPath := containerRegistryTestTar(t)
+	dir := t.TempDir()
+	gzPath := filepath.Join(dir, "tarball-image.tar.gz")
+	if err := gzipFile(tarPath, gzPath); err != nil {
+		t.Fatal(err)
+	}
+
+	kind, err := peekTarGzKind(gzPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if kind != "docker-save" {
+		t.Fatalf("peekTarGzKind=%q want docker-save", kind)
+	}
+
+	root, err := resolveBundle(gzPath, filepath.Join(dir, "extract"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tars, err := collectImageTars([]string{root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tars) != 1 {
+		t.Fatalf("collectImageTars=%v", tars)
+	}
+	if tars[0].Name != "tarball-image" {
+		t.Errorf("name=%q want tarball-image", tars[0].Name)
+	}
+	if _, err := os.Stat(tars[0].Path); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestPeekTarGzKindBuilderBundle(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "src")
+	if err := os.MkdirAll(filepath.Join(src, "packages"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "manifest.yaml"), []byte("schema_version: 1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gz := filepath.Join(dir, "bundle.tar.gz")
+	if err := tarGzDir(src, gz); err != nil {
+		t.Fatal(err)
+	}
+	kind, err := peekTarGzKind(gz)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if kind != "bundle" {
+		t.Fatalf("kind=%q want bundle", kind)
+	}
+}
+
+func TestResolveBundleMixedBuilderAndDockerSave(t *testing.T) {
+	tarPath := containerRegistryTestTar(t)
+	dir := t.TempDir()
+
+	bSrc := filepath.Join(dir, "bsrc")
+	if err := os.MkdirAll(filepath.Join(bSrc, "packages"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(bSrc, "manifest.yaml"), []byte("schema_version: 1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	builderGz := filepath.Join(dir, "builder.tar.gz")
+	if err := tarGzDir(bSrc, builderGz); err != nil {
+		t.Fatal(err)
+	}
+
+	imgGz := filepath.Join(dir, "myimg.tar.gz")
+	if err := gzipFile(tarPath, imgGz); err != nil {
+		t.Fatal(err)
+	}
+
+	roots, err := loadBundles([]string{builderGz, imgGz}, filepath.Join(dir, "out"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(roots) != 2 {
+		t.Fatalf("roots=%d", len(roots))
+	}
+	tars, err := collectImageTars(roots)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tars) != 1 {
+		t.Fatalf("期望仅 docker-save 贡献 1 个镜像 tar，got %v", tars)
+	}
+}
+
+func TestImportImagesFromDockerSaveTarGz(t *testing.T) {
+	tarPath := containerRegistryTestTar(t)
+	dir := t.TempDir()
+	gzPath := filepath.Join(dir, "test-image.tar.gz")
+	if err := gzipFile(tarPath, gzPath); err != nil {
+		t.Fatal(err)
+	}
+	root, err := resolveBundle(gzPath, filepath.Join(dir, "extract"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	blobDir := t.TempDir()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	srv := &http.Server{Handler: newRegistryHandler(blobDir)}
+	go srv.Serve(ln)
+	defer srv.Close()
+
+	port := ln.Addr().(*net.TCPAddr).Port
+	host := fmt.Sprintf("127.0.0.1:%d", port)
+	ctx := context.Background()
+	if err := waitHTTP(ctx, "http://"+host+"/v2/"); err != nil {
+		t.Fatal(err)
+	}
+	refs, err := importImages(ctx, []string{root}, host, host, "pixiu")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(refs) != 1 {
+		t.Fatalf("refs=%v", refs)
+	}
+	if !strings.Contains(refs[0], "/pixiu/tarball:") {
+		t.Fatalf("got %q, want .../pixiu/tarball:...", refs[0])
+	}
+}
+
+// gzipFile 将普通文件 gzip 压缩为 dst。
+func gzipFile(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	out, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+	gw := gzip.NewWriter(out)
+	if _, err := io.Copy(gw, in); err != nil {
+		gw.Close()
+		return err
+	}
+	return gw.Close()
 }
