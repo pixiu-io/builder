@@ -71,6 +71,62 @@ func TestServersGitHubTag(t *testing.T) {
 	}
 }
 
+func TestBuilderGitHubTag(t *testing.T) {
+	old := githubTag
+	t.Cleanup(func() { githubTag = old })
+
+	githubTag = ""
+	if got := builderGitHubTag(); got != githubBuilderReleaseTag {
+		t.Fatalf("default tag = %q, want %q", got, githubBuilderReleaseTag)
+	}
+
+	githubTag = "  custom-builder  "
+	if got := builderGitHubTag(); got != "custom-builder" {
+		t.Fatalf("explicit tag = %q, want custom-builder", got)
+	}
+}
+
+func TestBuilderBinaryAssetName(t *testing.T) {
+	if got := builderBinaryAssetName("amd64"); got != "builder-amd64" {
+		t.Fatalf("got %q", got)
+	}
+	if got := builderBinaryAssetName("arm64"); got != "builder-arm64" {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestNormalizeSyncBuilderArches(t *testing.T) {
+	got, err := normalizeSyncBuilderArches(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[0] != "amd64" || got[1] != "arm64" {
+		t.Fatalf("default = %v", got)
+	}
+
+	got, err = normalizeSyncBuilderArches([]string{"arm64", "arm64", "amd64"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[0] != "arm64" || got[1] != "amd64" {
+		t.Fatalf("dedupe = %v", got)
+	}
+
+	if _, err := normalizeSyncBuilderArches([]string{"riscv64"}); err == nil {
+		t.Fatal("非法 arch 应报错")
+	}
+}
+
+func TestFindModuleRoot(t *testing.T) {
+	root, err := findModuleRoot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "go.mod")); err != nil {
+		t.Fatalf("module root %s 无 go.mod: %v", root, err)
+	}
+}
+
 func TestBuildNeedsKubeadmServers(t *testing.T) {
 	if buildNeedsKubeadm("servers", buildOptions{}) {
 		t.Fatal("build servers 不应需要 kubeadm")

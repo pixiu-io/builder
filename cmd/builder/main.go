@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"sort"
@@ -56,6 +57,9 @@ const githubImagesReleaseTag = "images"
 // githubServersReleaseTag build servers 默认使用的 GitHub Release 名/tag。
 const githubServersReleaseTag = "download"
 
+// githubBuilderReleaseTag sync-builder 默认使用的 GitHub Release 名/tag。
+const githubBuilderReleaseTag = "builder"
+
 // imagesBuildConcurrency build images 多版本时的最大并发数。
 const imagesBuildConcurrency = 10
 
@@ -72,6 +76,12 @@ var (
 	syncKubeadmArch    string
 	syncKubeadmOutDir  string
 	syncKubeadmAll     bool
+)
+
+// sync-builder 子命令 flags
+var (
+	syncBuilderArches []string
+	syncBuilderOutDir string
 )
 
 // kubeadmSyncMinVersion --all 模式下同步的最低正式 k8s 版本（含）。
@@ -147,6 +157,7 @@ func newRootCmd() *cobra.Command {
 	root.AddCommand(newBuildCmd())
 	root.AddCommand(newUploadCmd())
 	root.AddCommand(newSyncKubeadmCmd())
+	root.AddCommand(newSyncBuilderCmd())
 	root.AddCommand(newServeCmd())
 	root.AddCommand(newListOSCmd())
 	root.AddCommand(newListK8sCmd())
@@ -281,7 +292,7 @@ func addBuildServersFlags(cmd *cobra.Command) {
 func addGitHubFlags(cmd *cobra.Command) {
 	cmd.Flags().StringVar(&githubOwner, "github-owner", "", "GitHub 仓库所有者（覆盖配置文件 github.owner）")
 	cmd.Flags().StringVar(&githubRepo, "github-repo", "", "GitHub 仓库名（覆盖配置文件 github.repo）")
-	cmd.Flags().StringVar(&githubTag, "github-tag", "", "GitHub Release tag（覆盖配置文件 github.tag；build images 默认 images，build servers 默认 download；其它命令为空时复用 --kubernetes-version）")
+	cmd.Flags().StringVar(&githubTag, "github-tag", "", "GitHub Release tag（覆盖配置文件 github.tag；build images 默认 images，build servers 默认 download，sync-builder 默认 builder；其它命令为空时复用 --kubernetes-version）")
 	cmd.Flags().StringVar(&githubToken, "github-token", "", "GitHub token（覆盖配置文件 github.token；也可用环境变量 GITHUB_TOKEN/GH_TOKEN）")
 }
 
@@ -783,6 +794,157 @@ func newSyncKubeadmCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&syncKubeadmAll, "all", false, "同步全部 >= v1.31.0 的正式 k8s 版本 Release 与 kubeadm 资产")
 	addGitHubFlags(cmd)
 	return cmd
+}
+
+func newSyncBuilderCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "sync-builder",
+		Short: "交叉编译 builder 二进制并上传到 GitHub Release（默认 tag=builder）",
+		Long: `为指定架构交叉编译 linux 下的 builder 二进制（产物名 builder-{arch}），
+确保目标仓库存在名为 builder 的 Release（--github-tag 可覆盖），并上传/覆盖同名 asset。
+
+默认架构 amd64 + arm64（与 build-bin.sh 一致）；可用 --arch 重复指定。`,
+		Example: `  builder sync-builder --github-owner acme --github-repo builder
+  builder sync-builder --arch amd64 --out-dir ./dist --github-owner acme --github-repo builder
+  go run cmd/builder/main.go sync-builder --arch amd64 --arch arm64 \
+    --configFile builder.yaml --github-owner acme --github-repo builder --github-token "$TOKEN"`,
+		RunE: runSyncBuilder,
+	}
+	cmd.Flags().StringArrayVar(&syncBuilderArches, "arch", []string{"amd64", "arm64"}, "目标架构（可重复；默认 amd64 与 arm64）")
+	cmd.Flags().StringVar(&syncBuilderOutDir, "out-dir", "./dist", "二进制输出目录")
+	addGitHubFlags(cmd)
+	return cmd
+}
+
+func runSyncBuilder(cmd *cobra.Command, args []string) error {
+	cfg, err := config.Load(configFile)
+	if err != nil {
+		return err
+	}
+	arches, err := normalizeSyncBuilderArches(syncBuilderArches)
+	if err != nil {
+		return err
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	opts := mergeGitHubOptions(cfg.GitHub, githubOwner, githubRepo, builderGitHubTag(), githubToken)
+	if err := opts.Validate(); err != nil {
+		return err
+	}
+
+	modRoot, err := findModuleRoot()
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(syncBuilderOutDir, 0o755); err != nil {
+		return fmt.Errorf("创建输出目录失败 %s: %w", syncBuilderOutDir, err)
+	}
+
+	fmt.Printf("确保 GitHub Release 存在: %s/%s@%s\n", opts.Owner, opts.Repo, opts.Tag)
+	if err := ghupload.EnsureRelease(ctx, opts); err != nil {
+		return err
+	}
+
+	var files []string
+	for _, arch := range arches {
+		name := builderBinaryAssetName(arch)
+		out := filepath.Join(syncBuilderOutDir, name)
+		fmt.Printf("编译 builder (%s) → %s\n", arch, out)
+		if err := buildBuilderBinary(ctx, modRoot, out, arch); err != nil {
+			return err
+		}
+		files = append(files, out)
+	}
+
+	fmt.Printf("上传到 GitHub Release %s/%s@%s ...\n", opts.Owner, opts.Repo, opts.Tag)
+	res, err := ghupload.UploadFiles(ctx, opts, files)
+	if err != nil {
+		return err
+	}
+	for _, u := range res {
+		fmt.Printf("  - %s → %s\n", u.LocalPath, u.BrowserURL)
+	}
+	return nil
+}
+
+func normalizeSyncBuilderArches(arches []string) ([]string, error) {
+	if len(arches) == 0 {
+		arches = []string{"amd64", "arm64"}
+	}
+	seen := map[string]bool{}
+	var out []string
+	for _, a := range arches {
+		a = strings.TrimSpace(a)
+		if a == "" {
+			continue
+		}
+		if !config.ValidArch(a) {
+			return nil, fmt.Errorf("不支持的架构 %s（可选 amd64/arm64）", a)
+		}
+		if seen[a] {
+			continue
+		}
+		seen[a] = true
+		out = append(out, a)
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("请至少指定一个 --arch（amd64/arm64）")
+	}
+	return out, nil
+}
+
+func builderBinaryAssetName(arch string) string {
+	return "builder-" + arch
+}
+
+// builderGitHubTag 返回 sync-builder 使用的 GitHub Release tag：
+// 命令行 --github-tag 优先；未指定时默认 builder。
+func builderGitHubTag() string {
+	if tag := strings.TrimSpace(githubTag); tag != "" {
+		return tag
+	}
+	return githubBuilderReleaseTag
+}
+
+// findModuleRoot 从当前工作目录向上查找含 go.mod 的模块根。
+func findModuleRoot() (string, error) {
+	wd, err := os.Getwd()
+	if err != nil {
+		return "", fmt.Errorf("获取工作目录失败: %w", err)
+	}
+	dir := wd
+	for {
+		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
+			return dir, nil
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return "", fmt.Errorf("未找到 go.mod（请在 builder 仓库根目录执行 sync-builder）")
+		}
+		dir = parent
+	}
+}
+
+// buildBuilderBinary 交叉编译 linux/{arch} 的 builder CLI。
+func buildBuilderBinary(ctx context.Context, modRoot, outPath, arch string) error {
+	cmd := exec.CommandContext(ctx, "go", "build", "-o", outPath, "./cmd/builder")
+	cmd.Dir = modRoot
+	cmd.Env = append(os.Environ(),
+		"CGO_ENABLED=0",
+		"GOOS=linux",
+		"GOARCH="+arch,
+	)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("go build (linux/%s) 失败: %w", arch, err)
+	}
+	if err := os.Chmod(outPath, 0o755); err != nil {
+		return fmt.Errorf("设置可执行权限失败 %s: %w", outPath, err)
+	}
+	return nil
 }
 
 func runSyncKubeadm(cmd *cobra.Command, args []string) error {
