@@ -2,6 +2,8 @@ name: sync builder command
 
 on:
   push:
+    branches:
+      - "caoyingjunz-patch-1"
     paths:
       - ".github/workflows/sync-builder.yml"
 
