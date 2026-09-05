@@ -35,6 +35,8 @@ build:
                             #   ARM/aarch64 宿主机必须配置 arm64 兼容镜像，否则 exec format error；
                             #   runtime=containerd 时忽略（宿主机直接 ctr pull/export）
   runtime: "containerd"     # 对应 --runtime：构建容器运行时 containerd|docker；默认 containerd
+                            #   containerd：packages 用 ctr run；images 用 Go 直拉 registry 写 docker-save
+                            #   docker：packages/images 均走 docker（images 另需 pack_image）
   kubeadm_dir: "./kube"      # 对应 --kubeadm-dir：kubeadm 二进制缓存目录，文件名 kubeadm-{version}-linux-{arch}
 
 

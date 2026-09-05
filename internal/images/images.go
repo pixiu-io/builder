@@ -570,6 +570,7 @@ func pullAndSave(ctx context.Context, opts Options, rtCfg rt.Config, jobs []save
 			Image:   j.Image,
 			SubDir:  j.SubDir,
 			OutRoot: opts.ImagesOutDir,
+			Arch:    opts.Arch,
 		})
 	}
 	if err := rt.PullAndSave(ctx, rtCfg, rtJobs, opts.Verbose); err != nil {

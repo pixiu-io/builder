@@ -90,7 +90,7 @@ go build -o builder ./cmd/builder
 ./builder build servers --arch amd64 --upload
 ```
 
-镜像打包默认使用 **containerd**（宿主机 `ctr images pull` + `export`，再转为 docker-save tar）。`--runtime docker` 时用 `--pack-image` 工具容器（默认 `swr.cn-north-4.myhuaweicloud.com/pixiu-public/pixiukit/docker:24-cli`，仅 amd64）。ARM 宿主走 docker 模式时须指定 arm64 兼容 pack 镜像：
+镜像打包默认使用 **containerd** 模式：用 Go 客户端直拉 registry 并写成 docker-save tar（不依赖 `ctr export`）。packages 阶段仍用宿主机 `ctr run`。`--runtime docker` 时用 `--pack-image` 工具容器（默认 `swr.cn-north-4.myhuaweicloud.com/pixiu-public/pixiukit/docker:24-cli`，仅 amd64）。ARM 宿主走 docker 模式时须指定 arm64 兼容 pack 镜像：
 
 ```bash
 # ARM64 宿主 + docker 模式
