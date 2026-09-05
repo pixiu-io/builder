@@ -158,6 +158,7 @@ func newRootCmd() *cobra.Command {
 	root.AddCommand(newUploadCmd())
 	root.AddCommand(newSyncKubeadmCmd())
 	root.AddCommand(newSyncBuilderCmd())
+	root.AddCommand(newSyncClientCmd())
 	root.AddCommand(newServeCmd())
 	root.AddCommand(newListOSCmd())
 	root.AddCommand(newListK8sCmd())
@@ -292,7 +293,7 @@ func addBuildServersFlags(cmd *cobra.Command) {
 func addGitHubFlags(cmd *cobra.Command) {
 	cmd.Flags().StringVar(&githubOwner, "github-owner", "", "GitHub 仓库所有者（覆盖配置文件 github.owner）")
 	cmd.Flags().StringVar(&githubRepo, "github-repo", "", "GitHub 仓库名（覆盖配置文件 github.repo）")
-	cmd.Flags().StringVar(&githubTag, "github-tag", "", "GitHub Release tag（覆盖配置文件 github.tag；build images 默认 images，build servers 默认 download，sync-builder 默认 builder；其它命令为空时复用 --kubernetes-version）")
+	cmd.Flags().StringVar(&githubTag, "github-tag", "", "GitHub Release tag（覆盖配置文件 github.tag；build images 默认 images，build servers 默认 download，sync-builder 默认 builder，sync-client 默认 pixiuctl-{version}；其它命令为空时复用 --kubernetes-version）")
 	cmd.Flags().StringVar(&githubToken, "github-token", "", "GitHub token（覆盖配置文件 github.token；也可用环境变量 GITHUB_TOKEN/GH_TOKEN）")
 }
 
