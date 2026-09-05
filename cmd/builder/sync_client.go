@@ -22,7 +22,7 @@ const (
 	defaultRainbowRef     = "master"
 )
 
-// sync-client 子命令 flags
+// sync client 子命令 flags
 var (
 	syncClientRepoURL string
 	syncClientRef     string
@@ -48,14 +48,14 @@ var defaultPixiuctlTargets = []pixiuctlBuildTarget{
 
 func newSyncClientCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "sync-client",
+		Use:   "client",
 		Short: "拉取 rainbow、交叉编译 pixiuctl 并上传到 GitHub Release",
 		Long: `从 GitHub 拉取 caoyingjunz/rainbow 源码，执行 pixiuctl version 读取版本号，
 交叉编译多平台 pixiuctl 二进制（pixiuctl-{version}-{os}-{arch}），并上传到目标仓库 Release。
 
 默认 Release tag 为 pixiuctl-{version}（如 pixiuctl-0.2.4），可用 --github-tag 覆盖。`,
-		Example: `  builder sync-client --github-owner acme --github-repo builder
-  go run ./cmd/builder sync-client \
+		Example: `  builder sync client --github-owner acme --github-repo builder
+  go run ./cmd/builder sync client \
     --configFile builder.yaml \
     --github-owner acme --github-repo builder --github-token "$TOKEN"`,
 		RunE: runSyncClient,

@@ -144,7 +144,7 @@ func DownloadAsset(ctx context.Context, opts Options, assetName, dst string, mod
 		}
 	}
 	if found == nil {
-		return fmt.Errorf("github release %s/%s@%s 缺少 asset %q，请先执行 sync-kubeadm 上传", opts.Owner, opts.Repo, opts.Tag, assetName)
+		return fmt.Errorf("github release %s/%s@%s 缺少 asset %q，请先执行 sync kubeadm 上传", opts.Owner, opts.Repo, opts.Tag, assetName)
 	}
 	return c.downloadAsset(ctx, found.ID, dst, mode)
 }
