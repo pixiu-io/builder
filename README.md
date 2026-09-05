@@ -61,6 +61,7 @@ go build -o builder ./cmd/builder
 | `upload` | 将已有产物 tar.gz 上传到 GitHub Release。`--file` 可重复；`--github-*` 覆盖配置节 |
 | `sync-kubeadm` | 创建以 k8s 版本为名的 GitHub Release，并上传 kubeadm 二进制。默认单版本；`--all` 同步全部 >= v1.31.0 的正式版本 |
 | `sync-builder` | 交叉编译 `builder-{arch}` 并上传到 GitHub Release（默认 tag=`builder`；默认 arch=amd64+arm64） |
+| `sync-client` | 拉取 [rainbow](https://github.com/caoyingjunz/rainbow)，交叉编译多平台 `pixiuctl-{version}-{os}-{arch}` 并上传（默认 tag=`pixiuctl-{version}`） |
 | `serve` | 加载离线产物，提供本地 OCI registry（`docker pull` 短名）与 yum/dnf/apt HTTP 软件源（纯 Go，无外部工具依赖） |
 | `list-os` | 列出参考 OS / 版本（builder.yaml；实际 build 不限于此列表） |
 | `list-k8s` | 列出支持的 k8s 版本（含记录用运行时版本） |
@@ -284,9 +285,12 @@ export GITHUB_TOKEN=ghp_xxx
 # 交叉编译 builder 二进制并上传到名为 builder 的 Release（默认 amd64+arm64）
 ./builder sync-builder --github-owner acme --github-repo builder
 ./builder sync-builder --arch amd64 --github-owner acme --github-repo builder
+
+# 拉取 rainbow 并交叉编译 pixiuctl 多平台二进制（默认 tag=pixiuctl-{version}）
+./builder sync-client --github-owner acme --github-repo builder
 ```
 
-行为说明：`sync-kubeadm` 创建的 Release 名称即为 k8s 版本号；`--github-tag` 为空时复用 `--kubernetes-version`。`--all` 会查询本仓库 Release 列表与 `kubernetes/kubernetes` 正式 tag（排除 `-rc`/`-alpha`/`-beta`），确保 >= v1.31.0 的版本均有 Release，并在 kubeadm 资产缺失时下载上传；已存在则跳过。`sync-builder` 默认 Release tag 为 `builder`（可用 `--github-tag` 覆盖），产物名为 `builder-{arch}`，同名 asset 会覆盖上传。`build --upload` / `upload` 在目标 Release 不存在时也会自动创建。Token 需具备 `contents: write`（经典 PAT 用 `repo`）权限。
+行为说明：`sync-kubeadm` 创建的 Release 名称即为 k8s 版本号；`--github-tag` 为空时复用 `--kubernetes-version`。`--all` 会查询本仓库 Release 列表与 `kubernetes/kubernetes` 正式 tag（排除 `-rc`/`-alpha`/`-beta`），确保 >= v1.31.0 的版本均有 Release，并在 kubeadm 资产缺失时下载上传；已存在则跳过。`sync-builder` 默认 Release tag 为 `builder`（可用 `--github-tag` 覆盖），产物名为 `builder-{arch}`，同名 asset 会覆盖上传。`sync-client` 从 rainbow 仓库拉取源码，运行 `pixiuctl version` 得到版本号，默认 Release tag 为 `pixiuctl-{version}`（可用 `--github-tag` 覆盖），产物为 `pixiuctl-{version}-{linux,windows,darwin}-{amd64,arm64}`。`build --upload` / `upload` 在目标 Release 不存在时也会自动创建。Token 需具备 `contents: write`（经典 PAT 用 `repo`）权限。
 
 ## 离线源服务（`serve`）
 
