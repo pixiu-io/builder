@@ -1,4 +1,4 @@
-name: sync client command
+name: sync client command2
 
 on:
   push:
