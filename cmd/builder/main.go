@@ -807,7 +807,7 @@ func newSyncBuilderCmd() *cobra.Command {
 默认架构 amd64 + arm64（与 build-bin.sh 一致）；可用 --arch 重复指定。`,
 		Example: `  builder sync-builder --github-owner acme --github-repo builder
   builder sync-builder --arch amd64 --out-dir ./dist --github-owner acme --github-repo builder
-  go run cmd/builder/main.go sync-builder --arch amd64 --arch arm64 \
+  go run ./cmd/builder sync-builder --arch amd64 --arch arm64 \
     --configFile builder.yaml --github-owner acme --github-repo builder --github-token "$TOKEN"`,
 		RunE: runSyncBuilder,
 	}
