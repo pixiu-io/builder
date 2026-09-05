@@ -167,7 +167,7 @@ func TestFetchDryRun(t *testing.T) {
 	if !res.DryRun {
 		t.Error("期望 DryRun=true")
 	}
-	if !strings.HasPrefix(res.Command, "docker run") {
+	if !strings.Contains(res.Command, "run --rm") {
 		t.Errorf("命令构造异常: %s", res.Command)
 	}
 	if !strings.Contains(res.Command, "-v ") || !strings.Contains(res.Command, ":/out") {

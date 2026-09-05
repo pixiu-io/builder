@@ -20,6 +20,7 @@ build:
   kubeadm_mode: "local"
   kubeadm_remote_host: "agent"
   pack_image: "swr.cn-north-4.myhuaweicloud.com/pixiu-public/caoyingjun/docker:24-cli"
+  runtime: "containerd"   # containerd|docker；默认 containerd；containerd 时忽略 pack_image
 
 
 

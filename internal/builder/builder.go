@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -23,6 +22,7 @@ import (
 	"builder/internal/manifest"
 	"builder/internal/mirror"
 	"builder/internal/packages"
+	rt "builder/internal/runtime"
 	"builder/internal/script"
 )
 
@@ -50,13 +50,19 @@ type Options struct {
 	DryRun bool
 	// KeepFiles 构建完成后是否保留中间文件（packages/images/bundle 目录）；默认 false=清理。
 	KeepFiles bool
-	// DeferDockerImageCleanup 为 true 时不在 Build 内 docker rmi，
+	// DeferDockerImageCleanup 为 true 时不在 Build 内清理中间镜像，
 	// 仅将拉取镜像写入 Result.PulledImages，由调用方在多版本并发结束后统一去重清理。
 	// 中间 bundle 目录仍按 KeepFiles 立即清理。
 	DeferDockerImageCleanup bool
+	// Runtime 容器运行时：containerd（默认）或 docker。
+	Runtime string
 	// DockerBin docker 命令路径，默认 "docker"；测试注入用。
 	DockerBin string
-	// PackImage 镜像打包容器镜像，为空时 images 包用内置默认。
+	// CtrBin ctr 命令路径，默认 "ctr"；测试注入用。
+	CtrBin string
+	// ContainerdAddress ctr --address，默认 /run/containerd/containerd.sock。
+	ContainerdAddress string
+	// PackImage 镜像打包容器镜像（仅 docker 模式），为空时 images 包用内置默认。
 	PackImage string
 	// Verbose 打印详细过程日志（镜像下载/pull 进度等）；默认 false=精简输出。
 	Verbose bool
@@ -419,7 +425,10 @@ func Build(ctx context.Context, opts Options) (*Result, error) {
 			SkipK8sContainerdRepos: opts.OnlyAddons, // only-addons 只下载系统源附加包，无需 k8s/containerd 源
 			CrictlVersion:          opts.Config.CrictlVersionFor(opts.K8sVersion),
 			Arch:                   opts.Arch,
+			Runtime:                opts.Runtime,
 			DockerBin:              opts.DockerBin,
+			CtrBin:                 opts.CtrBin,
+			ContainerdAddress:      opts.ContainerdAddress,
 		})
 		if err != nil {
 			return stepOut{err: fmt.Errorf("[容器内软件包下载] 失败: %w", err)}
@@ -462,7 +471,10 @@ func Build(ctx context.Context, opts Options) (*Result, error) {
 			Addons:            imgPlan.Addons,
 			SkipAddons:        opts.Mode != "servers" && opts.SkipAddons, // servers 忽略 --skip-addons
 			ImagesOutDir:      filepath.Join(bundleDir, "images"),
+			Runtime:           opts.Runtime,
 			DockerBin:         opts.DockerBin,
+			CtrBin:            opts.CtrBin,
+			ContainerdAddress: opts.ContainerdAddress,
 			PackImage:         opts.PackImage,
 			Verbose:           opts.Verbose,
 		})
@@ -670,7 +682,7 @@ func Build(ctx context.Context, opts Options) (*Result, error) {
 
 		// 多版本并发时延后统一 docker rmi，避免先完成的版本删掉仍在使用的共享镜像。
 		if !opts.DeferDockerImageCleanup {
-			CleanupDockerImages(opts.DockerBin, pulledImages, opts.Out)
+			CleanupDockerImages(opts.Runtime, opts.DockerBin, opts.CtrBin, opts.ContainerdAddress, pulledImages, opts.Out)
 		}
 	}
 
@@ -698,26 +710,19 @@ func UniqueImageRefs(images []string) []string {
 	return out
 }
 
-// CleanupDockerImages 对镜像列表去重后执行 docker rmi。
+// CleanupDockerImages 对镜像列表去重后按 runtime 删除中间镜像。
 // 镜像被占用或不存在时删除失败仅记录日志，不返回错误。返回成功删除数量。
-func CleanupDockerImages(dockerBin string, images []string, out io.Writer) int {
+func CleanupDockerImages(runtimeName, dockerBin, ctrBin, containerdAddress string, images []string, out io.Writer) int {
 	uniq := UniqueImageRefs(images)
 	if len(uniq) == 0 {
 		return 0
 	}
-	if dockerBin == "" {
-		dockerBin = "docker"
-	}
-	removed := 0
-	for _, img := range uniq {
-		if err := exec.Command(dockerBin, "rmi", img).Run(); err != nil {
-			logf(out, "[清理] docker rmi %s 失败: %v", img, err)
-		} else {
-			removed++
-		}
-	}
-	logf(out, "[清理] 已删除 %d 个中间镜像（--keep-files 可保留）", removed)
-	return removed
+	return rt.RemoveImages(rt.Config{
+		Runtime:           runtimeName,
+		DockerBin:         dockerBin,
+		CtrBin:            ctrBin,
+		ContainerdAddress: containerdAddress,
+	}, uniq, out)
 }
 
 // packTarget 单个待打 tar.gz 的 bundle 目录。

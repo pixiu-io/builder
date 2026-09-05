@@ -1,8 +1,7 @@
 // Package images 生成核心镜像清单（kubeadm config images list），
-// 并在容器内 docker pull + save 核心镜像与附加组件镜像为 tar 文件。
-// 核心镜像清单通过官方 kubeadm 静态二进制生成（宿主机直跑或挂进构建容器）。
-// 镜像打包在 PackImage 容器内执行（挂载 docker.sock + 输出目录），与软件包阶段一致。
-// docker 不可用时步骤标记为 skipped。
+// 并 pull + save 核心镜像与附加组件镜像为 docker-save tar 文件。
+// runtime=docker：在 PackImage 容器内经 docker.sock 操作；
+// runtime=containerd（默认）：宿主机 ctr pull/export 再转为 docker-save。
 package images
 
 import (
@@ -21,12 +20,13 @@ import (
 	"unicode"
 
 	"builder/internal/config"
+	rt "builder/internal/runtime"
 )
 
-// 默认镜像打包容器（仅含 docker CLI，通过挂载的 sock 操作宿主机 daemon）。
+// 默认镜像打包容器（仅 docker 模式；含 docker CLI，通过挂载的 sock 操作宿主机 daemon）。
 const defaultPackImage = "swr.cn-north-4.myhuaweicloud.com/pixiu-public/pixiukit/docker:24-cli"
 
-// 容器名前缀：docker run --name，便于 docker ps 区分阶段。
+// 容器名前缀。
 const (
 	containerNameImagesPack = "builder-images"
 	containerNameImagesList = "builder-images-list"
@@ -39,14 +39,19 @@ func uniqueContainerName(prefix string) string {
 
 // Options 镜像阶段配置。
 type Options struct {
+	// Runtime 容器运行时：containerd（默认）或 docker。
+	Runtime string
 	// DockerBin docker 命令路径，默认 "docker"。
 	DockerBin string
-	// DockerSock 宿主机 docker socket，默认 /var/run/docker.sock；挂入打包容器。
+	// CtrBin ctr 命令路径，默认 "ctr"。
+	CtrBin string
+	// DockerSock 宿主机 docker socket，默认 /var/run/docker.sock；仅 docker 模式挂入打包容器。
 	DockerSock string
-	// BuildImage 构建容器镜像（如 swr.cn-north-4.myhuaweicloud.com/pixiu-public/ubuntu:22.04），仅在宿主机无法直接执行 kubeadm
-	// （非 Linux 或架构不一致）时，用于挂载二进制跑 images list。
+	// ContainerdAddress ctr --address，默认 /run/containerd/containerd.sock。
+	ContainerdAddress string
+	// BuildImage 构建容器镜像，仅在宿主机无法直接执行 kubeadm 时用于挂载二进制跑 images list。
 	BuildImage string
-	// PackImage 镜像打包容器（含 docker CLI），默认 swr.cn-north-4.myhuaweicloud.com/pixiu-public/pixiukit/docker:24-cli。
+	// PackImage 镜像打包容器（含 docker CLI），仅 docker 模式；默认 pixiukit/docker:24-cli。
 	PackImage string
 	// PkgManager 包管理器：apt 或 dnf（保留字段，镜像清单阶段已不再使用）。
 	PkgManager string
@@ -77,12 +82,8 @@ type Options struct {
 	// Verbose 打印详细过程日志（下载 kubeadm、镜像 pull/save 进度）；默认 false=精简。
 	Verbose bool
 	// CoreImages 外部传入的最终核心镜像完整引用清单（已解析）。
-	//   nil    → 未外部指定：内部走 kubeadm 生成默认核心清单（再用 CoreFilter 过滤）
-	//   非 nil → 直接使用该清单（可为空 slice，表示不拉取任何核心镜像），不再走 kubeadm
 	CoreImages []string
 	// CoreFilter 外部传入的核心镜像过滤项（短名或完整引用）。
-	// 仅当 CoreImages 为 nil（走 kubeadm 生成）时生效：对生成结果按过滤项匹配。
-	// 为空表示拉取全部核心镜像。
 	CoreFilter []string
 	// Addons 外部传入的最终附加组件镜像清单（可为空，表示不拉取附加组件）。
 	Addons []config.Addon
@@ -129,35 +130,47 @@ type saveJob struct {
 }
 
 // DockerAvailable 检查 docker 可用性，返回 (可用, 提示信息)。
+// 保留供旧调用方；新代码请用 runtime.Available。
 func DockerAvailable(bin string) (bool, string) {
-	if bin == "" {
-		bin = "docker"
-	}
-	cmd := exec.Command(bin, "info")
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		msg := strings.TrimSpace(string(out))
-		if msg == "" {
-			msg = err.Error()
-		}
-		return false, fmt.Sprintf("docker 不可用: %s（镜像阶段将被跳过）", msg)
+	ok, msg := rt.Available(rt.Config{Runtime: rt.Docker, DockerBin: bin})
+	if !ok {
+		return false, fmt.Sprintf("%s（镜像阶段将被跳过）", msg)
 	}
 	return true, ""
 }
 
-// Fetch 执行核心镜像清单生成 + 容器内拉取 + save。
+func runtimeConfig(opts Options) (rt.Config, string, error) {
+	resolved, err := rt.Resolve(opts.Runtime, opts.DockerBin)
+	if err != nil {
+		return rt.Config{}, "", err
+	}
+	cfg := rt.Config{
+		Runtime:           resolved,
+		DockerBin:         opts.DockerBin,
+		CtrBin:            opts.CtrBin,
+		DockerSock:        opts.DockerSock,
+		ContainerdAddress: opts.ContainerdAddress,
+		PackImage:         opts.PackImage,
+	}
+	return cfg, resolved, nil
+}
+
+// Fetch 执行核心镜像清单生成 + 拉取 + save。
 func Fetch(ctx context.Context, opts Options) (*Result, error) {
-	if opts.DockerBin == "" {
-		opts.DockerBin = "docker"
+	rtCfg, _, err := runtimeConfig(opts)
+	if err != nil {
+		return nil, err
 	}
 	if opts.ImageRepository == "" {
 		opts.ImageRepository = "registry.k8s.io"
 	}
 	if opts.PackImage == "" {
 		opts.PackImage = defaultPackImage
+		rtCfg.PackImage = defaultPackImage
 	}
 	if opts.DockerSock == "" {
-		opts.DockerSock = "/var/run/docker.sock"
+		opts.DockerSock = rt.DefaultDockerSock
+		rtCfg.DockerSock = rt.DefaultDockerSock
 	}
 
 	res := &Result{HostArch: runtime.GOARCH, ArchMismatch: opts.Arch != "" && opts.Arch != runtime.GOARCH}
@@ -165,17 +178,15 @@ func Fetch(ctx context.Context, opts Options) (*Result, error) {
 		res.Arch = opts.Arch
 	}
 
-	// DryRun：仅构造目录，不执行任何 docker/kubeadm 命令
 	if opts.DryRun {
 		os.MkdirAll(filepath.Join(opts.ImagesOutDir, "core"), 0o755)
 		os.MkdirAll(filepath.Join(opts.ImagesOutDir, "addons"), 0o755)
 		return res, nil
 	}
 
-	// 检查 docker 可用性
-	if ok, reason := DockerAvailable(opts.DockerBin); !ok {
+	if ok, reason := rt.Available(rtCfg); !ok {
 		res.Skipped = true
-		res.SkipReason = reason
+		res.SkipReason = reason + "（镜像阶段将被跳过）"
 		return res, nil
 	}
 
@@ -191,9 +202,6 @@ func Fetch(ctx context.Context, opts Options) (*Result, error) {
 		return res, fmt.Errorf("创建 addons 目录失败: %w", err)
 	}
 
-	// 步骤 1：核心镜像清单。
-	// 外部传入 CoreImages（非 nil）时直接使用（可能为空 = 不拉核心镜像），不再走 kubeadm；
-	// 否则用官方 kubeadm 二进制生成（Linux 直跑或挂载进构建容器），并按 CoreFilter 过滤。
 	var coreImages []string
 	if opts.CoreImages != nil {
 		coreImages = opts.CoreImages
@@ -201,7 +209,7 @@ func Fetch(ctx context.Context, opts Options) (*Result, error) {
 		if opts.Verbose {
 			fmt.Printf("  [images] 生成核心镜像清单（kubeadm config images list --image-repository %s）...\n", opts.ImageRepository)
 		}
-		coreImages, err = listCoreImages(ctx, opts)
+		coreImages, err = listCoreImages(ctx, opts, rtCfg)
 		if err != nil {
 			return res, fmt.Errorf("生成核心镜像清单失败: %w", err)
 		}
@@ -211,7 +219,6 @@ func Fetch(ctx context.Context, opts Options) (*Result, error) {
 	}
 	res.CoreImages = coreImages
 
-	// 步骤 2/3：在打包容器内 pull + save（核心 + 可选 addons）
 	var jobs []saveJob
 	for _, img := range coreImages {
 		jobs = append(jobs, saveJob{Name: SafeTarName(img), Image: img, SubDir: "core"})
@@ -219,9 +226,6 @@ func Fetch(ctx context.Context, opts Options) (*Result, error) {
 	if opts.SkipAddons {
 		res.SkipAddons = true
 	} else {
-		// Addon 可能带 tags 多版本字段：展开为多个单 tag 任务，保证同 image 多 tag 各自
-		// 保存为唯一 tar（builder.resolveImages 已展开，此处再次展开幂等，直接调用本包的
-		// 场景同样支持 tags）。
 		for _, a := range opts.Addons {
 			for _, ea := range a.Expanded() {
 				img := ea.Image + ":" + ea.Tag
@@ -230,7 +234,7 @@ func Fetch(ctx context.Context, opts Options) (*Result, error) {
 		}
 	}
 
-	saved, err := pullAndSaveInContainer(ctx, opts, jobs)
+	saved, err := pullAndSave(ctx, opts, rtCfg, jobs)
 	if err != nil {
 		return res, err
 	}
@@ -251,7 +255,7 @@ func Fetch(ctx context.Context, opts Options) (*Result, error) {
 // listCoreImages 下载（或复用）官方 kubeadm 二进制，执行
 // `kubeadm config images list` 获取核心镜像清单。
 // Linux 且架构一致时在宿主机直跑；否则挂载进 BuildImage 容器执行。
-func listCoreImages(ctx context.Context, opts Options) ([]string, error) {
+func listCoreImages(ctx context.Context, opts Options, rtCfg rt.Config) ([]string, error) {
 	if opts.K8sVersion == "" {
 		return nil, fmt.Errorf("镜像清单生成依赖 K8sVersion")
 	}
@@ -279,32 +283,37 @@ func listCoreImages(ctx context.Context, opts Options) ([]string, error) {
 		"--image-repository", opts.ImageRepository,
 	}
 
-	var cmd *exec.Cmd
 	var cmdDesc string
+	var out []byte
+	var err error
 	if canRunKubeadmOnHost(arch) {
-		cmd = exec.CommandContext(ctx, kubeadmPath, listArgs...)
+		cmd := exec.CommandContext(ctx, kubeadmPath, listArgs...)
 		cmdDesc = kubeadmPath + " " + strings.Join(listArgs, " ")
+		if opts.Verbose {
+			fmt.Printf("  [images] 执行 kubeadm 生成核心镜像清单（%s）...\n", cmdDesc)
+		}
+		out, err = cmd.CombinedOutput()
 	} else {
 		if opts.BuildImage == "" {
 			return nil, fmt.Errorf("当前平台无法直接执行 linux/%s kubeadm，且未提供 BuildImage", arch)
 		}
-		// 挂载二进制，entrypoint 直接跑 kubeadm，无需容器内 apt/dnf
-		cmdArgs := []string{
-			"run", "--rm",
-			"--name", uniqueContainerName(containerNameImagesList),
-			"-v", kubeadmPath + ":/kubeadm:ro",
-			"--entrypoint", "/kubeadm",
-			opts.BuildImage,
+		absKubeadm, absErr := filepath.Abs(kubeadmPath)
+		if absErr != nil {
+			return nil, absErr
 		}
-		cmdArgs = append(cmdArgs, listArgs...)
-		cmd = exec.CommandContext(ctx, opts.DockerBin, cmdArgs...)
-		cmdDesc = "docker " + strings.Join(cmdArgs, " ")
+		runOpts := rt.RunOpts{
+			Image:       opts.BuildImage,
+			NamePrefix:  containerNameImagesList,
+			Binds:       []string{absKubeadm + ":/kubeadm:ro"},
+			NetworkHost: rtCfg.Runtime == rt.Containerd,
+			Entrypoint:  "/kubeadm",
+			Args:        listArgs,
+		}
+		cmdDesc, out, err = rt.RunCombined(ctx, rtCfg, runOpts)
+		if opts.Verbose {
+			fmt.Printf("  [images] 执行 kubeadm 生成核心镜像清单（%s）...\n", cmdDesc)
+		}
 	}
-
-	if opts.Verbose {
-		fmt.Printf("  [images] 执行 kubeadm 生成核心镜像清单（%s）...\n", cmdDesc)
-	}
-	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return nil, fmt.Errorf("kubeadm 生成镜像清单失败: %v\n命令: %s\n输出: %s",
 			err, cmdDesc, strings.TrimSpace(string(out)))
@@ -537,9 +546,8 @@ func isValidImageStart(line string) bool {
 	return unicode.IsLetter(r) || unicode.IsDigit(r)
 }
 
-// pullAndSaveInContainer 在 PackImage 容器内批量 docker pull + save。
-// 挂载 docker.sock（操作宿主机 daemon）与 ImagesOutDir→/out。
-func pullAndSaveInContainer(ctx context.Context, opts Options, jobs []saveJob) ([]SavedImage, error) {
+// pullAndSave 按 runtime 拉取并保存为 docker-save tar。
+func pullAndSave(ctx context.Context, opts Options, rtCfg rt.Config, jobs []saveJob) ([]SavedImage, error) {
 	if len(jobs) == 0 {
 		return nil, nil
 	}
@@ -555,30 +563,17 @@ func pullAndSaveInContainer(ctx context.Context, opts Options, jobs []saveJob) (
 		return out, nil
 	}
 
-	script := buildPullSaveScript(jobs)
-	cmdArgs := []string{
-		"run", "--rm",
-		"--name", uniqueContainerName(containerNameImagesPack),
-		"-v", opts.DockerSock + ":/var/run/docker.sock",
-		"-v", opts.ImagesOutDir + ":/out",
-		opts.PackImage,
-		"sh", "-c", script,
+	rtJobs := make([]rt.SaveJob, 0, len(jobs))
+	for _, j := range jobs {
+		rtJobs = append(rtJobs, rt.SaveJob{
+			Name:    j.Name,
+			Image:   j.Image,
+			SubDir:  j.SubDir,
+			OutRoot: opts.ImagesOutDir,
+		})
 	}
-	cmd := exec.CommandContext(ctx, opts.DockerBin, cmdArgs...)
-	if opts.Verbose {
-		fmt.Printf("  [images] 批量拉取并保存 %d 个镜像（容器 %s 内 docker pull + save）...\n", len(jobs), opts.PackImage)
-		// 流式输出：实时展示容器内每个镜像的 pull/save 进度。
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-		if err := cmd.Run(); err != nil {
-			return nil, fmt.Errorf("容器内镜像 pull/save 失败: %v", err)
-		}
-	} else {
-		out, err := cmd.CombinedOutput()
-		if err != nil {
-			return nil, fmt.Errorf("容器内镜像 pull/save 失败: %v\n输出: %s",
-				err, strings.TrimSpace(string(out)))
-		}
+	if err := rt.PullAndSave(ctx, rtCfg, rtJobs, opts.Verbose); err != nil {
+		return nil, err
 	}
 
 	var saved []SavedImage
@@ -586,7 +581,7 @@ func pullAndSaveInContainer(ctx context.Context, opts Options, jobs []saveJob) (
 		tarPath := filepath.Join(opts.ImagesOutDir, j.SubDir, j.Name+".tar")
 		st, err := os.Stat(tarPath)
 		if err != nil {
-			return nil, fmt.Errorf("容器内 save 后读取 %s 失败: %w", tarPath, err)
+			return nil, fmt.Errorf("save 后读取 %s 失败: %w", tarPath, err)
 		}
 		sum, err := fileSHA256(tarPath)
 		if err != nil {
@@ -600,22 +595,18 @@ func pullAndSaveInContainer(ctx context.Context, opts Options, jobs []saveJob) (
 			SHA256:      sum,
 		})
 	}
-	if opts.Verbose {
-		fmt.Printf("  [images] 镜像 pull/save 完成：%d 个 tar\n", len(saved))
-	}
 	return saved, nil
 }
 
-// buildPullSaveScript 构造容器内批量 pull + save 脚本。
-// 镜像 tar 写到 /out/{core|addons}/{name}.tar。
+// buildPullSaveScript 构造 docker 模式下容器内批量 pull + save 脚本（单测与文档对照）。
 func buildPullSaveScript(jobs []saveJob) string {
 	var b strings.Builder
 	b.WriteString("set -e\n")
 	b.WriteString("mkdir -p /out/core /out/addons\n")
 	total := len(jobs)
 	for i, j := range jobs {
-		img := shellSingleQuote(j.Image)
-		tar := shellSingleQuote("/out/" + j.SubDir + "/" + j.Name + ".tar")
+		img := "'" + strings.ReplaceAll(j.Image, "'", `'\''`) + "'"
+		tar := "'" + strings.ReplaceAll("/out/"+j.SubDir+"/"+j.Name+".tar", "'", `'\''`) + "'"
 		b.WriteString(fmt.Sprintf("echo \"[images] %d/%d pull %s\"\n", i+1, total, j.Image))
 		b.WriteString("docker pull " + img + "\n")
 		b.WriteString(fmt.Sprintf("echo \"[images] %d/%d save %s\"\n", i+1, total, j.Image))

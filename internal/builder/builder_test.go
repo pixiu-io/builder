@@ -14,6 +14,7 @@ import (
 	"builder/internal/config"
 	"builder/internal/manifest"
 	"builder/internal/mirror"
+	rt "builder/internal/runtime"
 )
 
 // loadSampleConfig 构造一份样例配置（单文件 builder.yaml）。
@@ -799,7 +800,7 @@ exit 1
 	if err := os.WriteFile(binPath, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	removed := CleanupDockerImages(binPath, []string{
+	removed := CleanupDockerImages(rt.Docker, binPath, "", "", []string{
 		"img/a:1",
 		"img/a:1",
 		"img/b:1",

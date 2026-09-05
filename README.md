@@ -25,7 +25,7 @@ go build -o builder ./cmd/builder
 # 构建软件包（dry-run 演练）
 ./builder build packages --os ubuntu --os-version 22.04 --kubernetes-version v1.31.6 --arch amd64 --dry-run
 
-# 构建软件包（需联网 + 本机 docker）
+# 构建软件包（需联网 + 本机 containerd/ctr；可用 --runtime docker 改用 docker）
 ./builder build packages --os ubuntu --os-version 22.04 --kubernetes-version v1.31.6 --arch amd64 --out ./dist
 
 # 构建镜像（无需 --os；产物 pixiu-images-{arch}-{k8s}.tar.gz）
@@ -90,14 +90,14 @@ go build -o builder ./cmd/builder
 ./builder build servers --arch amd64 --upload
 ```
 
-镜像打包阶段的工具容器（含 docker CLI，容器内 `docker pull` + save）可用 `--pack-image` 指定，默认为 `swr.cn-north-4.myhuaweicloud.com/pixiu-public/pixiukit/docker:24-cli`（仅 amd64）。ARM/aarch64 宿主机构建 arm64 镜像时，默认镜像会因 `exec format error` 失败，须显式指定 arm64 兼容镜像：
+镜像打包默认使用 **containerd**（宿主机 `ctr images pull` + `export`，再转为 docker-save tar）。`--runtime docker` 时用 `--pack-image` 工具容器（默认 `swr.cn-north-4.myhuaweicloud.com/pixiu-public/pixiukit/docker:24-cli`，仅 amd64）。ARM 宿主走 docker 模式时须指定 arm64 兼容 pack 镜像：
 
 ```bash
-# ARM64 宿主构建 arm64 镜像（默认 pack 镜像仅 amd64，需显式指定 arm64 兼容镜像）
-./builder build images --kubernetes-version v1.31.6 --arch arm64 --pack-image <your-registry>/pixiukit/docker:24-cli-arm64
+# ARM64 宿主 + docker 模式
+./builder build images --kubernetes-version v1.31.6 --arch arm64 --runtime docker --pack-image <your-registry>/pixiukit/docker:24-cli-arm64
 ```
 
-多版本并发时，各版本构建过程中**不立刻** `docker rmi`（避免先完成的版本删掉后完成版本仍在用的共享镜像）；全部结束后对中间镜像去重再统一清理（`--keep-files` 时仍保留）。
+多版本并发时，各版本构建过程中**不立刻**清理中间镜像；全部结束后去重再统一清理（`--keep-files` 时仍保留）。
 
 ## 自定义附加组件（addon_packages / addon_images）
 
@@ -234,9 +234,10 @@ build:
   skip_addons: false
   only_addons: false     # 只打包附加组件（addon_images / addon_packages），核心软件包与镜像全去；与 skip_addons 互斥
   dry_run: false
-  keep_files: false      # 默认 false=构建完成后清理中间文件与 docker 中间镜像；true=保留
-  verbose: false         # 默认 false=精简输出；true=打印详细过程日志（镜像下载/pull 进度等）
-  pack_image: ""         # 镜像打包阶段工具镜像（含 docker CLI，容器内 docker pull + save）；空=内置默认 swr.cn-north-4.myhuaweicloud.com/pixiu-public/pixiukit/docker:24-cli；ARM/aarch64 宿主须配置 arm64 兼容镜像，否则 exec format error
+  keep_files: false      # 默认 false=构建完成后清理中间文件与中间镜像；true=保留
+  verbose: false         # 默认 false=精简输出；true=打印详细过程日志
+  pack_image: ""         # 仅 runtime=docker：镜像打包工具镜像；空=内置默认；ARM 宿主须配置 arm64 兼容镜像
+  runtime: containerd    # 构建容器运行时：containerd（默认，宿主机 ctr）| docker
   kubeadm_dir: "./kube"  # kubeadm 二进制缓存目录；文件名 kubeadm-{version}-linux-{arch}
 ```
 

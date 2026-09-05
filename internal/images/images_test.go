@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"builder/internal/config"
+	rt "builder/internal/runtime"
 )
 
 func TestShortName(t *testing.T) {
@@ -352,7 +353,7 @@ func TestListCoreImagesUsesKubeadmBin(t *testing.T) {
 		ImageRepository: "registry.k8s.io",
 		Arch:            runtime.GOARCH,
 		KubeadmBin:      kubeadmPath,
-	})
+	}, rt.Config{Runtime: rt.Docker, DockerBin: dockerPath})
 	if err != nil {
 		t.Fatalf("listCoreImages: %v", err)
 	}
