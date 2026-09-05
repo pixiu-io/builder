@@ -11,11 +11,11 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
-	"time"
+
+	"builder/internal/runtime"
 )
 
 // Options 软件包下载配置。
@@ -44,8 +44,14 @@ type Options struct {
 	ContainerdRepo string
 	// Pkgs 待下载软件包清单（k8s + 运行时 + 系统依赖）。
 	Pkgs []string
-	// DockerBin docker 命令路径，默认 "docker"。
+	// Runtime 容器运行时：containerd（默认）或 docker。
+	Runtime string
+	// DockerBin docker 命令路径，默认 "docker"（runtime=docker 时使用）。
 	DockerBin string
+	// CtrBin ctr 命令路径，默认 "ctr"（runtime=containerd 时使用）。
+	CtrBin string
+	// ContainerdAddress ctr --address，默认 /run/containerd/containerd.sock。
+	ContainerdAddress string
 	// DryRun 只打印命令不执行（测试用）。
 	DryRun bool
 	// CrictlVersion cri-tools 包不可用时，回退下载的 crictl 版本（如 1.27.1）。
@@ -84,28 +90,131 @@ type Result struct {
 }
 
 // DockerAvailable 检查 docker 是否可用，返回 (可用, 提示信息)。
+// 保留供旧调用方；新代码请用 runtime.Available。
 func DockerAvailable(bin string) (bool, string) {
-	if bin == "" {
-		bin = "docker"
-	}
-	cmd := exec.Command(bin, "info")
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		msg := strings.TrimSpace(string(out))
-		if msg == "" {
-			msg = err.Error()
-		}
-		return false, fmt.Sprintf("docker 不可用: %s（此步骤将被跳过，离线包不包含软件包）", msg)
+	ok, msg := runtime.Available(runtime.Config{Runtime: runtime.Docker, DockerBin: bin})
+	if !ok {
+		return false, fmt.Sprintf("%s（此步骤将被跳过，离线包不包含软件包）", msg)
 	}
 	return true, ""
 }
 
-// containerNamePackages 软件包下载容器名前缀（docker run --name），便于 docker ps 区分阶段。
+// containerNamePackages 软件包下载容器名前缀，便于 ps 区分阶段。
 const containerNamePackages = "builder-packages"
 
-// uniqueContainerName 生成带阶段标识的唯一容器名。
-func uniqueContainerName(prefix string) string {
-	return fmt.Sprintf("%s-%d", prefix, time.Now().UnixNano())
+// Fetch 在容器内下载软件包并收集到 OutDir 下。
+// 运行时不可用时返回 skipped 结果而非错误。
+// 若容器内检测到 cri-tools 包不可用，则回退下载 crictl 静态 tar 到 OutDir/runtime/。
+func Fetch(ctx context.Context, opts Options) (*Result, error) {
+	rtCfg := runtime.Config{
+		Runtime:           opts.Runtime,
+		DockerBin:         opts.DockerBin,
+		CtrBin:            opts.CtrBin,
+		ContainerdAddress: opts.ContainerdAddress,
+	}
+	rt, err := runtime.Resolve(opts.Runtime, opts.DockerBin)
+	if err != nil {
+		return nil, err
+	}
+	rtCfg.Runtime = rt
+
+	if opts.OutDir == "" {
+		return nil, fmt.Errorf("packages: OutDir 不能为空")
+	}
+	// 防御性加固：挂载宿主机目录必须是绝对路径。
+	if abs, err := filepath.Abs(opts.OutDir); err != nil {
+		return nil, fmt.Errorf("packages: 解析 OutDir 绝对路径失败: %w", err)
+	} else {
+		opts.OutDir = abs
+	}
+	if opts.BuildImage == "" {
+		return nil, fmt.Errorf("packages: BuildImage 不能为空")
+	}
+	if len(opts.Pkgs) == 0 {
+		return nil, fmt.Errorf("packages: 软件包清单为空")
+	}
+
+	repos := []Repo{}
+	if !opts.SkipK8sContainerdRepos {
+		// containerd_repo=none（openEuler 系统源场景）：核心只配置 k8s 源，containerd 走系统源，
+		// 不配 docker-ce 源。但 addon_packages 常含 docker-ce（builder.yaml 顶层），此时需追加
+		// 对齐 kubez docker-ce.repo-openEuler.j2 的 tuna+centos/7 源，否则 dnf 报 No match: docker-ce。
+		if opts.ContainerdRepo == "none" {
+			repos = K8sRepos(opts.K8sMinor)
+			if PackageListHasPrefix(opts.Pkgs, "docker-ce") {
+				repos = append(repos, ContainerdRepos(opts.AptOS, opts.Codename, "rhel7", "tuna")...)
+			}
+		} else {
+			repos = append(K8sRepos(opts.K8sMinor), ContainerdRepos(opts.AptOS, opts.Codename, opts.RPMDistro, opts.ContainerdRepo)...)
+		}
+	}
+	// Kylin/openEuler（rhel7）装 docker-ce 时，rootless-extras 依赖 fuse-overlayfs/slirp4netns，
+	// 系统源通常没有，需追加 CentOS 7 extras vault/altarch（见 CentOS7ExtrasRepos）。
+	if NeedsCentOS7Extras(opts.RPMDistro, opts.Pkgs) {
+		repos = append(repos, CentOS7ExtrasRepos(opts.Arch)...)
+	}
+	script := BuildDownloadScript(DownloadScriptOpts{
+		PkgManager:  opts.PkgManager,
+		Repos:       repos,
+		Pkgs:        opts.Pkgs,
+		ArchiveDir:  "/out",
+		CheckCrictl: true,
+		Arch:        opts.Arch,
+	})
+	runOpts := runtime.RunOpts{
+		Image:       opts.BuildImage,
+		NamePrefix:  containerNamePackages,
+		Binds:       []string{opts.OutDir + ":/out"},
+		NetworkHost: rt == runtime.Containerd, // ctr 默认无网络，必须 host
+		Shell:       script,
+	}
+	// Dry-run：Command 嵌入完整 docker/ctr 风格命令串（含脚本），便于单测断言。
+	bin := "docker"
+	if rt == runtime.Containerd {
+		bin = "ctr"
+	}
+	res := &Result{Command: fmt.Sprintf("%s run --rm -v %s:/out %s sh -c %s", bin, opts.OutDir, opts.BuildImage, script)}
+	if opts.DryRun {
+		res.DryRun = true
+		return res, nil
+	}
+
+	if ok, reason := runtime.Available(rtCfg); !ok {
+		return &Result{Skipped: true, SkipReason: reason + "（此步骤将被跳过，离线包不包含软件包）"}, nil
+	}
+
+	cmdDesc, out, err := runtime.RunCombined(ctx, rtCfg, runOpts)
+	res.Command = cmdDesc
+	if err != nil {
+		return res, fmt.Errorf("%s 下载软件包失败: %v\n命令: %s\n输出: %s", rt, err, res.Command, strings.TrimSpace(string(out)))
+	}
+
+	// cri-tools 缺失标记 → crictl 静态 tar 回退
+	marker := filepath.Join(opts.OutDir, "cri-tools-missing")
+	if _, statErr := os.Stat(marker); statErr == nil {
+		res.CrictlMissing = true
+		_ = os.Remove(marker)
+		if opts.CrictlVersion == "" {
+			return res, fmt.Errorf("cri-tools 包在源中不存在且 CrictlVersion 为空，无法回退下载 crictl")
+		}
+		rtDir := filepath.Join(opts.OutDir, "runtime")
+		fi, err := FetchCrictlFallback(ctx, opts.CrictlVersion, opts.Arch, rtDir, opts.CrictlBaseURL)
+		if err != nil {
+			return res, fmt.Errorf("cri-tools 包不可用，crictl 静态回退下载失败: %w", err)
+		}
+		res.CrictlFallbackFile = &fi
+		res.Files = append(res.Files, fi)
+	}
+
+	files, err := Collect(opts.OutDir)
+	if err != nil {
+		return res, err
+	}
+	if len(files) == 0 {
+		return res, fmt.Errorf("%s 下载完成但 %s 下没有 .deb/.rpm 文件（检查软件包源是否可用）", rt, opts.OutDir)
+	}
+	res.Files = append(res.Files, files...)
+	return res, nil
 }
 
 // DownloadScriptOpts 容器内下载脚本构造参数。
@@ -257,110 +366,6 @@ PKGS_RESOLVED=$(echo "$PKGS_RESOLVED" | sed 's/^ *//')
 	}
 	b.WriteString(fmt.Sprintf("if dnf %sinstall -y --downloadonly --downloaddir=%s %s; then :\n", dnfWeak, archiveDir, batchPkgs))
 	b.WriteString(fmt.Sprintf("else\n  dnf %sdownload --resolve --destdir=%s %s\nfi\n", dnfWeak, archiveDir, batchPkgs))
-}
-
-// Fetch 在容器内下载软件包并收集到 OutDir 下。
-// docker 不可用时返回 skipped 结果而非错误。
-// 若容器内检测到 cri-tools 包不可用，则回退下载 crictl 静态 tar 到 OutDir/runtime/。
-func Fetch(ctx context.Context, opts Options) (*Result, error) {
-	if opts.DockerBin == "" {
-		opts.DockerBin = "docker"
-	}
-	if opts.OutDir == "" {
-		return nil, fmt.Errorf("packages: OutDir 不能为空")
-	}
-	// 防御性加固：docker -v 挂载宿主机目录必须是绝对路径，即使 Fetch 被独立调用
-	// （绕过 builder.Build 的路径归一化）也能保证挂载正确。
-	if abs, err := filepath.Abs(opts.OutDir); err != nil {
-		return nil, fmt.Errorf("packages: 解析 OutDir 绝对路径失败: %w", err)
-	} else {
-		opts.OutDir = abs
-	}
-	if opts.BuildImage == "" {
-		return nil, fmt.Errorf("packages: BuildImage 不能为空")
-	}
-	if len(opts.Pkgs) == 0 {
-		return nil, fmt.Errorf("packages: 软件包清单为空")
-	}
-
-	repos := []Repo{}
-	if !opts.SkipK8sContainerdRepos {
-		// containerd_repo=none（openEuler 系统源场景）：核心只配置 k8s 源，containerd 走系统源，
-		// 不配 docker-ce 源。但 addon_packages 常含 docker-ce（builder.yaml 顶层），此时需追加
-		// 对齐 kubez docker-ce.repo-openEuler.j2 的 tuna+centos/7 源，否则 dnf 报 No match: docker-ce。
-		if opts.ContainerdRepo == "none" {
-			repos = K8sRepos(opts.K8sMinor)
-			if PackageListHasPrefix(opts.Pkgs, "docker-ce") {
-				repos = append(repos, ContainerdRepos(opts.AptOS, opts.Codename, "rhel7", "tuna")...)
-			}
-		} else {
-			repos = append(K8sRepos(opts.K8sMinor), ContainerdRepos(opts.AptOS, opts.Codename, opts.RPMDistro, opts.ContainerdRepo)...)
-		}
-	}
-	// Kylin/openEuler（rhel7）装 docker-ce 时，rootless-extras 依赖 fuse-overlayfs/slirp4netns，
-	// 系统源通常没有，需追加 CentOS 7 extras vault/altarch（见 CentOS7ExtrasRepos）。
-	if NeedsCentOS7Extras(opts.RPMDistro, opts.Pkgs) {
-		repos = append(repos, CentOS7ExtrasRepos(opts.Arch)...)
-	}
-	script := BuildDownloadScript(DownloadScriptOpts{
-		PkgManager:  opts.PkgManager,
-		Repos:       repos,
-		Pkgs:        opts.Pkgs,
-		ArchiveDir:  "/out",
-		CheckCrictl: true,
-		Arch:        opts.Arch,
-	})
-	cmdArgs := []string{
-		"run", "--rm",
-		"--name", uniqueContainerName(containerNamePackages),
-		"-v", opts.OutDir + ":/out",
-		opts.BuildImage,
-		"sh", "-c", script,
-	}
-	cmd := exec.CommandContext(ctx, opts.DockerBin, cmdArgs...)
-
-	res := &Result{Command: opts.DockerBin + " " + strings.Join(cmdArgs, " ")}
-	if opts.DryRun {
-		res.DryRun = true
-		return res, nil
-	}
-
-	// 检查 docker 可用性
-	if ok, reason := DockerAvailable(opts.DockerBin); !ok {
-		return &Result{Skipped: true, SkipReason: reason}, nil
-	}
-
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return res, fmt.Errorf("docker 下载软件包失败: %v\n命令: %s\n输出: %s", err, res.Command, strings.TrimSpace(string(out)))
-	}
-
-	// cri-tools 缺失标记 → crictl 静态 tar 回退
-	marker := filepath.Join(opts.OutDir, "cri-tools-missing")
-	if _, statErr := os.Stat(marker); statErr == nil {
-		res.CrictlMissing = true
-		_ = os.Remove(marker)
-		if opts.CrictlVersion == "" {
-			return res, fmt.Errorf("cri-tools 包在源中不存在且 CrictlVersion 为空，无法回退下载 crictl")
-		}
-		rtDir := filepath.Join(opts.OutDir, "runtime")
-		fi, err := FetchCrictlFallback(ctx, opts.CrictlVersion, opts.Arch, rtDir, opts.CrictlBaseURL)
-		if err != nil {
-			return res, fmt.Errorf("cri-tools 包不可用，crictl 静态回退下载失败: %w", err)
-		}
-		res.CrictlFallbackFile = &fi
-		res.Files = append(res.Files, fi)
-	}
-
-	files, err := Collect(opts.OutDir)
-	if err != nil {
-		return res, err
-	}
-	if len(files) == 0 {
-		return res, fmt.Errorf("docker 下载完成但 %s 下没有 .deb/.rpm 文件（检查软件包源是否可用）", opts.OutDir)
-	}
-	res.Files = files
-	return res, nil
 }
 
 // Collect 递归收集目录下所有 .deb/.rpm 文件并计算 size/sha256。
