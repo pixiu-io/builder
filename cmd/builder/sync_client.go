@@ -55,7 +55,7 @@ func newSyncClientCmd() *cobra.Command {
 
 默认 Release tag 为 pixiuctl-{version}（如 pixiuctl-0.2.4），可用 --github-tag 覆盖。`,
 		Example: `  builder sync-client --github-owner acme --github-repo builder
-  go run cmd/builder/main.go sync-client \
+  go run ./cmd/builder sync-client \
     --configFile builder.yaml \
     --github-owner acme --github-repo builder --github-token "$TOKEN"`,
 		RunE: runSyncClient,
