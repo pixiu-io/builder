@@ -49,7 +49,7 @@ go build -o builder ./cmd/builder
 | 命令 | 说明 |
 |------|------|
 | `build packages` | 构建软件包离线包。需 `--os` / `--os-version` / `--kubernetes-version`（`--only-addons` 时可省略 k8s 版本）。产物：`pixiu-packages-{os}-{osver}-{arch}-{k8s}.tar.gz`。`--upload` 上传到以 k8s 版本为名的 Release |
-| `build images` | 构建镜像离线包（**无需**操作系统）。需 `--kubernetes-version`（可重复；多版本时并发构建与上传，上限 10）。产物：`pixiu-images-{arch}-{k8s}.tar.gz`。kubeadm 下载与 `--upload` 均只检查/使用 `--github-tag`（未指定默认 `images`；不按 k8s 版本找 Release） |
+| `build images` | 构建镜像离线包（**无需**操作系统）。需 `--kubernetes-version`（可重复；多版本时并发构建与上传，上限 10）。产物：`pixiu-images-{arch}-{k8s}.tar.gz`。`--upload` 默认到 `images` Release；kubeadm 下载未指定 `--github-tag` 时优先 k8s 版本 Release（与 `sync kubeadm` 一致），再回退 `images` |
 | `build servers` | 构建平台服务镜像离线包。只读 `server_images`（格式同 `addon_images`）；**无需** `--os` / `--kubernetes-version`；忽略 `--skip-addons` / `--only-addons`；空配置报错。产物：`pixiu-server-images-{arch}.tar.gz`。`--upload` 默认 tag=`download` |
 | `upload` | 将已有产物 tar.gz 上传到 GitHub Release。`--file` 可重复；`--github-*` 覆盖配置节 |
 | `sync kubeadm` | 创建以 k8s 版本为名的 GitHub Release，并上传 kubeadm 二进制。默认单版本；`--all` 同步全部 >= v1.31.0 的正式版本 |
@@ -390,7 +390,7 @@ apt-get update && apt-get install kubeadm
 
 仓库地址需保证可访问且存在对应版本的 k8s 镜像；软件包源不受 `--mirror` 影响（k8s 组件源与 containerd 源由各自配置决定，见上文"软件源与包下载"）。
 
-**kubeadm 二进制获取**（生成核心镜像清单用）：`build images` 会先检查 `--kubeadm-dir`（默认 `./kube`）下是否存在 `kubeadm-{k8s版本}-linux-{架构}`。若存在则直接 `chmod 755` 后复用；若不存在，再按同名 asset 从 **`--github-tag` Release**（未指定默认 `images`）下载，**不会**按 `--kubernetes-version` 去查 `v1.31.x` 之类的 Release。例如 `--kubernetes-version v1.31.6 --arch amd64` 对应 asset `kubeadm-v1.31.6-linux-amd64`，从 `owner/repo@images`（或你指定的 `--github-tag`）拉取。请先把该 asset 放到目标 Release；若 Release 或 asset 不存在，会在镜像阶段前报错。
+**kubeadm 二进制获取**（生成核心镜像清单用）：`build images` 会先检查 `--kubeadm-dir`（默认 `./kube`）下是否存在 `kubeadm-{k8s版本}-linux-{架构}`。若存在则直接复用；若不存在，再从 GitHub Release 下载同名 asset。查找顺序：显式 `--github-tag` → 仅该 Release；未指定时优先 **k8s 版本 Release**（与 `sync kubeadm` 上传位置一致，如 `v1.37.0`），再回退默认 `images`。例如 `--kubernetes-version v1.37.0 --arch arm64` 会先找 `owner/repo@v1.37.0/kubeadm-v1.37.0-linux-arm64`。
 
 ## 安装（目标机使用）
 

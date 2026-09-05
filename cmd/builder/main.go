@@ -1256,28 +1256,55 @@ func prepareBuildKubeadm(ctx context.Context, cfg *config.Config, version, arch,
 }
 
 func downloadBuildKubeadmFromGitHub(ctx context.Context, cfg *config.Config, version, arch, path string, verbose bool) (string, func(), error) {
-	// build images：kubeadm 从 --github-tag（默认 images）Release 下载，不按 k8s 版本找 Release。
-	opts := mergeGitHubOptions(cfg.GitHub, githubOwner, githubRepo, imagesGitHubTag(), githubToken)
-	if verbose {
-		opts.Progress = os.Stdout
-	}
-	if opts.Owner == "" || opts.Repo == "" {
-		return "", nil, fmt.Errorf("github owner/repo 不能为空（配置 github.owner/github.repo 或 --github-owner/--github-repo）")
-	}
-	if opts.Tag == "" {
-		return "", nil, fmt.Errorf("github tag 不能为空（build images 请指定 --github-tag，或使用默认 images）")
+	// kubeadm 查找顺序：
+	// 1) 显式 --github-tag → 只查该 Release
+	// 2) 未指定时：先查 k8s 版本 Release（与 sync kubeadm 一致），再回退默认 images
+	tags := kubeadmDownloadTags(version)
+	if len(tags) == 0 {
+		return "", nil, fmt.Errorf("github tag 不能为空（build images 请指定 --github-tag 或 --kubernetes-version）")
 	}
 
 	assetName := kubeadmAssetName(version, arch)
-	fmt.Printf("从 GitHub Release 下载 kubeadm: %s/%s@%s/%s → %s\n", opts.Owner, opts.Repo, opts.Tag, assetName, path)
-	if err := ghupload.DownloadAsset(ctx, opts, assetName, path, 0o755); err != nil {
-		_ = os.Remove(path)
-		return "", nil, err
+	var lastErr error
+	for i, tag := range tags {
+		opts := mergeGitHubOptions(cfg.GitHub, githubOwner, githubRepo, tag, githubToken)
+		if verbose {
+			opts.Progress = os.Stdout
+		}
+		if opts.Owner == "" || opts.Repo == "" {
+			return "", nil, fmt.Errorf("github owner/repo 不能为空（配置 github.owner/github.repo 或 --github-owner/--github-repo）")
+		}
+		opts.Tag = tag
+		fmt.Printf("从 GitHub Release 下载 kubeadm: %s/%s@%s/%s → %s\n", opts.Owner, opts.Repo, opts.Tag, assetName, path)
+		if err := ghupload.DownloadAsset(ctx, opts, assetName, path, 0o755); err != nil {
+			_ = os.Remove(path)
+			lastErr = err
+			if i+1 < len(tags) {
+				fmt.Printf("  → %s 未找到，尝试 %s\n", tag, tags[i+1])
+				continue
+			}
+			return "", nil, err
+		}
+		return path, func() {}, nil
 	}
-	return path, func() {}, nil
+	return "", nil, lastErr
 }
 
-// imagesGitHubTag 返回 build images 使用的 GitHub Release tag：
+// kubeadmDownloadTags 返回 build images 下载 kubeadm 时要尝试的 Release tag 列表。
+// 显式 --github-tag 时仅使用该 tag；否则优先 k8s 版本（sync kubeadm 上传处），再回退 images。
+func kubeadmDownloadTags(version string) []string {
+	if tag := strings.TrimSpace(githubTag); tag != "" {
+		return []string{tag}
+	}
+	var tags []string
+	if v := strings.TrimSpace(version); v != "" {
+		tags = append(tags, v)
+	}
+	tags = append(tags, githubImagesReleaseTag)
+	return tags
+}
+
+// imagesGitHubTag 返回 build images 上传产物使用的 GitHub Release tag：
 // 命令行 --github-tag 优先；未指定时默认 images（不回退到 --kubernetes-version）。
 func imagesGitHubTag() string {
 	if tag := strings.TrimSpace(githubTag); tag != "" {
