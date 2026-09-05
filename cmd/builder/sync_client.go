@@ -98,13 +98,22 @@ func runSyncClient(cmd *cobra.Command, args []string) error {
 	if err := os.MkdirAll(syncClientOutDir, 0o755); err != nil {
 		return fmt.Errorf("创建输出目录失败 %s: %w", syncClientOutDir, err)
 	}
+	outDirAbs, err := filepath.Abs(syncClientOutDir)
+	if err != nil {
+		return fmt.Errorf("解析输出目录失败 %s: %w", syncClientOutDir, err)
+	}
+	workDirAbs, err := filepath.Abs(syncClientWorkDir)
+	if err != nil {
+		return fmt.Errorf("解析工作目录失败 %s: %w", syncClientWorkDir, err)
+	}
 
 	var files []string
 	for _, t := range defaultPixiuctlTargets {
 		name := pixiuctlBinaryAssetName(version, t.GOOS, t.GOARCH)
-		out := filepath.Join(syncClientOutDir, name)
+		// 必须用绝对路径：go build 的 cwd 是 rainbow 源码目录，相对 -o 会写到错误位置。
+		out := filepath.Join(outDirAbs, name)
 		fmt.Printf("编译 pixiuctl (%s/%s) → %s\n", t.GOOS, t.GOARCH, out)
-		if err := buildPixiuctlBinary(ctx, syncClientWorkDir, out, t.GOOS, t.GOARCH); err != nil {
+		if err := buildPixiuctlBinary(ctx, workDirAbs, out, t.GOOS, t.GOARCH); err != nil {
 			return err
 		}
 		files = append(files, out)
@@ -203,6 +212,16 @@ func pixiuctlBinaryAssetName(version, goos, goarch string) string {
 }
 
 func buildPixiuctlBinary(ctx context.Context, rainbowRoot, outPath, goos, goarch string) error {
+	if !filepath.IsAbs(outPath) {
+		abs, err := filepath.Abs(outPath)
+		if err != nil {
+			return fmt.Errorf("解析输出路径失败 %s: %w", outPath, err)
+		}
+		outPath = abs
+	}
+	if err := os.MkdirAll(filepath.Dir(outPath), 0o755); err != nil {
+		return fmt.Errorf("创建输出目录失败 %s: %w", filepath.Dir(outPath), err)
+	}
 	cmd := exec.CommandContext(ctx, "go", "build", "-o", outPath, "cmd/pixiuctl.go")
 	cmd.Dir = rainbowRoot
 	cmd.Env = append(os.Environ(),
