@@ -10,7 +10,6 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
-	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -18,8 +17,6 @@ import (
 
 	"github.com/spf13/cobra"
 	"golang.org/x/sync/errgroup"
-
-	"github.com/google/go-containerregistry/pkg/crane"
 
 	"builder/internal/builder"
 	"builder/internal/config"
@@ -57,7 +54,7 @@ const githubImagesReleaseTag = "images"
 // githubServersReleaseTag build servers 默认使用的 GitHub Release 名/tag。
 const githubServersReleaseTag = "download"
 
-// githubBuilderReleaseTag sync-builder 默认使用的 GitHub Release 名/tag。
+// githubBuilderReleaseTag sync builder 默认使用的 GitHub Release 名/tag。
 const githubBuilderReleaseTag = "builder"
 
 // imagesBuildConcurrency build images 多版本时的最大并发数。
@@ -70,7 +67,7 @@ var (
 	uploadSkips []string
 )
 
-// upload kubeadm 子命令 flags
+// sync kubeadm 子命令 flags
 var (
 	syncKubeadmVersion string
 	syncKubeadmArch    string
@@ -78,7 +75,7 @@ var (
 	syncKubeadmAll     bool
 )
 
-// sync-builder 子命令 flags
+// sync builder 子命令 flags
 var (
 	syncBuilderArches []string
 	syncBuilderOutDir string
@@ -156,14 +153,11 @@ func newRootCmd() *cobra.Command {
 
 	root.AddCommand(newBuildCmd())
 	root.AddCommand(newUploadCmd())
-	root.AddCommand(newSyncKubeadmCmd())
-	root.AddCommand(newSyncBuilderCmd())
-	root.AddCommand(newSyncClientCmd())
+	root.AddCommand(newSyncCmd())
 	root.AddCommand(newServeCmd())
-	root.AddCommand(newListOSCmd())
-	root.AddCommand(newListK8sCmd())
-	root.AddCommand(newListImagesCmd())
-	root.AddCommand(newListServeImagesCmd())
+	root.AddCommand(newImagesCmd())
+	root.AddCommand(newPackagesCmd())
+	root.AddCommand(newLsCmd())
 	root.AddCommand(newVerifyCmd())
 	root.AddCommand(newVersionCmd())
 
@@ -293,7 +287,7 @@ func addBuildServersFlags(cmd *cobra.Command) {
 func addGitHubFlags(cmd *cobra.Command) {
 	cmd.Flags().StringVar(&githubOwner, "github-owner", "", "GitHub 仓库所有者（覆盖配置文件 github.owner）")
 	cmd.Flags().StringVar(&githubRepo, "github-repo", "", "GitHub 仓库名（覆盖配置文件 github.repo）")
-	cmd.Flags().StringVar(&githubTag, "github-tag", "", "GitHub Release tag（覆盖配置文件 github.tag；build images 默认 images，build servers 默认 download，sync-builder 默认 builder，sync-client 默认 pixiuctl-{version}；其它命令为空时复用 --kubernetes-version）")
+	cmd.Flags().StringVar(&githubTag, "github-tag", "", "GitHub Release tag（覆盖配置文件 github.tag；build images 默认 images，build servers 默认 download，sync builder 默认 builder，sync client 默认 pixiuctl-{version}；其它命令为空时复用 --kubernetes-version）")
 	cmd.Flags().StringVar(&githubToken, "github-token", "", "GitHub token（覆盖配置文件 github.token；也可用环境变量 GITHUB_TOKEN/GH_TOKEN）")
 }
 
@@ -775,18 +769,40 @@ func newUploadCmd() *cobra.Command {
 	return cmd
 }
 
+func newSyncCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "sync",
+		Short: "同步产物到 GitHub Release",
+		Long: `同步相关子命令：
+  sync kubeadm  创建以 k8s 版本为名的 Release，并上传 kubeadm 二进制
+  sync builder  交叉编译 builder 二进制并上传（默认 tag=builder）
+  sync client   拉取 rainbow，交叉编译 pixiuctl 并上传（默认 tag=pixiuctl-{version}）`,
+		Example: `  builder sync kubeadm --kubernetes-version v1.31.6 --arch amd64
+  builder sync builder --arch amd64 --arch arm64
+  builder sync client`,
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return fmt.Errorf("请指定子命令：sync kubeadm / sync builder / sync client")
+		},
+	}
+	cmd.AddCommand(newSyncKubeadmCmd())
+	cmd.AddCommand(newSyncBuilderCmd())
+	cmd.AddCommand(newSyncClientCmd())
+	return cmd
+}
+
 func newSyncKubeadmCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "sync-kubeadm",
+		Use:   "kubeadm",
 		Short: "创建以 k8s 版本为名的 GitHub Release，并上传对应 kubeadm 二进制",
 		Long: `为指定（或批量）k8s 正式版本创建 GitHub Release（名称=版本号），并下载/上传 kubeadm 二进制。
 
 默认（--all=false）：为 --kubernetes-version 创建 Release（--github-tag 为空时复用该版本），再下载并上传 kubeadm。
 --all=true：对比 kubernetes/kubernetes 正式 tag（>= v1.31.0，排除 -rc/-alpha/-beta）与本仓库已有 Release，
 补齐缺失的 Release，并在 kubeadm 资产缺失时下载上传。`,
-		Example: `  builder sync-kubeadm --kubernetes-version v1.31.6 --arch amd64 --github-owner acme --github-repo builder
-  builder sync-kubeadm --kubernetes-version v1.31.6 --arch amd64 --out-dir ./dist
-  builder sync-kubeadm --all --arch amd64 --github-owner acme --github-repo builder`,
+		Example: `  builder sync kubeadm --kubernetes-version v1.31.6 --arch amd64 --github-owner acme --github-repo builder
+  builder sync kubeadm --kubernetes-version v1.31.6 --arch amd64 --out-dir ./dist
+  builder sync kubeadm --all --arch amd64 --github-owner acme --github-repo builder`,
 		RunE: runSyncKubeadm,
 	}
 	cmd.Flags().StringVar(&syncKubeadmVersion, "kubernetes-version", "", "k8s 版本（如 v1.31.6；--all 时可省略）")
@@ -799,15 +815,15 @@ func newSyncKubeadmCmd() *cobra.Command {
 
 func newSyncBuilderCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "sync-builder",
+		Use:   "builder",
 		Short: "交叉编译 builder 二进制并上传到 GitHub Release（默认 tag=builder）",
 		Long: `为指定架构交叉编译 linux 下的 builder 二进制（产物名 builder-{arch}），
 确保目标仓库存在名为 builder 的 Release（--github-tag 可覆盖），并上传/覆盖同名 asset。
 
 默认架构 amd64 + arm64（与 build-bin.sh 一致）；可用 --arch 重复指定。`,
-		Example: `  builder sync-builder --github-owner acme --github-repo builder
-  builder sync-builder --arch amd64 --out-dir ./dist --github-owner acme --github-repo builder
-  go run ./cmd/builder sync-builder --arch amd64 --arch arm64 \
+		Example: `  builder sync builder --github-owner acme --github-repo builder
+  builder sync builder --arch amd64 --out-dir ./dist --github-owner acme --github-repo builder
+  go run ./cmd/builder sync builder --arch amd64 --arch arm64 \
     --configFile builder.yaml --github-owner acme --github-repo builder --github-token "$TOKEN"`,
 		RunE: runSyncBuilder,
 	}
@@ -900,7 +916,7 @@ func builderBinaryAssetName(arch string) string {
 	return "builder-" + arch
 }
 
-// builderGitHubTag 返回 sync-builder 使用的 GitHub Release tag：
+// builderGitHubTag 返回 sync builder 使用的 GitHub Release tag：
 // 命令行 --github-tag 优先；未指定时默认 builder。
 func builderGitHubTag() string {
 	if tag := strings.TrimSpace(githubTag); tag != "" {
@@ -922,7 +938,7 @@ func findModuleRoot() (string, error) {
 		}
 		parent := filepath.Dir(dir)
 		if parent == dir {
-			return "", fmt.Errorf("未找到 go.mod（请在 builder 仓库根目录执行 sync-builder）")
+			return "", fmt.Errorf("未找到 go.mod（请在 builder 仓库根目录执行 sync builder）")
 		}
 		dir = parent
 	}
@@ -1398,143 +1414,6 @@ func mergeGitHubOptions(cfg config.GitHubConfig, owner, repo, tag, token string)
 		opts.Token = token
 	}
 	return opts
-}
-
-func newListOSCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:   "list-os",
-		Short: "列出参考的操作系统与版本（实际 build 支持任意 OS/版本）",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			cfg, err := config.Load(configFile)
-			if err != nil {
-				return err
-			}
-			fmt.Println("参考 OS/版本（builder.yaml oses 节；build 支持任意 OS/版本，未登记时按约定推导构建镜像）：")
-			for _, osDef := range cfg.OSRegistry.OSes {
-				fmt.Printf("  %-12s 包管理器: %-4s 架构: %s  版本: %s\n",
-					osDef.Name, osDef.PkgManager, strings.Join(osDef.Archs, "/"), strings.Join(osDef.Versions, ", "))
-			}
-			fmt.Println()
-			fmt.Println("示例: --os ubuntu --os-version 24.04（构建镜像默认 swr.cn-north-4.myhuaweicloud.com/pixiu-public/ubuntu:24.04）")
-			return nil
-		},
-	}
-}
-
-func newListK8sCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:   "list-k8s",
-		Short: "列出参考的 k8s 版本与运行时版本",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			cfg, err := config.Load(configFile)
-			if err != nil {
-				return err
-			}
-			fmt.Println("参考 k8s 版本（builder.yaml versions 节，仅作常见版本参考）：")
-			for _, v := range cfg.K8sVersions.Versions {
-				fmt.Printf("  %-12s containerd: %s  crictl: %s  runc: %s\n",
-					v.Version, v.Containerd, v.Crictl, v.Runc)
-			}
-			fmt.Println()
-			fmt.Println("支持任意 vX.Y.Z 版本（无需注册，仓库自动推导），例如: v1.29.5、v1.30.2")
-			return nil
-		},
-	}
-}
-
-func newListImagesCmd() *cobra.Command {
-	var listOS string
-	var listK8sVersion string
-	var listArch string
-
-	cmd := &cobra.Command{
-		Use:   "list-images",
-		Short: "列出附加组件镜像清单",
-		Args:  cobra.NoArgs,
-		Example: `  builder list-images --os ubuntu --kubernetes-version v1.27.3 --arch amd64
-  builder list-images --os ubuntu --kubernetes-version v1.31.0 --arch arm64`,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			cfg, err := config.Load(configFile)
-			if err != nil {
-				return err
-			}
-
-			if listK8sVersion == "" {
-				return fmt.Errorf("缺少 --kubernetes-version")
-			}
-
-			if !cfg.ValidK8s(listK8sVersion) {
-				return fmt.Errorf("非法的 k8s 版本格式: %s（期望形如 v1.31.0，如 v1.29.5）", listK8sVersion)
-			}
-			if listArch != "" && !config.ValidArch(listArch) {
-				return fmt.Errorf("不支持的架构 %s（可选 amd64/arm64）", listArch)
-			}
-
-			fmt.Printf("附加组件镜像（%s / %s）:\n", listOS, listK8sVersion)
-			for _, a := range cfg.AddonImages.Addons {
-				if len(a.Tags) > 0 {
-					fmt.Printf("  %-16s %s（tags: %s）\n", a.Name, a.Image, strings.Join(a.Tags, ", "))
-					continue
-				}
-				fmt.Printf("  %-16s %s:%s\n", a.Name, a.Image, a.Tag)
-			}
-			fmt.Println()
-			fmt.Println("核心镜像清单（kube-apiserver/controller-manager/scheduler/kube-proxy/etcd/pause/coredns 等）")
-			fmt.Println("由 build 阶段下载官方 kubeadm 二进制后生成：")
-			fmt.Printf("  kubeadm config images list --kubernetes-version %s --image-repository registry.k8s.io\n", listK8sVersion)
-			return nil
-		},
-	}
-	cmd.Flags().StringVar(&listOS, "os", "", "目标操作系统（必填，如 ubuntu）")
-	cmd.Flags().StringVar(&listK8sVersion, "kubernetes-version", "", "k8s 版本（必填，如 v1.27.3）")
-	cmd.Flags().StringVar(&listArch, "arch", "amd64", "目标架构")
-	cmd.MarkFlagRequired("os")
-	cmd.MarkFlagRequired("kubernetes-version")
-	return cmd
-}
-
-func newListServeImagesCmd() *cobra.Command {
-	var registryAddr string
-	cmd := &cobra.Command{
-		Use:   "list-serve-images",
-		Short: "列出 serve 已加载的镜像（查询运行中的 registry）",
-		Example: `  builder list-serve-images
-  builder list-serve-images --registry-addr 192.168.1.10:5000`,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			return listServeImages(context.Background(), registryAddr)
-		},
-	}
-	cmd.Flags().StringVar(&registryAddr, "registry-addr", "127.0.0.1:5000", "serve registry 地址")
-	return cmd
-}
-
-// listServeImages 通过 Docker V2 API 查询 registry 的 _catalog 与各仓库 tags，
-// 打印 serve 已加载的全部镜像（host/repo:tag）。
-func listServeImages(ctx context.Context, addr string) error {
-	repos, err := crane.Catalog(addr, crane.Insecure)
-	if err != nil {
-		return fmt.Errorf("查询 registry %s 失败（serve 是否已启动？）: %w", addr, err)
-	}
-	if len(repos) == 0 {
-		fmt.Printf("registry %s 暂无已加载镜像\n", addr)
-		return nil
-	}
-	sort.Strings(repos)
-	count := 0
-	for _, repo := range repos {
-		tags, err := crane.ListTags(addr+"/"+repo, crane.Insecure)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "列出 %s tags 失败: %v\n", repo, err)
-			continue
-		}
-		sort.Strings(tags)
-		for _, tag := range tags {
-			fmt.Printf("%s/%s:%s\n", addr, repo, tag)
-			count++
-		}
-	}
-	fmt.Printf("共 %d 个镜像\n", count)
-	return nil
 }
 
 func newVerifyCmd() *cobra.Command {

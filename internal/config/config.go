@@ -318,7 +318,7 @@ func (c *Config) FindK8s(version string) (*K8sVersion, bool) {
 }
 
 // ValidOS 校验 OS 名称与版本组合是否在注册表中。
-// 注意：build 已支持任意 OS/版本（与 ValidK8s 类似），此方法仅供 list-os 等参考展示；
+// 注意：build 已支持任意 OS/版本（与 ValidK8s 类似），此方法仅供参考展示；
 // 构建管线请使用 ResolveOS，勿再以 ValidOS 拦截。
 func (c *Config) ValidOS(name, version string) bool {
 	os, ok := c.FindOS(name)
