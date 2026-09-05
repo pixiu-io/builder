@@ -171,7 +171,8 @@ func RemoveImages(c Config, images []string, out io.Writer) int {
 		case Docker:
 			cmd = exec.Command(cfg.DockerBin, "rmi", img)
 		case Containerd:
-			cmd = exec.Command(cfg.CtrBin, append(ctrBaseArgs(cfg), "images", "rm", img)...)
+			// images 由 registry 直拉写成 docker-save，未进入 containerd 本地 store。
+			continue
 		default:
 			continue
 		}

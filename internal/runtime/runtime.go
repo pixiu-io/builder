@@ -1,5 +1,5 @@
 // Package runtime 抽象 build 阶段的容器运行时：docker 或 containerd（ctr）。
-// 默认 containerd：packages 用 ctr run；images 在宿主机 ctr pull/export（再转为 docker-save tar 以兼容 serve）。
+// 默认 containerd：packages 用 ctr run；images 用 go-containerregistry 直拉并写成 docker-save。
 package runtime
 
 import (
