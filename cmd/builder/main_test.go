@@ -247,3 +247,20 @@ func TestResolveBuildOptionsPackImagePriority(t *testing.T) {
 		})
 	}
 }
+
+func TestKubeadmDownloadTags(t *testing.T) {
+	old := githubTag
+	t.Cleanup(func() { githubTag = old })
+
+	githubTag = ""
+	got := kubeadmDownloadTags("v1.37.0")
+	if len(got) != 2 || got[0] != "v1.37.0" || got[1] != "images" {
+		t.Fatalf("default tags = %v, want [v1.37.0 images]", got)
+	}
+
+	githubTag = "images"
+	got = kubeadmDownloadTags("v1.37.0")
+	if len(got) != 1 || got[0] != "images" {
+		t.Fatalf("explicit tag = %v, want [images]", got)
+	}
+}
