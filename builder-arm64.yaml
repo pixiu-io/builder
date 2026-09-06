@@ -125,6 +125,12 @@ addon_images:
   - name: typha
     image: "swr.cn-north-4.myhuaweicloud.com/pixiu-public/caoyingjun/typha"
     tag: "v3.31.3"
+  - name: controller
+    image: "swr.cn-north-4.myhuaweicloud.com/pixiu-public/caoyingjun/controller"
+    tag: "v1.15.1"
+  - name: kube-webhook-certgen
+    image: "swr.cn-north-4.myhuaweicloud.com/pixiu-public/caoyingjun/kube-webhook-certgen"
+    tag: "v1.6.9"
 
 
 server_images:
