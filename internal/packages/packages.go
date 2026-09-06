@@ -165,7 +165,7 @@ func Fetch(ctx context.Context, opts Options) (*Result, error) {
 		Image:       opts.BuildImage,
 		NamePrefix:  containerNamePackages,
 		Binds:       []string{opts.OutDir + ":/out"},
-		NetworkHost: rt == runtime.Containerd, // ctr 默认无网络，必须 host
+		NetworkHost: true, // 容器内 dnf 下载需联网：ctr 无默认网络必须 host；docker 在无 bridge/iptables 环境亦需 host
 		Shell:       script,
 	}
 	// Dry-run：Command 嵌入完整 docker/ctr 风格命令串（含脚本），便于单测断言。

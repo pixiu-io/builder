@@ -68,6 +68,9 @@ func Run(ctx context.Context, c Config, opts RunOpts) (command string, err error
 
 func dockerRun(ctx context.Context, cfg Config, opts RunOpts, name string) (string, error) {
 	args := []string{"run", "--rm", "--name", name}
+	if opts.NetworkHost {
+		args = append(args, "--network", "host")
+	}
 	for _, b := range opts.Binds {
 		args = append(args, "-v", b)
 	}
@@ -91,6 +94,9 @@ func dockerRun(ctx context.Context, cfg Config, opts RunOpts, name string) (stri
 
 func dockerRunStreaming(ctx context.Context, cfg Config, opts RunOpts, name string, stdout, stderr io.Writer) (string, error) {
 	args := []string{"run", "--rm", "--name", name}
+	if opts.NetworkHost {
+		args = append(args, "--network", "host")
+	}
 	for _, b := range opts.Binds {
 		args = append(args, "-v", b)
 	}
@@ -130,6 +136,9 @@ func RunCombined(ctx context.Context, c Config, opts RunOpts) (command string, o
 	switch cfg.Runtime {
 	case Docker:
 		args := []string{"run", "--rm", "--name", name}
+		if opts.NetworkHost {
+			args = append(args, "--network", "host")
+		}
 		for _, b := range opts.Binds {
 			args = append(args, "-v", b)
 		}
