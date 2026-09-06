@@ -305,7 +305,7 @@ func listCoreImages(ctx context.Context, opts Options, rtCfg rt.Config) ([]strin
 			Image:       opts.BuildImage,
 			NamePrefix:  containerNameImagesList,
 			Binds:       []string{absKubeadm + ":/kubeadm:ro"},
-			NetworkHost: rtCfg.Runtime == rt.Containerd,
+			NetworkHost: true, // 与 packages 一致：受限环境（无 bridge/iptables）下容器须 host 网络才能创建
 			Entrypoint:  "/kubeadm",
 			Args:        listArgs,
 		}

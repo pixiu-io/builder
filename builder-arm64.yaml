@@ -1,3 +1,4 @@
+
 # builder 配置文件
 # 单文件包含：OS 注册表（oses）、附加组件镜像（addon_images）、附加安装包（addon_packages）。
 # 必装软件包由代码内定，执行即打包；可整体更换配置文件（--configFile 或 BUILDER_CONFIG_FILE）。
@@ -56,10 +57,11 @@ oses:
     rpm_distro: rhel9
     archs: ["amd64", "arm64"]
   - name: openEuler
-    versions: ["22.03"]
+    versions: ["22.03", "20.03"]
     pkg_manager: dnf
     build_images:
       "22.03": swr.cn-north-4.myhuaweicloud.com/pixiu-public/caoyingjun/openeuler:22.03-lts-sp3
+      "20.03": swr.cn-north-4.myhuaweicloud.com/pixiu-public/caoyingjun/openeuler:20.03-lts-sp3
     rpm_distro: rhel7
     # openEuler 对应 download.docker.com/linux/rhel/7/ 为 404（docker 官方已停止发布 RHEL7 仓库），
     # 因此 containerd 改为从系统源（everything 仓库，含 containerd-1.2.0-315.oe2203sp3）安装：
@@ -68,7 +70,7 @@ oses:
     containerd_pkg: "containerd"
     containerd_repo: "none"
     archs: ["amd64", "arm64"]
-	// 银河麒麟 V10（CentOS 7 / el7 兼容）：dnf + docker-ce centos/7 源的 containerd.io
+  # 银河麒麟 V10（CentOS 7 / el7 兼容）：dnf + docker-ce centos/7 源的 containerd.io
   # （与 kubez-ansible 中 Kylin Linux Advanced Server 安装路径一致）
   # containerd_repo=huawei：华为云 ECS 上 tuna/aliyun 拉包常 403；未配置时仍走多镜像 failover
   - name: kylin
