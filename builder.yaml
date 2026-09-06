@@ -163,12 +163,6 @@ addon_images:
   - name: metrics-server
     image: "ccr.ccs.tencentyun.com/pixiucloud/metrics-server"
     tag: "v0.6.4"
-  - name: metrics-scraper
-    image: "ccr.ccs.tencentyun.com/pixiucloud/metrics-scraper"
-    tag: "v1.0.8"
-  - name: nginx
-    image: "ccr.ccs.tencentyun.com/pixiucloud/nginx"
-    tag: "1.25-pixiu"
   - name: nginx-ingress-controller
     image: "ccr.ccs.tencentyun.com/pixiucloud/nginx-ingress-controller"
     tag: "v1.2.0"
@@ -190,7 +184,7 @@ server_images:
     tag: "5.7"
   - name: pixiu
     image: "crpi-0ecikjs9ylb2hqyo.cn-hangzhou.personal.cr.aliyuncs.com/pixiu-public/pixiu"
-    tag: "v2.0.1-beta.5"
+    tag: "v2.0.1-beta.6"
   - name: kubez-ansible
     image: "ccr.ccs.tencentyun.com/pixiucloud/kubez-ansible"
     tags:
