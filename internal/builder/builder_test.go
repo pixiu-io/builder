@@ -41,15 +41,6 @@ oses:
       "9": swr.cn-north-4.myhuaweicloud.com/pixiu-public/rockylinux:9
     rpm_distro: rhel9
     archs: ["amd64", "arm64"]
-versions:
-  - version: v1.27.3
-    containerd: "1.7.13"
-    crictl: "1.27.1"
-    runc: "1.1.7"
-  - version: v1.28.2
-    containerd: "1.7.13"
-    crictl: "1.28.0"
-    runc: "1.1.7"
 addon_images:
   - name: flannel
     image: "swr.cn-north-4.myhuaweicloud.com/pixiu-public/flannel/flannel"
@@ -88,11 +79,6 @@ oses:
       "9": swr.cn-north-4.myhuaweicloud.com/pixiu-public/rockylinux:9
     rpm_distro: rhel9
     archs: ["amd64", "arm64"]
-versions:
-  - version: v1.35.7
-    containerd: "1.7.13"
-    crictl: "1.35.0"
-    runc: "1.1.7"
 `
 	if err := os.WriteFile(filepath.Join(dir, config.FileName), []byte(content), 0o644); err != nil {
 		t.Fatal(err)
@@ -339,7 +325,7 @@ func TestBuildDryRunPackagesPinK8sVersionDnf(t *testing.T) {
 }
 
 func TestBuildDryRunArbitraryK8sVersion(t *testing.T) {
-	// 未注册在 builder.yaml versions 节中的合法版本，应能正常 dry-run（ksDef 为 nil 不 panic）。
+	// 任意合法 vX.Y.Z 版本应能正常 dry-run。
 	cfg := loadSampleConfig(t)
 	res, err := Build(context.Background(), Options{
 		Config:     cfg,
@@ -534,11 +520,6 @@ oses:
       "9": swr.cn-north-4.myhuaweicloud.com/pixiu-public/rockylinux:9
     rpm_distro: rhel9
     archs: ["amd64", "arm64"]
-versions:
-  - version: v1.35.7
-    containerd: "1.7.13"
-    crictl: "1.35.0"
-    runc: "1.1.7"
 `
 	if err := os.WriteFile(filepath.Join(dir, config.FileName), []byte(content), 0o644); err != nil {
 		t.Fatal(err)

@@ -14,12 +14,13 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// Config 聚合清单配置（oses / versions / addon_images / server_images / addon_packages）、
+// Config 聚合清单配置（oses / addon_images / server_images / addon_packages）、
 // 可选 GitHub Release 上传配置与 build 默认参数。
-// OSRegistry / K8sVersions / AddonImages / ServerImages 以 inline 展开，使单文件顶层键直接映射。
+// OSRegistry / AddonImages / ServerImages 以 inline 展开，使单文件顶层键直接映射。
+// 必装软件包（kubeadm/kubelet/kubectl + containerd + cri-tools + 系统依赖）由代码内定，
+// 不写配置；addon_packages 仅描述可选附加包。
 type Config struct {
 	OSRegistry  OSRegistry  `yaml:",inline"`
-	K8sVersions K8sVersions `yaml:",inline"`
 	AddonImages AddonImages `yaml:",inline"`
 	// ServerImages 平台/服务端镜像清单（与 addon_images 平级；仅 build servers 读取）。
 	ServerImages ServerImages `yaml:",inline"`
@@ -130,19 +131,6 @@ func (o *OS) CodenameFor(version string) string {
 		return o.Codename
 	}
 	return InferCodename(o.Name, version)
-}
-
-// K8sVersions k8s 版本 → 运行时版本映射。
-type K8sVersions struct {
-	Versions []K8sVersion `yaml:"versions"`
-}
-
-// K8sVersion 单个 k8s 版本及配套运行时版本。
-type K8sVersion struct {
-	Version    string `yaml:"version"`
-	Containerd string `yaml:"containerd"`
-	Crictl     string `yaml:"crictl"`
-	Runc       string `yaml:"runc"`
 }
 
 // AddonImages 附加组件镜像清单（顶层 addon_images 节）。
@@ -276,12 +264,9 @@ func Load(path string) (*Config, error) {
 		return nil, err
 	}
 
-	// 空清单校验：OS 注册表与 k8s 版本清单为空视为配置错误，addon_images 允许为空。
+	// 空清单校验：OS 注册表为空视为配置错误；addon_images / addon_packages 允许为空。
 	if len(cfg.OSRegistry.OSes) == 0 {
 		return nil, fmt.Errorf("OS 注册表（oses）配置为空: %s", path)
-	}
-	if len(cfg.K8sVersions.Versions) == 0 {
-		return nil, fmt.Errorf("k8s 版本（versions）配置为空: %s", path)
 	}
 
 	return cfg, nil
@@ -303,18 +288,6 @@ func (c *Config) FindOS(name string) (*OS, bool) {
 	for i := range c.OSRegistry.OSes {
 		if c.OSRegistry.OSes[i].Name == name {
 			return &c.OSRegistry.OSes[i], true
-		}
-	}
-	return nil, false
-}
-
-// FindK8s 按版本查找 k8s 版本定义（可选参考配置）。
-// 版本注册在 builder.yaml versions 节时返回对应记录；否则返回 nil, false。
-// 注意：未注册版本也能 build，此方法仅用于获取已知版本的参考字段（如 crictl 覆盖）。
-func (c *Config) FindK8s(version string) (*K8sVersion, bool) {
-	for i := range c.K8sVersions.Versions {
-		if c.K8sVersions.Versions[i].Version == version {
-			return &c.K8sVersions.Versions[i], true
 		}
 	}
 	return nil, false
@@ -532,19 +505,14 @@ func InferContainerdRepo(osName string) string {
 // k8sVersionRe 合法 k8s 版本格式：vX.Y.Z（如 v1.31.0、v1.29.5）。
 var k8sVersionRe = regexp.MustCompile(`^v\d+\.\d+\.\d+$`)
 
-// ValidK8s 校验 k8s 版本格式是否合法。
-// 不再要求版本注册在 builder.yaml versions 节中，任意合法 vX.Y.Z 均可 build。
+// ValidK8s 校验 k8s 版本格式是否合法（任意合法 vX.Y.Z 均可 build）。
 func (c *Config) ValidK8s(version string) bool {
 	return k8sVersionRe.MatchString(version)
 }
 
 // CrictlVersionFor 返回 k8s 版本对应的 crictl 回退版本（cri-tools 包缺失时使用）。
-// 版本注册在 builder.yaml versions 节且 crictl 字段非空时返回清单值（可覆盖默认推导）；
-// 否则推导为 strings.TrimPrefix(k8sVersion, "v")（cri-tools 版本与 k8s 版本对齐，如 v1.29.5→1.29.5）。
+// 与 k8s 版本对齐：v1.29.5 → 1.29.5。
 func (c *Config) CrictlVersionFor(k8sVersion string) string {
-	if ks, ok := c.FindK8s(k8sVersion); ok && ks.Crictl != "" {
-		return ks.Crictl
-	}
 	return strings.TrimPrefix(k8sVersion, "v")
 }
 
@@ -553,15 +521,6 @@ func (c *Config) OSNames() []string {
 	out := make([]string, 0, len(c.OSRegistry.OSes))
 	for _, os := range c.OSRegistry.OSes {
 		out = append(out, os.Name)
-	}
-	return out
-}
-
-// K8sVersionsList 返回全部 k8s 版本（有序）。
-func (c *Config) K8sVersionsList() []string {
-	out := make([]string, 0, len(c.K8sVersions.Versions))
-	for _, v := range c.K8sVersions.Versions {
-		out = append(out, v.Version)
 	}
 	return out
 }
