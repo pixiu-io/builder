@@ -59,7 +59,7 @@ oses:
     versions: ["22.03"]
     pkg_manager: dnf
     build_images:
-      "22.03": swr.cn-north-4.myhuaweicloud.com/pixiu-public/openeuler:22.03-lts-sp3
+      "22.03": swr.cn-north-4.myhuaweicloud.com/pixiu-public/caoyingjun/openeuler:22.03-lts-sp3
     rpm_distro: rhel7
     # openEuler 对应 download.docker.com/linux/rhel/7/ 为 404（docker 官方已停止发布 RHEL7 仓库），
     # 因此 containerd 改为从系统源（everything 仓库，含 containerd-1.2.0-315.oe2203sp3）安装：
