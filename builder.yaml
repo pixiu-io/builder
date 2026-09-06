@@ -1,6 +1,7 @@
 # builder 配置文件（位于仓库根目录 builder.yaml）
-# 单文件包含：build 默认参数、OS 注册表（oses）、k8s 版本参考（versions）、
+# 单文件包含：build 默认参数、OS 注册表（oses）、
 # 附加组件镜像（addon_images）、平台服务镜像（server_images）、附加安装包（addon_packages）。
+# 必装软件包（kubeadm/kubelet/kubectl + containerd + cri-tools + 系统依赖）由代码内定，执行即打包。
 # 生产默认路径 /etc/pixiu/builder.yaml；本地开发：--configFile ./builder.yaml 或 BUILDER_CONFIG_FILE=./builder.yaml
 # 镜像条目（addon_images / server_images）字段：
 #   name: 镜像保存文件名基名（可省略，省略时按 image 短名推导）
@@ -115,29 +116,9 @@ oses:
     containerd_repo: "tuna"   # 对齐 kubez docker-ce.repo-openEuler.j2（mirrors.tuna.tsinghua.edu.cn）
     archs: ["amd64", "arm64"]
 
-# ========== k8s 版本（可选参考）==========
-# k8s 版本参考清单（可选）。
-# build 支持任意合法 vX.Y.Z 版本（如 v1.29.5、v1.30.2），无需在此注册；
-# 本清单仅用于已知版本的 crictl 回退版本覆盖（cri-tools 包缺失时使用清单中的 crictl 值）。
-# apt 包源仓库由 version 自动推导（v1.27.3 → 阿里云 kubernetes-new v1.27），无需额外字段。
-# containerd / runc 以包管理器源内软件包为准（此处的版本字段仅供记录参考）；
-# 未注册版本的 crictl 回退版本自动推导为与 k8s 版本对齐（v1.29.5 → 1.29.5）。
-versions:
-  - version: v1.27.3
-    containerd: "1.7.13"
-    crictl: "1.27.1"
-    runc: "1.1.7"
-  - version: v1.28.2
-    containerd: "1.7.13"
-    crictl: "1.28.0"
-    runc: "1.1.7"
-  - version: v1.31.0
-    containerd: "1.7.13"
-    crictl: "1.31.0"
-    runc: "1.1.7"
-
 # ========== 附加组件镜像 ==========
 # 附加组件镜像清单：name → image:tag（仅镜像，不含软件包；附加安装包见下方 addon_packages 节）。
+# 必装软件包（kubeadm/kubelet/kubectl + containerd + cri-tools + 系统依赖）由代码内定，执行即打包，无需配置。
 # name 用作镜像保存文件名（images/addons/{name}.tar）；tags 多版本时保存为 {name}-{tag}.tar。
 # CNI 附加组件镜像：flannel（默认 CNI，华为云 SWR pixiu-public 仓库）与 calico（v3.31.3，pixiucloud 仓库）。
 # 仓库不可达时可用 build --skip-addons 跳过附加组件。
@@ -192,9 +173,9 @@ server_images:
       - "v3.0.3"
 
 # ========== 附加安装包 ==========
-# 附加安装包列表（与 addon_images 平级），mode ∈ {packages, all} 且未 --skip-addons 时
-# 并入软件包下载清单（与核心清单按包名去重合并）；--only-addons 时为其软件包主体。
-# 这些是部署附加组件（或其它宿主组件）需要的系统软件包（apt/dnf 通用名）。
+# 可选附加安装包（与 addon_images 平级）。必装包（kubeadm/kubelet/kubectl + containerd +
+# cri-tools + 系统依赖）由代码内定，执行 build packages 即打包，无需在此配置。
+# mode ∈ {packages, all} 且未 --skip-addons 时并入软件包下载清单；--only-addons 时为其软件包主体。
 # 每项为 {name, version} 对象：
 #   - name：包名（须与目标系统源匹配）
 #   - version：可选锁定版本；为空（或省略）= 不锁版本，透传纯包名给容器内包管理器；

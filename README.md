@@ -203,13 +203,13 @@ pixiu-images-{arch}-{k8sver}/                  # build images（不绑定 OS）
 |------|------|
 | `build` | build 子命令默认参数（可选；优先级：命令行 > 配置 > 内置默认值） |
 | `oses` | OS 注册表：可用版本、包管理器（apt/dnf）、容器内下载软件包用的构建镜像、架构、apt 版本代号（codename/codenames）、dnf 发行版标识（rpm_distro）、containerd 包名与来源（containerd_pkg / containerd_repo） |
-| `versions` | k8s 版本定义；containerd/runc 为记录用，crictl 用于 cri-tools 包缺失时的静态回退 |
 | `addon_images` | 附加组件镜像清单（name → image:tag；仅镜像，不含软件包；供 `build images`）。镜像条目可用 `tag`（单版本）或 `tags`（同一镜像多版本，构建时展开为多个 tar，文件名 `{name}-{tag}.tar`，serve 可发布多个 tag） |
 | `server_images` | 平台服务镜像清单（格式同 `addon_images`；仅 `build servers` 读取；空配置时报错） |
-| `addon_packages` | 附加安装包列表（对象格式：name + 可选 version；version 空不锁版本、非空按目标包管理器语法转译 name=version / name-version；mode ∈ packages/all 且未跳过附加时并入软件包清单） |
+| `addon_packages` | 可选附加安装包（对象格式：name + 可选 version）。必装包（kubeadm/kubelet/kubectl + containerd + cri-tools + 系统依赖）由代码内定、执行即打包，无需配置。version 空不锁版本、非空按目标包管理器语法转译；mode ∈ packages/all 且未跳过附加时并入软件包清单 |
 | `github` | 可选：产物上传到 GitHub Release（owner/repo/tag/token 等；token 建议用环境变量） |
 
-> `versions` / `build_images` 为初始值，加载器不验证镜像可用性，生产使用请按需核对。
+> `oses.build_images` 为初始值，加载器不验证镜像可用性，生产使用请按需核对。
+> k8s 版本通过 `--kubernetes-version` / `build.kubernetes_version` 指定（任意合法 `vX.Y.Z`）；cri-tools 缺失时 crictl 回退版本与 k8s 对齐（`v1.29.5` → `1.29.5`）。
 
 ### build 参数配置化
 

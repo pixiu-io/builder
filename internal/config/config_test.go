@@ -28,15 +28,6 @@ oses:
       "9": swr.cn-north-4.myhuaweicloud.com/pixiu-public/rockylinux:9
     rpm_distro: rhel9
     archs: ["amd64", "arm64"]
-versions:
-  - version: v1.27.3
-    containerd: "1.7.13"
-    crictl: "1.27.1"
-    runc: "1.1.7"
-  - version: v1.28.2
-    containerd: "1.7.13"
-    crictl: "1.28.0"
-    runc: "1.1.7"
 addon_images:
   - name: flannel
     image: "swr.cn-north-4.myhuaweicloud.com/pixiu-public/flannel/flannel"
@@ -69,9 +60,6 @@ func TestLoad(t *testing.T) {
 
 	if len(cfg.OSRegistry.OSes) != 2 {
 		t.Errorf("期望 2 个 OS，实际 %d", len(cfg.OSRegistry.OSes))
-	}
-	if len(cfg.K8sVersions.Versions) != 2 {
-		t.Errorf("期望 2 个 k8s 版本，实际 %d", len(cfg.K8sVersions.Versions))
 	}
 	if len(cfg.AddonImages.Addons) != 1 {
 		t.Errorf("期望 1 个 addon，实际 %d", len(cfg.AddonImages.Addons))
@@ -191,8 +179,6 @@ oses:
     containerd_pkg: "containerd.io"
     containerd_repo: "tuna"
     archs: ["amd64", "arm64"]
-versions:
-  - version: v1.31.6
 `
 	cfg, err := Load(writeSample(t, content))
 	if err != nil {
@@ -253,33 +239,16 @@ func TestInferRPMDistro(t *testing.T) {
 	}
 }
 
-func TestFindK8s(t *testing.T) {
-	cfg, _ := Load(sampleFile(t))
-	ks, ok := cfg.FindK8s("v1.27.3")
-	if !ok {
-		t.Fatal("期望找到 v1.27.3")
-	}
-	if ks.Containerd != "1.7.13" {
-		t.Errorf("containerd 版本错误: %q", ks.Containerd)
-	}
-	if _, ok := cfg.FindK8s("v1.26.0"); ok {
-		t.Error("不应找到 v1.26.0")
-	}
-	if !cfg.ValidK8s("v1.28.2") {
-		t.Error("v1.28.2 应合法")
-	}
-}
-
 func TestValidK8s(t *testing.T) {
 	cfg, _ := Load(sampleFile(t))
 	cases := []struct {
 		ver  string
 		want bool
 	}{
-		{"v1.31.0", true},    // 合法格式，未注册也能通过
-		{"v1.29.5", true},    // 合法格式，未注册也能通过
-		{"v1.27.3", true},    // 合法格式，注册版本
-		{"v1.28.2", true},    // 合法格式，注册版本
+		{"v1.31.0", true},
+		{"v1.29.5", true},
+		{"v1.27.3", true},
+		{"v1.28.2", true},
 		{"1.31", false},      // 缺少 v 前缀且缺少第三段
 		{"v1.31", false},     // 缺少第三段
 		{"v1.31.0.1", false}, // 多余一段
@@ -299,11 +268,11 @@ func TestCrictlVersionFor(t *testing.T) {
 		k8sVer string
 		want   string
 	}{
-		{"v1.27.3", "1.27.1"}, // 清单内：返回清单 crictl 值
-		{"v1.28.2", "1.28.0"}, // 清单内：返回清单 crictl 值
-		{"v1.29.5", "1.29.5"}, // 清单外：推导（对齐 k8s 版本）
-		{"v1.30.2", "1.30.2"}, // 清单外：推导
-		{"v1.31.0", "1.31.0"}, // 清单外（样例配置无此版本）：推导
+		{"v1.27.3", "1.27.3"},
+		{"v1.28.2", "1.28.2"},
+		{"v1.29.5", "1.29.5"},
+		{"v1.30.2", "1.30.2"},
+		{"v1.31.0", "1.31.0"},
 	}
 	for _, c := range cases {
 		if got := cfg.CrictlVersionFor(c.k8sVer); got != c.want {
@@ -465,8 +434,6 @@ oses:
       "9": swr.cn-north-4.myhuaweicloud.com/pixiu-public/rockylinux:9
     rpm_distro: rhel9
     archs: ["amd64", "arm64"]
-versions:
-  - version: v1.27.3
 `
 	cfg, err := Load(writeSample(t, content))
 	if err != nil {
@@ -518,8 +485,6 @@ oses:
     containerd_pkg: "containerd"
     containerd_repo: "none"
     archs: ["amd64", "arm64"]
-versions:
-  - version: v1.27.3
 `
 	cfg, err := Load(writeSample(t, content))
 	if err != nil {
@@ -575,8 +540,6 @@ oses:
       "22.03": swr.cn-north-4.myhuaweicloud.com/pixiu-public/openeuler/openeuler:22.03-lts-sp3
     rpm_distro: rhel7
     archs: ["amd64", "arm64"]
-versions:
-  - version: v1.35.7
 `
 	cfg, err := Load(writeSample(t, content))
 	if err != nil {
@@ -773,8 +736,6 @@ oses:
     build_images:
       "22.04": swr.cn-north-4.myhuaweicloud.com/pixiu-public/ubuntu:22.04
     archs: ["amd64"]
-versions:
-  - version: v1.27.3
 github:
   owner: acme
   repo: builder
@@ -806,8 +767,6 @@ oses:
     build_images:
       "22.04": swr.cn-north-4.myhuaweicloud.com/pixiu-public/ubuntu:22.04
     archs: ["amd64"]
-versions:
-  - version: v1.27.3
 build:
   keep_files: true
 `
@@ -838,8 +797,6 @@ oses:
     build_images:
       "22.04": swr.cn-north-4.myhuaweicloud.com/pixiu-public/ubuntu:22.04
     archs: ["amd64"]
-versions:
-  - version: v1.27.3
 build:
   pack_image: swr.cn-north-4.myhuaweicloud.com/pixiu-public/pixiukit/docker:24-cli-arm
 `
@@ -873,9 +830,6 @@ oses:
     build_images:
       "22.04": swr.cn-north-4.myhuaweicloud.com/pixiu-public/ubuntu:22.04
     archs: ["amd64"]
-versions:
-  - version: v1.27.3
-    crictl: "1.27.1"
 addon_images:
   - name: flannel
     image: "swr.cn-north-4.myhuaweicloud.com/pixiu-public/flannel/flannel"
@@ -910,8 +864,6 @@ oses:
     build_images:
       "22.04": swr.cn-north-4.myhuaweicloud.com/pixiu-public/ubuntu:22.04
     archs: ["amd64"]
-versions:
-  - version: v1.27.3
 addon_images:
   - name: flannel
     image: "swr.cn-north-4.myhuaweicloud.com/pixiu-public/flannel/flannel"
@@ -956,8 +908,6 @@ oses:
     build_images:
       "22.04": swr.cn-north-4.myhuaweicloud.com/pixiu-public/ubuntu:22.04
     archs: ["amd64"]
-versions:
-  - version: v1.27.3
 addon_images:
   - name: flannel
     image: "swr.cn-north-4.myhuaweicloud.com/pixiu-public/flannel/flannel"
@@ -996,8 +946,6 @@ oses:
     build_images:
       "22.04": swr.cn-north-4.myhuaweicloud.com/pixiu-public/ubuntu:22.04
     archs: ["amd64"]
-versions:
-  - version: v1.27.3
 addon_images:
   - name: flannel
     image: "swr.cn-north-4.myhuaweicloud.com/pixiu-public/flannel/flannel"
@@ -1081,8 +1029,6 @@ oses:
     build_images:
       "22.04": swr.cn-north-4.myhuaweicloud.com/pixiu-public/ubuntu:22.04
     archs: ["amd64"]
-versions:
-  - version: v1.27.3
 addon_packages:
   - name: conntrack
     version: ""

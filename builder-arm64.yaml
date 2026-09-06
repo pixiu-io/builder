@@ -1,6 +1,6 @@
 # builder 配置文件
-# 单文件包含三节：OS 注册表（oses）、k8s 版本参考（versions）、附加组件镜像（addons）。
-# 可整体更换配置目录（--config-dir 或环境变量 BUILDER_CONFIG_DIR）。
+# 单文件包含：OS 注册表（oses）、附加组件镜像（addon_images）、附加安装包（addon_packages）。
+# 必装软件包由代码内定，执行即打包；可整体更换配置文件（--configFile 或 BUILDER_CONFIG_FILE）。
 
 # ========== OS 注册表 ==========
 # 定义各 OS 的可用版本、包管理器、构建镜像（容器内下载软件包用）、
@@ -83,28 +83,9 @@ oses:
 
 
 
-# k8s 版本参考清单（可选）。
-# build 支持任意合法 vX.Y.Z 版本（如 v1.29.5、v1.30.2），无需在此注册；
-# 本清单仅用于已知版本的 crictl 回退版本覆盖（cri-tools 包缺失时使用清单中的 crictl 值）。
-# 包源仓库由 version 自动推导（v1.27.3 → pkgs.k8s.io v1.27），无需额外字段。
-# containerd / runc 以包管理器源内软件包为准（此处的版本字段仅供记录参考）；
-# 未注册版本的 crictl 回退版本自动推导为与 k8s 版本对齐（v1.29.5 → 1.29.5）。
-versions:
-  - version: v1.27.3
-    containerd: "1.7.13"
-    crictl: "1.27.1"
-    runc: "1.1.7"
-  - version: v1.28.2
-    containerd: "1.7.13"
-    crictl: "1.28.0"
-    runc: "1.1.7"
-  - version: v1.31.0
-    containerd: "1.7.13"
-    crictl: "1.31.0"
-    runc: "1.1.7"
-
 # ========== 附加组件镜像 ==========
 # 附加组件镜像清单：name → image:tag
+# 必装软件包由代码内定，执行即打包，无需在此配置。
 # name 用作镜像保存文件名（images/addons/{name}.tar）
 addon_images:
   - name: flannel
