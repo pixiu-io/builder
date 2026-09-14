@@ -33,9 +33,12 @@ type Options struct {
 	OSVersion  string
 	Arch       string
 	K8sVersion string
-	Mirror     mirror.Mirror
-	WorkDir    string
-	OutDir     string
+	// Version 仅 build servers 使用：非空时产物名为 pixiu-{version}-images-{arch}；
+	// 为空时保持 pixiu-images-{arch}。
+	Version string
+	Mirror  mirror.Mirror
+	WorkDir string
+	OutDir  string
 	// Mode 构建模式：packages=仅软件包 / images=仅镜像 / servers=仅 server_images / all=packages+images（默认）。
 	// CLI 默认填充 all；库调用方为空时按 all 处理。
 	Mode string
@@ -330,7 +333,7 @@ func Build(ctx context.Context, opts Options) (*Result, error) {
 	case opts.Mode == "images":
 		bundleName = ImagesBundleName(opts.Arch, opts.K8sVersion)
 	case opts.Mode == "servers":
-		bundleName = ServerImagesBundleName(opts.Arch)
+		bundleName = ServerImagesBundleName(opts.Arch, opts.Version)
 	case opts.Mode == "packages":
 		bundleName = PackagesBundleName(opts.OS, opts.OSVersion, opts.Arch, opts.K8sVersion)
 	default:
@@ -823,9 +826,14 @@ func ImagesBundleName(arch, k8sVer string) string {
 	return fmt.Sprintf("pixiu-images-%s-%s", arch, k8sVer)
 }
 
-// ServerImagesBundleName 生成 build servers 产物名：pixiu-server-images-{arch}。
-func ServerImagesBundleName(arch string) string {
-	return fmt.Sprintf("pixiu-server-images-%s", arch)
+// ServerImagesBundleName 生成 build servers 产物名。
+// version 为空：pixiu-images-{arch}；非空：pixiu-{version}-images-{arch}。
+func ServerImagesBundleName(arch, version string) string {
+	version = strings.TrimSpace(version)
+	if version != "" {
+		return fmt.Sprintf("pixiu-%s-images-%s", version, arch)
+	}
+	return fmt.Sprintf("pixiu-images-%s", arch)
 }
 
 // defaultBuildOS 为 images 模式未指定 OS 时挑选默认构建容器发行版。

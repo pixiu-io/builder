@@ -47,6 +47,7 @@ var (
 	buildPackImage   string
 	buildRuntime     string
 	buildUpload      bool
+	buildVersion     string // 仅 build servers：区分产物名
 )
 
 // githubImagesReleaseTag build images 默认使用的 GitHub Release 名/tag。
@@ -173,7 +174,7 @@ func newBuildCmd() *cobra.Command {
 		Long: `构建 Kubernetes 离线产物，需指定子命令：
   build packages  构建软件包离线包（需 --os / --os-version）
   build images    构建镜像离线包（无需操作系统；产物 pixiu-images-{arch}-{k8s}.tar.gz）
-  build servers   构建平台服务镜像离线包（读 server_images；产物 pixiu-server-images-{arch}.tar.gz）`,
+  build servers   构建平台服务镜像离线包（读 server_images；默认 pixiu-images-{arch}.tar.gz；--version 时 pixiu-{version}-images-{arch}.tar.gz）`,
 		Example: `  builder build packages --os ubuntu --os-version 22.04 --kubernetes-version v1.31.6
   builder build images --kubernetes-version v1.31.6 --arch amd64 --upload
   builder build images --kubernetes-version v1.31.7 --kubernetes-version v1.31.8 --arch amd64 --upload
@@ -231,13 +232,14 @@ func newBuildServersCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "servers",
 		Short: "构建平台服务镜像离线包（读 server_images）",
-		Long: `按配置文件 server_images 拉取并打包平台/服务端镜像为 pixiu-server-images-{arch}.tar.gz。
+		Long: `按配置文件 server_images 拉取并打包平台/服务端镜像。
+默认产物 pixiu-images-{arch}.tar.gz；指定 --version 时为 pixiu-{version}-images-{arch}.tar.gz。
 无需 --os / --os-version / --kubernetes-version；忽略 --skip-addons / --only-addons。
 server_images 为空时直接报错。
 --upload 时上传到 --github-tag（未指定则默认 download；不存在则自动创建）。`,
 		Example: `  builder build servers --arch amd64
   builder build servers --arch amd64 --upload
-  builder build servers --arch amd64 --github-tag download --upload`,
+  builder build servers --arch amd64 --version v2.0.1 --github-tag servers --upload`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runBuild(cmd, "servers")
@@ -285,6 +287,7 @@ func addBuildServersFlags(cmd *cobra.Command) {
 	cmd.Flags().StringVar(&buildPackImage, "pack-image", "", "镜像打包工具容器镜像（仅 --runtime docker；含 docker CLI；默认 pixiukit/docker:24-cli，ARM 宿主需配置对应架构镜像）")
 	cmd.Flags().StringVar(&buildRuntime, "runtime", "containerd", "构建容器运行时（containerd|docker；默认 containerd）")
 	cmd.Flags().BoolVar(&buildUpload, "upload", false, "构建完成后将产物上传到 GitHub Release（默认 tag=download，--github-tag 可覆盖）")
+	cmd.Flags().StringVar(&buildVersion, "version", "", "产物版本号（非空时产物名为 pixiu-{version}-images-{arch}.tar.gz；为空则 pixiu-images-{arch}.tar.gz）")
 	addGitHubFlags(cmd)
 }
 
@@ -358,6 +361,8 @@ type buildOptions struct {
 	PackImage string
 	// Runtime 容器运行时：containerd（默认）或 docker。
 	Runtime string
+	// Version 仅 build servers：非空时写入产物名 pixiu-{version}-images-{arch}。
+	Version string
 }
 
 // resolveBuildOptions 按"命令行 > 配置文件 build 节 > flag 内置默认值"合并 build 参数。
@@ -511,6 +516,7 @@ func runBuild(cmd *cobra.Command, mode string) error {
 		versions = nil
 		opts.K8sVersion = ""
 		opts.OS, opts.OSVersion = "", ""
+		opts.Version = strings.TrimSpace(buildVersion)
 		// build servers 忽略 addon 相关开关与配置回落。
 		opts.SkipAddons = false
 		opts.OnlyAddons = false
@@ -519,6 +525,7 @@ func runBuild(cmd *cobra.Command, mode string) error {
 		}
 	} else {
 		opts.K8sVersion = firstK8sVersion(versions)
+		opts.Version = ""
 	}
 
 	mirrorVal, err := mirror.ParseMirror(opts.Mirror)
@@ -690,6 +697,7 @@ func runBuildOne(ctx context.Context, cfg *config.Config, opts buildOptions, mir
 		OSVersion:               opts.OSVersion,
 		Arch:                    opts.Arch,
 		K8sVersion:              opts.K8sVersion,
+		Version:                 opts.Version,
 		Mirror:                  mirrorVal,
 		WorkDir:                 opts.WorkDir,
 		OutDir:                  opts.OutDir,
