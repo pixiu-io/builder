@@ -16,14 +16,11 @@
 #
 #
 
-
 build:
   kubeadm_mode: "local"
   kubeadm_remote_host: "agent"
   pack_image: "swr.cn-north-4.myhuaweicloud.com/pixiu-public/caoyingjun/docker:24-cli"
   runtime: "containerd"   # containerd|docker；默认 containerd；containerd 时忽略 pack_image
-
-
 
 oses:
   - name: ubuntu
@@ -115,18 +112,21 @@ addon_images:
     image: "swr.cn-north-4.myhuaweicloud.com/pixiu-public/caoyingjun/kube-webhook-certgen"
     tag: "v1.6.9"
 
-
 server_images:
   - name: mysql
     image: "swr.cn-north-4.myhuaweicloud.com/pixiu-public/caoyingjun/mysql"
     tag: "8.4"
   - name: pixiu
     image: "crpi-0ecikjs9ylb2hqyo.cn-hangzhou.personal.cr.aliyuncs.com/pixiu-public/pixiu"
-    tag: "v2.0.1-beta.5-arm64"
-  - name: kubez-ansible
+    tag: "v2.0.1-beta.6-arm64"
+- name: kubez-ansible
     image: "crpi-0ecikjs9ylb2hqyo.cn-hangzhou.personal.cr.aliyuncs.com/pixiu-public/kubez-ansible"
     tags:
       - "v3.0.4-arm64"
+      - "v3.0.4-arm64-bclinux"
+  - name: keepalived
+    image: "swr.cn-north-4.myhuaweicloud.com/pixiu-public/caoyingjun/keepalived"
+    tag: "2.3.4-oe2403sp4"
 
 addon_packages:
   - name: conntrack
