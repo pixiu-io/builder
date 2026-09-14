@@ -284,7 +284,7 @@ func addBuildServersFlags(cmd *cobra.Command) {
 	cmd.Flags().BoolVarP(&buildVerbose, "verbose", "v", false, "打印详细过程日志")
 	cmd.Flags().StringVar(&buildPackImage, "pack-image", "", "镜像打包工具容器镜像（仅 --runtime docker；含 docker CLI；默认 pixiukit/docker:24-cli，ARM 宿主需配置对应架构镜像）")
 	cmd.Flags().StringVar(&buildRuntime, "runtime", "containerd", "构建容器运行时（containerd|docker；默认 containerd）")
-	cmd.Flags().BoolVar(&buildUpload, "upload", false, "构建完成后将产物上传到 GitHub Release（默认 tag=servers）")
+	cmd.Flags().BoolVar(&buildUpload, "upload", false, "构建完成后将产物上传到 GitHub Release（默认 tag=download，--github-tag 可覆盖）")
 	addGitHubFlags(cmd)
 }
 
