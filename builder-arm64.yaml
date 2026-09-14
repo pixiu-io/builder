@@ -121,7 +121,7 @@ server_images:
   - name: pixiu
     image: "crpi-0ecikjs9ylb2hqyo.cn-hangzhou.personal.cr.aliyuncs.com/pixiu-public/pixiu"
     tag: "v2.0.1-beta.6-arm64"
- - name: kubez-ansible
+  - name: kubez-ansible
     image: "crpi-0ecikjs9ylb2hqyo.cn-hangzhou.personal.cr.aliyuncs.com/pixiu-public/kubez-ansible"
     tags:
       - "v3.0.4-arm64"
