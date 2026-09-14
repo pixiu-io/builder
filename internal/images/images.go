@@ -184,10 +184,14 @@ func Fetch(ctx context.Context, opts Options) (*Result, error) {
 		return res, nil
 	}
 
-	if ok, reason := rt.Available(rtCfg); !ok {
-		res.Skipped = true
-		res.SkipReason = reason + "（镜像阶段将被跳过）"
-		return res, nil
+	// containerd 镜像阶段用 go-containerregistry 直拉，不依赖 ctr/containerd.sock；
+	// 仅 docker 模式需要宿主机 docker（及 pack 容器）。
+	if rtCfg.Runtime == rt.Docker {
+		if ok, reason := rt.Available(rtCfg); !ok {
+			res.Skipped = true
+			res.SkipReason = reason + "（镜像阶段将被跳过）"
+			return res, nil
+		}
 	}
 
 	absOut, err := filepath.Abs(opts.ImagesOutDir)
@@ -613,6 +617,7 @@ func buildPullSaveScript(jobs []saveJob) string {
 		b.WriteString(fmt.Sprintf("echo \"[images] %d/%d save %s\"\n", i+1, total, j.Image))
 		b.WriteString("docker save -o " + tar + " " + img + "\n")
 	}
+	b.WriteString("chmod -R a+rX /out\n")
 	return b.String()
 }
 

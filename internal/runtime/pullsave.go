@@ -62,6 +62,8 @@ func dockerPullAndSave(ctx context.Context, cfg Config, jobs []SaveJob, verbose 
 		b.WriteString(fmt.Sprintf("echo \"[images] %d/%d save %s\"\n", i+1, total, j.Image))
 		b.WriteString("docker save -o " + tarPath + " " + img + "\n")
 	}
+	// pack 容器通常以 root 写盘；放宽权限以便宿主机进程读 tar 算 sha256 / 打包。
+	b.WriteString("chmod -R a+rX /out\n")
 	name := fmt.Sprintf("builder-images-%d", os.Getpid())
 	opts := RunOpts{
 		Image: cfg.PackImage,
