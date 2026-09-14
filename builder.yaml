@@ -157,7 +157,7 @@ addon_images:
 #   - tag：单版本（兼容）：保存为 images/addons/{name}.tar，serve 发布为 {shortname}:{tag}
 #   - tags：同 image 多版本：构建时展开为多个镜像任务，各 tag 保存为 images/addons/{name}-{tag}.tar，
 #     serve 可发布同一 repo 的多个 tag（如 kubez-ansible:v2.0.2 与 kubez-ansible:v3.0.3）
-# 仅 build servers 读取并打包为 pixiu-server-images-{arch}.tar.gz；不与 addon_images 混入。
+# 仅 build servers 读取并打包为 pixiu-images-{arch}.tar.gz（--version 时为 pixiu-{version}-images-{arch}.tar.gz）；不与 addon_images 混入。
 # 空配置时 build servers 直接报错。
 server_images:
   - name: mysql

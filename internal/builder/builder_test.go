@@ -97,8 +97,14 @@ func TestBundleName(t *testing.T) {
 	if got := ImagesBundleName("amd64", "v1.27.3"); got != "pixiu-images-amd64-v1.27.3" {
 		t.Errorf("ImagesBundleName = %q", got)
 	}
-	if got := ServerImagesBundleName("amd64"); got != "pixiu-server-images-amd64" {
-		t.Errorf("ServerImagesBundleName = %q", got)
+	if got := ServerImagesBundleName("amd64", ""); got != "pixiu-images-amd64" {
+		t.Errorf("ServerImagesBundleName(empty version) = %q", got)
+	}
+	if got := ServerImagesBundleName("amd64", "v2.0.1"); got != "pixiu-v2.0.1-images-amd64" {
+		t.Errorf("ServerImagesBundleName(with version) = %q", got)
+	}
+	if got := ServerImagesBundleName("arm64", "  v2.0.1  "); got != "pixiu-v2.0.1-images-arm64" {
+		t.Errorf("ServerImagesBundleName(trim version) = %q", got)
 	}
 	if got := PackagesBundleName("ubuntu", "22.04", "amd64", "v1.27.3"); got != "pixiu-packages-ubuntu-22.04-amd64-v1.27.3" {
 		t.Errorf("PackagesBundleName = %q", got)
@@ -1651,11 +1657,23 @@ func TestBuildDryRunServers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build servers dry-run 失败: %v", err)
 	}
-	if res.BundleName != "pixiu-server-images-amd64" {
+	if res.BundleName != "pixiu-images-amd64" {
 		t.Errorf("BundleName = %q", res.BundleName)
 	}
 	checkStep(t, res, "容器内软件包下载", "skipped", "servers 构建跳过软件包")
 	checkStep(t, res, "镜像清单与保存", "ok", "")
+
+	resVer, err := Build(context.Background(), Options{
+		Config: cfg, Arch: "amd64", Mirror: mirror.Official, Version: "v2.0.1",
+		WorkDir: filepath.Join(t.TempDir(), "work-ver"), OutDir: filepath.Join(t.TempDir(), "dist-ver"),
+		Mode: "servers", DryRun: true, Out: &buf,
+	})
+	if err != nil {
+		t.Fatalf("build servers dry-run with version 失败: %v", err)
+	}
+	if resVer.BundleName != "pixiu-v2.0.1-images-amd64" {
+		t.Errorf("BundleName with version = %q", resVer.BundleName)
+	}
 }
 
 // TestBuildServersMultiTag 端到端验证 server_images 的 tags 多版本：
