@@ -42,7 +42,7 @@ jobs:
             --arch "${{ matrix.arch }}"
             --configFile "${{ matrix.config }}"
             --upload
-            --github-tag servers
+            --github-tag download
             --github-owner "${{ secrets.OWNER }}"
             --github-repo "${{ secrets.REPO }}"
             --github-token "${{ secrets.TOKEN }}"
