@@ -46,6 +46,7 @@ jobs:
             --github-owner "${{ secrets.OWNER }}"
             --github-repo "${{ secrets.REPO }}"
             --github-token "${{ secrets.TOKEN }}"
+            --version v2
           )
           if [ -n "${VERSION}" ]; then
             ARGS+=(--version "${VERSION}")
