@@ -13,8 +13,6 @@
 #     apt 源需要 codename，dnf 源需要 rpm_distro（rocky→rhel9、openEuler→rhel7，按 containerd 官方 rpm 仓库规则）
 #   - 具体源 URL 以 pkgs.k8s.io / packages.containerd.io 官方文档为准，本配置为初始值（未实测）
 #
-#
-#
 
 build:
   kubeadm_mode: "local"
@@ -80,8 +78,6 @@ oses:
     containerd_repo: "huawei"
     archs: ["amd64", "arm64"]
 
-
-
 # ========== 附加组件镜像 ==========
 # 附加组件镜像清单：name → image:tag
 # 必装软件包由代码内定，执行即打包，无需在此配置。
@@ -111,6 +107,12 @@ addon_images:
   - name: kube-webhook-certgen
     image: "swr.cn-north-4.myhuaweicloud.com/pixiu-public/caoyingjun/kube-webhook-certgen"
     tag: "v1.6.9"
+  - name: keepalived
+    image: "swr.cn-north-4.myhuaweicloud.com/pixiu-public/caoyingjun/keepalived"
+    tag: "2.3.4-oe2403sp4"
+  - name: haproxy
+    image: "swr.cn-north-4.myhuaweicloud.com/pixiu-public/caoyingjun/haproxy"
+    tag: "3.4.4"
 
 server_images:
   - name: mysql
@@ -119,14 +121,15 @@ server_images:
   - name: pixiu
     image: "crpi-0ecikjs9ylb2hqyo.cn-hangzhou.personal.cr.aliyuncs.com/pixiu-public/pixiu"
     tag: "v2.0.1-beta.6-arm64"
-- name: kubez-ansible
+  - name: kubez-ansible
     image: "crpi-0ecikjs9ylb2hqyo.cn-hangzhou.personal.cr.aliyuncs.com/pixiu-public/kubez-ansible"
     tags:
       - "v3.0.4-arm64"
       - "v3.0.4-arm64-bclinux"
-  - name: keepalived
-    image: "swr.cn-north-4.myhuaweicloud.com/pixiu-public/caoyingjun/keepalived"
-    tag: "2.3.4-oe2403sp4"
+  - name: pixiu-toolbox
+    image: crpi-0ecikjs9ylb2hqyo.cn-hangzhou.personal.cr.aliyuncs.com/pixiu-public/pixiu-toolbox
+    tags:
+      - v2.0.1
 
 addon_packages:
   - name: conntrack
