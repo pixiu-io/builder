@@ -171,6 +171,10 @@ server_images:
     tags:
       - "v2.0.2"
       - "v3.0.4"
+  - name: pixiu-toolbox
+    image: crpi-0ecikjs9ylb2hqyo.cn-hangzhou.personal.cr.aliyuncs.com/pixiu-public/pixiu-toolbox
+    tags:
+      - v2.0.1
 
 # ========== 附加安装包 ==========
 # 可选附加安装包（与 addon_images 平级）。必装包（kubeadm/kubelet/kubectl + containerd +
@@ -185,6 +189,8 @@ addon_packages:
   - name: conntrack
   - name: vim
   - name: docker-ce
+  - name: ipvsadm
+  - name: ipset
 
 # 产物上传到 GitHub Release。build --upload / upload 使用。
 # token 建议用环境变量 GITHUB_TOKEN 或 GH_TOKEN（也可配置 github.token / --github-token）。
