@@ -170,7 +170,7 @@ server_images:
     image: "ccr.ccs.tencentyun.com/pixiucloud/kubez-ansible"
     tags:
       - "v2.0.2"
-      - "v3.0.3"
+      - "v3.0.4"
 
 # ========== 附加安装包 ==========
 # 可选附加安装包（与 addon_images 平级）。必装包（kubeadm/kubelet/kubectl + containerd +
