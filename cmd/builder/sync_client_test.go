@@ -4,6 +4,31 @@ import (
 	"testing"
 )
 
+func TestAuthedRepoURL(t *testing.T) {
+	old := githubToken
+	t.Cleanup(func() { githubToken = old })
+
+	cases := []struct {
+		token, in, want string
+	}{
+		// 无 token：原样返回
+		{"", "https://github.com/caoyingjunz/rainbow.git", "https://github.com/caoyingjunz/rainbow.git"},
+		// 有 token：注入 x-access-token
+		{"tok", "https://github.com/caoyingjunz/rainbow.git", "https://x-access-token:tok@github.com/caoyingjunz/rainbow.git"},
+		// 已含凭据：不改写
+		{"tok", "https://user:pass@github.com/caoyingjunz/rainbow.git", "https://user:pass@github.com/caoyingjunz/rainbow.git"},
+		// 非 GitHub URL：不改写
+		{"tok", "/Users/dev/rainbow", "/Users/dev/rainbow"},
+		{"tok", "https://gitlab.com/foo/bar.git", "https://gitlab.com/foo/bar.git"},
+	}
+	for _, c := range cases {
+		githubToken = c.token
+		if got := authedRepoURL(c.in); got != c.want {
+			t.Errorf("authedRepoURL(token=%q, %q)=%q want %q", c.token, c.in, got, c.want)
+		}
+	}
+}
+
 func TestParsePixiuctlVersion(t *testing.T) {
 	cases := []struct {
 		in, want string

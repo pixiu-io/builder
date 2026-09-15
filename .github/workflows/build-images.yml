@@ -34,6 +34,7 @@ jobs:
         run: |
           go run ./cmd/builder \
             build images \
+            --configFile builder.yaml \
             --kubernetes-version "${{ env.KUBERNETES_VERSION }}" \
             --arch "${{ matrix.arch }}" \
             --upload \

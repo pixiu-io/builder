@@ -135,8 +135,22 @@ func runSyncClient(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
+// authedRepoURL 为 https GitHub 仓库 URL 注入 --github-token（私有仓库克隆需要认证）。
+// 非 GitHub URL、已含凭据、或未提供 token 时不做改写。
+func authedRepoURL(repoURL string) string {
+	if strings.TrimSpace(githubToken) == "" {
+		return repoURL
+	}
+	const prefix = "https://github.com/"
+	if !strings.HasPrefix(repoURL, prefix) || strings.Contains(repoURL, "@") {
+		return repoURL
+	}
+	return "https://x-access-token:" + githubToken + "@" + strings.TrimPrefix(repoURL, "https://")
+}
+
 // fetchRainbowRepo shallow clone 或在已有目录上 fetch+checkout。
 func fetchRainbowRepo(ctx context.Context, repoURL, ref, dest string) error {
+	repoURL = authedRepoURL(repoURL)
 	gitDir := filepath.Join(dest, ".git")
 	if st, err := os.Stat(gitDir); err == nil && st.IsDir() {
 		cmd := exec.CommandContext(ctx, "git", "-C", dest, "fetch", "--depth", "1", "origin", ref)
