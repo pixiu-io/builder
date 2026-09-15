@@ -2,6 +2,7 @@ package main
 
 import (
 	"archive/tar"
+	"bytes"
 	"compress/gzip"
 	"context"
 	"fmt"
@@ -20,7 +21,6 @@ import (
 )
 
 const (
-	defaultPluginVersion    = "v0.0.1"
 	pluginConfigFileContent = `default:
     push_kubernetes: false
     push_images: false
@@ -49,7 +49,6 @@ var (
 	syncPluginRef     string
 	syncPluginWorkDir string
 	syncPluginOutDir  string
-	syncPluginVersion string
 	syncPluginOS      string
 	syncPluginArch    string
 )
@@ -57,18 +56,17 @@ var (
 func newSyncPluginCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "plugin",
-		Short: "拉取 rainbow、编译 plugin 子命令并打包上传到 GitHub Release",
+		Short: "拉取 rainbow、编译 plugin 并按源码版本打包上传到 GitHub Release",
 		Long: `从 GitHub 拉取 caoyingjunz/rainbow 源码，交叉编译 cmd/plugin 为二进制（plugin），
-生成固定内容的 config.yaml 与 README.md（内容为 plugin），
+再执行 go run cmd/plugin/main.go version 读取版本号，生成固定内容的 config.yaml 与 README.md，
 打包为 plugin-<version>.tar.gz 并上传到目标仓库 Release。
 
-version 由 --version 指定，默认 v0.0.1；产物名与默认 Release tag（plugin-{version}）均使用它，
---github-tag 可覆盖 Release tag。`,
+默认 Release tag 为 plugin-{version}（如 plugin-v1.0.1），可用 --github-tag 覆盖。`,
 		Example: `  builder sync plugin --github-owner acme --github-repo builder
-  builder sync plugin --version v0.2.0 --github-owner acme --github-repo builder
   go run ./cmd/builder sync plugin \
     --configFile builder.yaml \
-    --github-owner acme --github-repo builder --github-token "$TOKEN"`,
+    --os linux --arch amd64 \
+    --github-owner acme --github-repo builder --github-tag plugin --github-token "$TOKEN"`,
 		RunE: runSyncPlugin,
 	}
 	cmd.Flags().StringVar(&syncPluginRepoURL, "repo-url", defaultRainbowRepoURL, "rainbow 仓库 URL")
@@ -76,7 +74,6 @@ version 由 --version 指定，默认 v0.0.1；产物名与默认 Release tag（
 	cmd.Flags().StringVar(&gitRepoToken, "repo-token", "", "访问 rainbow 仓库的 token（私有仓库克隆用；默认复用 --github-token）")
 	cmd.Flags().StringVar(&syncPluginWorkDir, "workdir", "./work/rainbow-src", "rainbow 源码工作目录")
 	cmd.Flags().StringVar(&syncPluginOutDir, "out-dir", "./dist", "plugin 产物输出目录")
-	cmd.Flags().StringVar(&syncPluginVersion, "version", defaultPluginVersion, "plugin 版本号（产物名 plugin-{version}.tar.gz 与默认 Release tag 使用）")
 	cmd.Flags().StringVar(&syncPluginOS, "os", "linux", "目标操作系统")
 	cmd.Flags().StringVar(&syncPluginArch, "arch", "amd64", "目标架构")
 	addGitHubFlags(cmd)
@@ -116,7 +113,15 @@ func runSyncPlugin(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	// 2. 生成固定内容的 config.yaml 与 README.md
+	// 2. 从源码读取版本（go run ./cmd/plugin version，与目标交叉编译无关）
+	fmt.Println("读取 plugin 版本 ...")
+	version, err := readPluginVersion(ctx, workDirAbs)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("  version=%s\n", version)
+
+	// 3. 生成固定内容的 config.yaml 与 README.md
 	configPath := filepath.Join(outDirAbs, "config.yaml")
 	readmePath := filepath.Join(outDirAbs, "README.md")
 	if err := os.WriteFile(configPath, []byte(pluginConfigFileContent), 0o644); err != nil {
@@ -126,8 +131,8 @@ func runSyncPlugin(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("写入 README.md 失败: %w", err)
 	}
 
-	// 3. 打包 plugin-<version>.tar.gz（顶层三个文件）
-	tarName := fmt.Sprintf("plugin-%s.tar.gz", syncPluginVersion)
+	// 4. 打包 plugin-<version>.tar.gz（顶层三个文件）
+	tarName := fmt.Sprintf("plugin-%s.tar.gz", version)
 	tarPath := filepath.Join(outDirAbs, tarName)
 	fmt.Printf("打包 %s（plugin + config.yaml + README.md）\n", tarName)
 	if err := packFilesTarGz(tarPath, [][2]string{
@@ -138,8 +143,8 @@ func runSyncPlugin(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	// 4. 上传到 GitHub Release
-	tag := pluginGitHubTag(syncPluginVersion)
+	// 5. 上传到 GitHub Release
+	tag := pluginGitHubTag(version)
 	opts := mergeGitHubOptions(cfg.GitHub, githubOwner, githubRepo, tag, githubToken)
 	if err := opts.Validate(); err != nil {
 		return err
@@ -187,6 +192,39 @@ func buildPluginBinary(ctx context.Context, rainbowRoot, outPath, goos, goarch s
 		return fmt.Errorf("设置可执行权限失败 %s: %w", outPath, err)
 	}
 	return nil
+}
+
+// readPluginVersion 在 rainbow 源码目录执行 go run cmd/plugin/main.go version。
+func readPluginVersion(ctx context.Context, rainbowRoot string) (string, error) {
+	cmd := exec.CommandContext(ctx, "go", "run", "cmd/plugin/main.go", "version")
+	cmd.Dir = rainbowRoot
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("执行 plugin version 失败: %w\n%s", err, stderr.String())
+	}
+	return parsePluginVersion(stdout.String())
+}
+
+// parsePluginVersion 解析 plugin version 输出（如 "v1.0.1"）为版本号。
+func parsePluginVersion(out string) (string, error) {
+	line := strings.TrimSpace(out)
+	if i := strings.IndexByte(line, '\n'); i >= 0 {
+		line = strings.TrimSpace(line[:i])
+	}
+	// 兼容偶发的 "plugin version v1.0.1" 格式
+	fields := strings.Fields(line)
+	if len(fields) >= 3 && fields[0] == "plugin" && fields[1] == "version" {
+		line = fields[2]
+	} else if len(fields) >= 1 {
+		line = fields[0]
+	}
+	line = strings.TrimSpace(line)
+	if line == "" || line == "unknown" {
+		return "", fmt.Errorf("plugin version 输出版本号无效: %q", out)
+	}
+	return line, nil
 }
 
 // pluginGitHubTag 默认 plugin-{version}；--github-tag 非空时覆盖。
