@@ -5,26 +5,28 @@ import (
 )
 
 func TestAuthedRepoURL(t *testing.T) {
-	old := githubToken
-	t.Cleanup(func() { githubToken = old })
+	oldToken, oldRepoToken := githubToken, gitRepoToken
+	t.Cleanup(func() { githubToken, gitRepoToken = oldToken, oldRepoToken })
 
 	cases := []struct {
-		token, in, want string
+		token, repoToken, in, want string
 	}{
 		// 无 token：原样返回
-		{"", "https://github.com/caoyingjunz/rainbow.git", "https://github.com/caoyingjunz/rainbow.git"},
-		// 有 token：注入 x-access-token
-		{"tok", "https://github.com/caoyingjunz/rainbow.git", "https://x-access-token:tok@github.com/caoyingjunz/rainbow.git"},
+		{"", "", "https://github.com/caoyingjunz/rainbow.git", "https://github.com/caoyingjunz/rainbow.git"},
+		// 仅有 --github-token：注入它
+		{"tok", "", "https://github.com/caoyingjunz/rainbow.git", "https://x-access-token:tok@github.com/caoyingjunz/rainbow.git"},
+		// --repo-token 优先于 --github-token
+		{"tok", "rtok", "https://github.com/caoyingjunz/rainbow.git", "https://x-access-token:rtok@github.com/caoyingjunz/rainbow.git"},
 		// 已含凭据：不改写
-		{"tok", "https://user:pass@github.com/caoyingjunz/rainbow.git", "https://user:pass@github.com/caoyingjunz/rainbow.git"},
+		{"tok", "", "https://user:pass@github.com/caoyingjunz/rainbow.git", "https://user:pass@github.com/caoyingjunz/rainbow.git"},
 		// 非 GitHub URL：不改写
-		{"tok", "/Users/dev/rainbow", "/Users/dev/rainbow"},
-		{"tok", "https://gitlab.com/foo/bar.git", "https://gitlab.com/foo/bar.git"},
+		{"tok", "", "/Users/dev/rainbow", "/Users/dev/rainbow"},
+		{"tok", "", "https://gitlab.com/foo/bar.git", "https://gitlab.com/foo/bar.git"},
 	}
 	for _, c := range cases {
-		githubToken = c.token
+		githubToken, gitRepoToken = c.token, c.repoToken
 		if got := authedRepoURL(c.in); got != c.want {
-			t.Errorf("authedRepoURL(token=%q, %q)=%q want %q", c.token, c.in, got, c.want)
+			t.Errorf("authedRepoURL(token=%q, repoToken=%q, %q)=%q want %q", c.token, c.repoToken, c.in, got, c.want)
 		}
 	}
 }

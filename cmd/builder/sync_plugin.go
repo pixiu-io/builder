@@ -73,6 +73,7 @@ version 由 --version 指定，默认 v0.0.1；产物名与默认 Release tag（
 	}
 	cmd.Flags().StringVar(&syncPluginRepoURL, "repo-url", defaultRainbowRepoURL, "rainbow 仓库 URL")
 	cmd.Flags().StringVar(&syncPluginRef, "ref", defaultRainbowRef, "git 分支或 tag")
+	cmd.Flags().StringVar(&gitRepoToken, "repo-token", "", "访问 rainbow 仓库的 token（私有仓库克隆用；默认复用 --github-token）")
 	cmd.Flags().StringVar(&syncPluginWorkDir, "workdir", "./work/rainbow-src", "rainbow 源码工作目录")
 	cmd.Flags().StringVar(&syncPluginOutDir, "out-dir", "./dist", "plugin 产物输出目录")
 	cmd.Flags().StringVar(&syncPluginVersion, "version", defaultPluginVersion, "plugin 版本号（产物名 plugin-{version}.tar.gz 与默认 Release tag 使用）")
