@@ -823,7 +823,7 @@ func copyDir(src, dst string) error {
 
 // ImagesBundleName 生成仅镜像模式（未指定 OS）的 bundle 目录名。
 func ImagesBundleName(arch, k8sVer string) string {
-	return fmt.Sprintf("pixiu-images-%s-%s", arch, k8sVer)
+	return fmt.Sprintf("kube-images-%s-%s", arch, k8sVer)
 }
 
 // ServerImagesBundleName 生成 build servers 产物名。

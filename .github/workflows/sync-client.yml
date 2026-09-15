@@ -2,8 +2,8 @@ name: sync client command
 
 on:
   push:
-    branches:
-      - "caoyingjunz-patch-1"
+    branches-ignore:
+      - master
     paths:
       - ".github/workflows/sync-client.yml"
 

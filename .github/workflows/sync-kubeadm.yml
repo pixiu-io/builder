@@ -2,8 +2,8 @@ name: sync kubeadm command
 
 on:
   push:
-    branches:
-      - "caoyingjunz-patch-1"
+    branches-ignore:
+      - master
     paths:
       - ".github/workflows/sync-kubeadm.yml"
 
