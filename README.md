@@ -28,7 +28,7 @@ go build -o builder ./cmd/builder
 # 构建软件包（需联网 + 本机 containerd/ctr；可用 --runtime docker 改用 docker）
 ./builder build packages --os ubuntu --os-version 22.04 --kubernetes-version v1.31.6 --arch amd64 --out ./dist
 
-# 构建镜像（无需 --os；产物 pixiu-images-{arch}-{k8s}.tar.gz）
+# 构建镜像（无需 --os；产物 kube-images-{arch}-{k8s}.tar.gz）
 ./builder build images --kubernetes-version v1.31.6 --arch amd64 --out ./dist
 
 # 多版本并发构建镜像并上传到 images Release
@@ -49,12 +49,13 @@ go build -o builder ./cmd/builder
 | 命令 | 说明 |
 |------|------|
 | `build packages` | 构建软件包离线包。需 `--os` / `--os-version` / `--kubernetes-version`（`--only-addons` 时可省略 k8s 版本）。产物：`pixiu-packages-{os}-{osver}-{arch}-{k8s}.tar.gz`。`--upload` 上传到以 k8s 版本为名的 Release |
-| `build images` | 构建镜像离线包（**无需**操作系统）。需 `--kubernetes-version`（可重复；多版本时并发构建与上传，上限 10）。产物：`pixiu-images-{arch}-{k8s}.tar.gz`。`--upload` 默认到 `images` Release；kubeadm 下载未指定 `--github-tag` 时优先 k8s 版本 Release（与 `sync kubeadm` 一致），再回退 `images` |
+| `build images` | 构建镜像离线包（**无需**操作系统）。需 `--kubernetes-version`（可重复；多版本时并发构建与上传，上限 10）。产物：`kube-images-{arch}-{k8s}.tar.gz`。`--upload` 默认到 `images` Release（`--github-tag` 可指定其它目标）；kubeadm 下载与上传 tag 无关，优先 k8s 版本 Release（与 `sync kubeadm` 一致），再回退 `images`，均无该资产时最终回退 k8s 官方上游 `dl.k8s.io`（打印日志） |
 | `build servers` | 构建平台服务镜像离线包。只读 `server_images`（格式同 `addon_images`）；**无需** `--os` / `--kubernetes-version`；忽略 `--skip-addons` / `--only-addons`；空配置报错。产物：`pixiu-server-images-{arch}.tar.gz`。`--upload` 默认 tag=`download` |
 | `upload` | 将已有产物 tar.gz 上传到 GitHub Release。`--file` 可重复；`--github-*` 覆盖配置节 |
 | `sync kubeadm` | 创建以 k8s 版本为名的 GitHub Release，并上传 kubeadm 二进制。默认单版本；`--all` 同步全部 >= v1.31.0 的正式版本 |
 | `sync builder` | 交叉编译 `builder-{arch}` 并上传到 GitHub Release（默认 tag=`builder`；默认 arch=amd64+arm64） |
 | `sync client` | 拉取 [rainbow](https://github.com/caoyingjunz/rainbow)，交叉编译多平台 `pixiuctl-{version}-{os}-{arch}` 并上传（默认 tag=`pixiuctl-{version}`） |
+| `sync plugin` | 拉取 [rainbow](https://github.com/caoyingjunz/rainbow)，编译 `cmd/plugin` 为二进制，连同固定内容 `config.yaml`、`README.md`（内容 `plugin`）打包为 `plugin-{version}.tar.gz` 上传（`--version` 默认 `v0.0.1`；默认 os/arch=linux/amd64；默认 tag=`plugin-{version}`） |
 | `serve` | 加载离线产物，提供本地 OCI registry（`docker pull` 短名）与 yum/dnf/apt HTTP 软件源（纯 Go，无外部工具依赖） |
 | `images` | 列出 serve registry 镜像（类似 `docker images`；`--limit` 默认 50） |
 | `packages` | 列出 serve 软件源安装包（deb/rpm；`--limit` 默认 50） |
@@ -67,7 +68,7 @@ go build -o builder ./cmd/builder
 | 子命令 | 构建内容 | 产物名 | 上传 Release |
 |--------|---------|--------|--------------|
 | `build packages` | 软件包（k8s/运行时/系统依赖）+ 脚本 + manifest | `pixiu-packages-{os}-{osver}-{arch}-{k8s}.tar.gz` | k8s 版本（或 `--github-tag`） |
-| `build images` | 镜像（核心 + 附加组件）+ 脚本 + manifest | `pixiu-images-{arch}-{k8s}.tar.gz` | `--github-tag`（默认 `images`） |
+| `build images` | 镜像（核心 + 附加组件）+ 脚本 + manifest | `kube-images-{arch}-{k8s}.tar.gz` | `--github-tag`（默认 `images`） |
 | `build servers` | 平台服务镜像（仅 `server_images`）+ 脚本 + manifest | `pixiu-server-images-{arch}.tar.gz` | `--github-tag`（默认 `download`） |
 
 被跳过的步骤在构建汇总中标记为 `skipped`（非失败）。`build images` / `build servers` 不需要操作系统参数。
@@ -178,7 +179,7 @@ addon_packages:
 
 ```
 pixiu-packages-{os}-{osver}-{arch}-{k8sver}/   # build packages
-pixiu-images-{arch}-{k8sver}/                  # build images（不绑定 OS）
+kube-images-{arch}-{k8sver}/                   # build images（不绑定 OS）
 ├── packages/   # 仅 packages 产物含此目录
 │   ├── *.deb / *.rpm
 │   └── runtime/
@@ -193,7 +194,7 @@ pixiu-images-{arch}-{k8sver}/                  # build images（不绑定 OS）
 
 构建完成后会在 `--out` 目录生成同名 `.tar.gz`：
 - `pixiu-packages-{os}-{osver}-{arch}-{k8sver}.tar.gz`
-- `pixiu-images-{arch}-{k8sver}.tar.gz`
+- `kube-images-{arch}-{k8sver}.tar.gz`
 
 ## 配置文件
 

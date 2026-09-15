@@ -94,7 +94,7 @@ func TestBundleName(t *testing.T) {
 	if got := BundleName("ubuntu", "22.04", "amd64", "v1.27.3"); got != "pixiu-ubuntu-22.04-amd64-v1.27.3" {
 		t.Errorf("BundleName = %q", got)
 	}
-	if got := ImagesBundleName("amd64", "v1.27.3"); got != "pixiu-images-amd64-v1.27.3" {
+	if got := ImagesBundleName("amd64", "v1.27.3"); got != "kube-images-amd64-v1.27.3" {
 		t.Errorf("ImagesBundleName = %q", got)
 	}
 	if got := ServerImagesBundleName("amd64", ""); got != "pixiu-images-amd64" {
@@ -216,7 +216,7 @@ func TestBuildDryRun(t *testing.T) {
 		}
 	}
 	wantPkg := filepath.Join(outDir, "pixiu-packages-ubuntu-22.04-amd64-v1.27.3.tar.gz")
-	wantImg := filepath.Join(outDir, "pixiu-images-amd64-v1.27.3.tar.gz")
+	wantImg := filepath.Join(outDir, "kube-images-amd64-v1.27.3.tar.gz")
 	if res.TarPaths[0] != wantPkg || res.TarPaths[1] != wantImg {
 		t.Errorf("TarPaths = %v, want [%s %s]", res.TarPaths, wantPkg, wantImg)
 	}
@@ -886,7 +886,7 @@ func TestBuildKeepFilesCleanup(t *testing.T) {
 }
 
 func TestBuildModeImages(t *testing.T) {
-	// build images 仅构建镜像：软件包步骤跳过，产物名为 pixiu-images-{arch}-{k8s}（不带 OS）。
+	// build images 仅构建镜像：软件包步骤跳过，产物名为 kube-images-{arch}-{k8s}（不带 OS）。
 	cfg := loadSampleConfig(t)
 	binDir := t.TempDir()
 	binPath := filepath.Join(binDir, "docker")
@@ -911,8 +911,8 @@ func TestBuildModeImages(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build images 构建失败: %v", err)
 	}
-	if res.BundleName != "pixiu-images-amd64-v1.27.3" {
-		t.Errorf("images BundleName = %q, want pixiu-images-amd64-v1.27.3", res.BundleName)
+	if res.BundleName != "kube-images-amd64-v1.27.3" {
+		t.Errorf("images BundleName = %q, want kube-images-amd64-v1.27.3", res.BundleName)
 	}
 	if _, err := os.Stat(res.TarPath); err != nil {
 		t.Errorf("tar.gz 未生成: %v", err)
@@ -964,7 +964,7 @@ func TestBuildImagesPackImage(t *testing.T) {
 }
 
 func TestBuildModeImagesWithoutOS(t *testing.T) {
-	// --mode images 未指定 OS：使用默认构建容器，产物名为 pixiu-images-{arch}-{k8s}。
+	// --mode images 未指定 OS：使用默认构建容器，产物名为 kube-images-{arch}-{k8s}。
 	cfg := loadSampleConfig(t)
 	binDir := t.TempDir()
 	binPath := filepath.Join(binDir, "docker")
@@ -986,7 +986,7 @@ func TestBuildModeImagesWithoutOS(t *testing.T) {
 	if err != nil {
 		t.Fatalf("--mode images 无 OS 构建失败: %v", err)
 	}
-	if res.BundleName != "pixiu-images-amd64-v1.27.3" {
+	if res.BundleName != "kube-images-amd64-v1.27.3" {
 		t.Errorf("未指定 OS 时 BundleName = %q", res.BundleName)
 	}
 	if _, err := os.Stat(res.TarPath); err != nil {

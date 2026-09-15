@@ -51,7 +51,8 @@ var (
 )
 
 // githubImagesReleaseTag build images 默认使用的 GitHub Release 名/tag。
-// 下载 kubeadm 与 --upload 均优先 --github-tag；未指定时用此默认值（不再回退到 k8s 版本）。
+// --upload 上传优先 --github-tag；未指定时用此默认值（不再回退到 k8s 版本）。
+// kubeadm 下载与此无关：优先 k8s 版本 Release，回退 images，最终回退官方上游（见 kubeadmDownloadTags / downloadBuildKubeadmFromUpstream）。
 const githubImagesReleaseTag = "images"
 
 // githubServersReleaseTag build servers 默认使用的 GitHub Release 名/tag。
@@ -173,7 +174,7 @@ func newBuildCmd() *cobra.Command {
 		Short: "构建离线安装包",
 		Long: `构建 Kubernetes 离线产物，需指定子命令：
   build packages  构建软件包离线包（需 --os / --os-version）
-  build images    构建镜像离线包（无需操作系统；产物 pixiu-images-{arch}-{k8s}.tar.gz）
+  build images    构建镜像离线包（无需操作系统；产物 kube-images-{arch}-{k8s}.tar.gz）
   build servers   构建平台服务镜像离线包（读 server_images；默认 pixiu-images-{arch}.tar.gz；--version 时 pixiu-{version}-images-{arch}.tar.gz）`,
 		Example: `  builder build packages --os ubuntu --os-version 22.04 --kubernetes-version v1.31.6
   builder build images --kubernetes-version v1.31.6 --arch amd64 --upload
@@ -210,11 +211,11 @@ func newBuildImagesCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "images",
 		Short: "构建镜像离线安装包（不绑定操作系统）",
-		Long: `构建核心/附加组件镜像并打包为 pixiu-images-{arch}-{k8sVersion}.tar.gz。
+		Long: `构建核心/附加组件镜像并打包为 kube-images-{arch}-{k8sVersion}.tar.gz。
 无需指定 --os / --os-version。
 可重复指定 --kubernetes-version；多个版本时并发构建与上传（并发上限 10）。
-构建时从 GitHub Release 拉取对应版本的 kubeadm（仅检查 --github-tag；未指定则默认 tag=images）。
---upload 时上传到同一 Release（--github-tag 或默认 images；不存在则自动创建）。`,
+构建时从 GitHub Release 拉取对应版本的 kubeadm（优先 k8s 版本 Release，回退 images；与 --github-tag 无关）。
+--upload 时上传到 --github-tag（未指定则默认 images；不存在则自动创建）。`,
 		Example: `  builder build images --kubernetes-version v1.31.6 --arch amd64
   builder build images --kubernetes-version v1.31.6 --arch amd64 --upload
   builder build images --kubernetes-version v1.31.7 --kubernetes-version v1.31.8 --kubernetes-version v1.31.9 --arch amd64 --upload
@@ -802,18 +803,21 @@ func newSyncCmd() *cobra.Command {
 		Long: `同步相关子命令：
   sync kubeadm  创建以 k8s 版本为名的 Release，并上传 kubeadm 二进制
   sync builder  交叉编译 builder 二进制并上传（默认 tag=builder）
-  sync client   拉取 rainbow，交叉编译 pixiuctl 并上传（默认 tag=pixiuctl-{version}）`,
+  sync client   拉取 rainbow，交叉编译 pixiuctl 并上传（默认 tag=pixiuctl-{version}）
+  sync plugin   拉取 rainbow，编译 plugin 并打包 config.yaml/README.md 上传（默认 tag=plugin-{version}）`,
 		Example: `  builder sync kubeadm --kubernetes-version v1.31.6 --arch amd64
   builder sync builder --arch amd64 --arch arm64
-  builder sync client`,
+  builder sync client
+  builder sync plugin --version v0.0.1`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return fmt.Errorf("请指定子命令：sync kubeadm / sync builder / sync client")
+			return fmt.Errorf("请指定子命令：sync kubeadm / sync builder / sync client / sync plugin")
 		},
 	}
 	cmd.AddCommand(newSyncKubeadmCmd())
 	cmd.AddCommand(newSyncBuilderCmd())
 	cmd.AddCommand(newSyncClientCmd())
+	cmd.AddCommand(newSyncPluginCmd())
 	return cmd
 }
 
@@ -1264,9 +1268,10 @@ func prepareBuildKubeadm(ctx context.Context, cfg *config.Config, version, arch,
 }
 
 func downloadBuildKubeadmFromGitHub(ctx context.Context, cfg *config.Config, version, arch, path string, verbose bool) (string, func(), error) {
-	// kubeadm 查找顺序：
-	// 1) 显式 --github-tag → 只查该 Release
-	// 2) 未指定时：先查 k8s 版本 Release（与 sync kubeadm 一致），再回退默认 images
+	// kubeadm 查找顺序（与上传 tag --github-tag 解耦）：
+	// 1) 先查 k8s 版本 Release（与 sync kubeadm 一致）
+	// 2) 回退默认 images
+	// 3) 均无该资产时，回退 k8s 官方上游 dl.k8s.io
 	tags := kubeadmDownloadTags(version)
 	if len(tags) == 0 {
 		return "", nil, fmt.Errorf("github tag 不能为空（build images 请指定 --github-tag 或 --kubernetes-version）")
@@ -1295,15 +1300,34 @@ func downloadBuildKubeadmFromGitHub(ctx context.Context, cfg *config.Config, ver
 		}
 		return path, func() {}, nil
 	}
-	return "", nil, lastErr
+
+	// GitHub Release 均无该资产：回退 k8s 官方上游
+	p, cleanup, upErr := downloadBuildKubeadmFromUpstream(ctx, version, arch, path)
+	if upErr != nil {
+		return "", nil, fmt.Errorf("%w（官方上游 dl.k8s.io 回退也失败: %v）", lastErr, upErr)
+	}
+	return p, cleanup, nil
+}
+
+// downloadBuildKubeadmFromUpstream 从 k8s 官方上游（dl.k8s.io，与 sync kubeadm 同源）
+// 下载 kubeadm 到 path，作为本地缓存与 GitHub Release 均未命中时的最终回退。
+func downloadBuildKubeadmFromUpstream(ctx context.Context, version, arch, path string) (string, func(), error) {
+	if strings.TrimSpace(version) == "" {
+		return "", nil, fmt.Errorf("k8s 版本为空，无法从官方上游下载 kubeadm")
+	}
+	u := kubeadmDownloadURL(version, arch)
+	fmt.Printf("GitHub Release 均无 kubeadm(%s)，回退官方上游下载: %s → %s\n", kubeadmAssetName(version, arch), u, path)
+	if err := downloadFile(ctx, u, path, 0o755); err != nil {
+		_ = os.Remove(path)
+		return "", nil, fmt.Errorf("从官方上游下载 kubeadm 失败 %s: %w", u, err)
+	}
+	fmt.Printf("官方上游下载完成: %s\n", path)
+	return path, func() {}, nil
 }
 
 // kubeadmDownloadTags 返回 build images 下载 kubeadm 时要尝试的 Release tag 列表。
-// 显式 --github-tag 时仅使用该 tag；否则优先 k8s 版本（sync kubeadm 上传处），再回退 images。
+// 与上传 tag（--github-tag）解耦：优先 k8s 版本（sync kubeadm 上传处），回退 images。
 func kubeadmDownloadTags(version string) []string {
-	if tag := strings.TrimSpace(githubTag); tag != "" {
-		return []string{tag}
-	}
 	var tags []string
 	if v := strings.TrimSpace(version); v != "" {
 		tags = append(tags, v)

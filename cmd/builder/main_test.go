@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -258,9 +260,21 @@ func TestKubeadmDownloadTags(t *testing.T) {
 		t.Fatalf("default tags = %v, want [v1.37.0 images]", got)
 	}
 
-	githubTag = "images"
+	// --github-tag 仅控制上传目标，与 kubeadm 下载解耦：显式指定时下载列表不变。
+	githubTag = "kubernetes"
 	got = kubeadmDownloadTags("v1.37.0")
-	if len(got) != 1 || got[0] != "images" {
-		t.Fatalf("explicit tag = %v, want [images]", got)
+	if len(got) != 2 || got[0] != "v1.37.0" || got[1] != "images" {
+		t.Fatalf("explicit upload tag = %v, want [v1.37.0 images]", got)
+	}
+}
+
+func TestDownloadBuildKubeadmFromUpstream(t *testing.T) {
+	// 空 k8s 版本时拒绝下载（防拼出无效 URL）
+	if _, _, err := downloadBuildKubeadmFromUpstream(context.Background(), "  ", "amd64", filepath.Join(t.TempDir(), "kubeadm-x")); err == nil {
+		t.Fatal("empty version should be rejected")
+	}
+	// URL 语义核对：非空版本拼出官方上游地址（不发起真实下载，仅校验守卫后的 URL 生成路径）
+	if got := kubeadmDownloadURL("v1.37.0", "arm64"); got != "https://dl.k8s.io/release/v1.37.0/bin/linux/arm64/kubeadm" {
+		t.Fatalf("upstream url = %q", got)
 	}
 }
