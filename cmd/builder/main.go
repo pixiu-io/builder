@@ -804,11 +804,11 @@ func newSyncCmd() *cobra.Command {
   sync kubeadm  创建以 k8s 版本为名的 Release，并上传 kubeadm 二进制
   sync builder  交叉编译 builder 二进制并上传（默认 tag=builder）
   sync client   拉取 rainbow，交叉编译 pixiuctl 并上传（默认 tag=pixiuctl-{version}）
-  sync plugin   拉取 rainbow，编译 plugin 并打包 config.yaml/README.md 上传（默认 tag=plugin-{version}）`,
+  sync plugin   拉取 rainbow，编译 plugin，按 go run cmd/plugin/main.go version 读版本后打包上传（默认 tag=plugin-{version}）`,
 		Example: `  builder sync kubeadm --kubernetes-version v1.31.6 --arch amd64
   builder sync builder --arch amd64 --arch arm64
   builder sync client
-  builder sync plugin --version v0.0.1`,
+  builder sync plugin --os linux --arch amd64 --github-tag plugin`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("请指定子命令：sync kubeadm / sync builder / sync client / sync plugin")

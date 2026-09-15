@@ -55,7 +55,7 @@ go build -o builder ./cmd/builder
 | `sync kubeadm` | 创建以 k8s 版本为名的 GitHub Release，并上传 kubeadm 二进制。默认单版本；`--all` 同步全部 >= v1.31.0 的正式版本 |
 | `sync builder` | 交叉编译 `builder-{arch}` 并上传到 GitHub Release（默认 tag=`builder`；默认 arch=amd64+arm64） |
 | `sync client` | 拉取 [rainbow](https://github.com/caoyingjunz/rainbow)，交叉编译多平台 `pixiuctl-{version}-{os}-{arch}` 并上传（默认 tag=`pixiuctl-{version}`） |
-| `sync plugin` | 拉取 [rainbow](https://github.com/caoyingjunz/rainbow)，编译 `cmd/plugin` 为二进制，连同固定内容 `config.yaml`、`README.md`（内容 `plugin`）打包为 `plugin-{version}.tar.gz` 上传（`--version` 默认 `v0.0.1`；默认 os/arch=linux/amd64；默认 tag=`plugin-{version}`） |
+| `sync plugin` | 拉取 [rainbow](https://github.com/caoyingjunz/rainbow)，编译 `cmd/plugin` 为二进制，再执行 `go run cmd/plugin/main.go version` 读取版本，连同固定内容 `config.yaml`、`README.md`（内容 `plugin`）打包为 `plugin-{version}.tar.gz` 上传（默认 os/arch=linux/amd64；默认 tag=`plugin-{version}`） |
 | `serve` | 加载离线产物，提供本地 OCI registry（`docker pull` 短名）与 yum/dnf/apt HTTP 软件源（纯 Go，无外部工具依赖） |
 | `images` | 列出 serve registry 镜像（类似 `docker images`；`--limit` 默认 50） |
 | `packages` | 列出 serve 软件源安装包（deb/rpm；`--limit` 默认 50） |
@@ -284,7 +284,7 @@ export GITHUB_TOKEN=ghp_xxx
 ./builder sync client --github-owner acme --github-repo builder
 ```
 
-行为说明：`sync kubeadm` 创建的 Release 名称即为 k8s 版本号；`--github-tag` 为空时复用 `--kubernetes-version`。`--all` 会查询本仓库 Release 列表与 `kubernetes/kubernetes` 正式 tag（排除 `-rc`/`-alpha`/`-beta`），确保 >= v1.31.0 的版本均有 Release，并在 kubeadm 资产缺失时下载上传；已存在则跳过。`sync builder` 默认 Release tag 为 `builder`（可用 `--github-tag` 覆盖），产物名为 `builder-{arch}`，同名 asset 会覆盖上传。`sync client` 从 rainbow 仓库拉取源码，运行 `pixiuctl version` 得到版本号，默认 Release tag 为 `pixiuctl-{version}`（可用 `--github-tag` 覆盖），产物为 `pixiuctl-{version}-{linux,windows,darwin}-{amd64,arm64}`。`build --upload` / `upload` 在目标 Release 不存在时也会自动创建。Token 需具备 `contents: write`（经典 PAT 用 `repo`）权限。
+行为说明：`sync kubeadm` 创建的 Release 名称即为 k8s 版本号；`--github-tag` 为空时复用 `--kubernetes-version`。`--all` 会查询本仓库 Release 列表与 `kubernetes/kubernetes` 正式 tag（排除 `-rc`/`-alpha`/`-beta`），确保 >= v1.31.0 的版本均有 Release，并在 kubeadm 资产缺失时下载上传；已存在则跳过。`sync builder` 默认 Release tag 为 `builder`（可用 `--github-tag` 覆盖），产物名为 `builder-{arch}`，同名 asset 会覆盖上传。`sync client` 从 rainbow 仓库拉取源码，运行 `pixiuctl version` 得到版本号，默认 Release tag 为 `pixiuctl-{version}`（可用 `--github-tag` 覆盖），产物为 `pixiuctl-{version}-{linux,windows,darwin}-{amd64,arm64}`。`sync plugin` 编译后执行 `go run cmd/plugin/main.go version` 读取版本（如 `v1.0.1`），产物为 `plugin-{version}.tar.gz`，默认 Release tag 为 `plugin-{version}`（可用 `--github-tag` 覆盖为 `plugin`）。`build --upload` / `upload` 在目标 Release 不存在时也会自动创建。Token 需具备 `contents: write`（经典 PAT 用 `repo`）权限。
 
 ## 离线源服务（`serve`）
 

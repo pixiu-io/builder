@@ -28,6 +28,38 @@ func TestPluginGitHubTag(t *testing.T) {
 	}
 }
 
+func TestParsePluginVersion(t *testing.T) {
+	cases := []struct {
+		in      string
+		want    string
+		wantErr bool
+	}{
+		{"v1.0.1\n", "v1.0.1", false},
+		{"v1.0.1", "v1.0.1", false},
+		{"  v1.0.1  \n", "v1.0.1", false},
+		{"plugin version v1.0.1\n", "v1.0.1", false},
+		{"unknown\n", "", true},
+		{"\n", "", true},
+		{"", "", true},
+	}
+	for _, tc := range cases {
+		got, err := parsePluginVersion(tc.in)
+		if tc.wantErr {
+			if err == nil {
+				t.Errorf("parsePluginVersion(%q) err=nil, want error", tc.in)
+			}
+			continue
+		}
+		if err != nil {
+			t.Errorf("parsePluginVersion(%q) err=%v", tc.in, err)
+			continue
+		}
+		if got != tc.want {
+			t.Errorf("parsePluginVersion(%q)=%q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
 func TestPluginConfigFileContent(t *testing.T) {
 	// 固定内容的关键字段核对（防止无意改动打包进去的配置语义）
 	for _, want := range []string{
