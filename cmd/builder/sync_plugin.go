@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"sort"
 	"strings"
 	"syscall"
 
@@ -41,6 +42,8 @@ images:
         - 1.19.1
 `
 	pluginReadmeContent = "plugin\n"
+	// pluginTemplateGitHubDir 相对当前工作目录，打包时一并打进 plugin tar.gz。
+	pluginTemplateGitHubDir = "template/.github"
 )
 
 // sync plugin 子命令 flags
@@ -57,9 +60,9 @@ func newSyncPluginCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "plugin",
 		Short: "拉取 rainbow、编译 plugin 并按源码版本打包上传到 GitHub Release",
-		Long: `从 GitHub 拉取 caoyingjunz/rainbow 源码，交叉编译 cmd/plugin 为二进制（plugin），
+		Long: `从 GitHub 拉取 caoyingjunz/rainbow 源码，交叉编译 cmd/plugin 为二进制（磁盘名 plugin），
 再执行 go run cmd/plugin/main.go version 读取版本号，生成固定内容的 config.yaml 与 README.md，
-打包为 plugin-<version>.tar.gz 并上传到目标仓库 Release。
+并将当前工作目录下 template/.github 一并打包为 plugin-<version>.tar.gz（包内二进制名为 main）上传到目标仓库 Release。
 
 默认 Release tag 为 plugin-{version}（如 plugin-v1.0.1），可用 --github-tag 覆盖。`,
 		Example: `  builder sync plugin --github-owner acme --github-repo builder
@@ -131,15 +134,15 @@ func runSyncPlugin(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("写入 README.md 失败: %w", err)
 	}
 
-	// 4. 打包 plugin-<version>.tar.gz（顶层三个文件）
+	// 4. 打包 plugin-<version>.tar.gz（.github + README.md + config.yaml + main）
 	tarName := fmt.Sprintf("plugin-%s.tar.gz", version)
 	tarPath := filepath.Join(outDirAbs, tarName)
-	fmt.Printf("打包 %s（plugin + config.yaml + README.md）\n", tarName)
-	if err := packFilesTarGz(tarPath, [][2]string{
-		{"plugin", binaryPath},
-		{"config.yaml", configPath},
-		{"README.md", readmePath},
-	}); err != nil {
+	packEntries, err := pluginPackEntries(pluginTemplateGitHubDir, binaryPath, configPath, readmePath)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("打包 %s（.github + README.md + config.yaml + main）\n", tarName)
+	if err := packFilesTarGz(tarPath, packEntries); err != nil {
 		return err
 	}
 
@@ -233,6 +236,60 @@ func pluginGitHubTag(version string) string {
 		return tag
 	}
 	return "plugin-" + version
+}
+
+// pluginPackEntries 组装 plugin 压缩包条目：先 template/.github 下文件，再 README.md、config.yaml、main。
+// 磁盘二进制仍为 plugin，包内条目名为 main。githubDir 相对当前工作目录（如 template/.github）。
+func pluginPackEntries(githubDir, binaryPath, configPath, readmePath string) ([][2]string, error) {
+	githubEntries, err := collectDirTarEntries(githubDir, ".github")
+	if err != nil {
+		return nil, err
+	}
+	if len(githubEntries) == 0 {
+		return nil, fmt.Errorf("模板目录为空或不存在文件: %s（请在 builder 仓库根目录执行，确保 template/.github 存在）", githubDir)
+	}
+	entries := make([][2]string, 0, len(githubEntries)+3)
+	entries = append(entries, githubEntries...)
+	entries = append(entries,
+		[2]string{"README.md", readmePath},
+		[2]string{"config.yaml", configPath},
+		[2]string{"main", binaryPath},
+	)
+	return entries, nil
+}
+
+// collectDirTarEntries 递归收集 srcDir 下普通文件，tar 名为 archivePrefix 拼接相对路径（正斜杠）。
+// 按路径排序，保证产物可复现。srcDir 为空或不存在时返回错误。
+func collectDirTarEntries(srcDir, archivePrefix string) ([][2]string, error) {
+	info, err := os.Stat(srcDir)
+	if err != nil {
+		return nil, fmt.Errorf("读取模板目录失败 %s: %w", srcDir, err)
+	}
+	if !info.IsDir() {
+		return nil, fmt.Errorf("模板路径不是目录: %s", srcDir)
+	}
+
+	var entries [][2]string
+	err = filepath.WalkDir(srcDir, func(path string, d os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if d.IsDir() {
+			return nil
+		}
+		rel, err := filepath.Rel(srcDir, path)
+		if err != nil {
+			return fmt.Errorf("计算相对路径失败 %s: %w", path, err)
+		}
+		name := filepath.ToSlash(filepath.Join(archivePrefix, rel))
+		entries = append(entries, [2]string{name, path})
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("遍历模板目录失败 %s: %w", srcDir, err)
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i][0] < entries[j][0] })
+	return entries, nil
 }
 
 // packFilesTarGz 将若干文件按给定顶层名打包为 tar.gz（顺序固定，保证产物可复现）。

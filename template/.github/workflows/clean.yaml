@@ -1,0 +1,86 @@
+name: Repository Cleanup Workflow
+
+on:
+  schedule:
+    - cron: '30 7 * * *'  # 每天UTC时间6:00运行
+  workflow_dispatch:  # 允许手动触发
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+      contents: write
+      pull-requests: read  # 用于检查PR关联的分支
+
+    steps:
+      # 步骤1：检出仓库
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # 获取完整历史记录
+
+      # 步骤2：获取活跃分支（运行中的工作流和关联PR的分支）
+      - name: Get protected branches
+        id: active-branches
+        run: |
+          # 获取正在运行的工作流分支
+          RUNNING_BRANCHES=$(curl -s -H "Authorization: token ${{ github.token }}" \
+            "https://api.github.com/repos/${{ github.repository }}/actions/runs?status=in_progress" \
+            | jq -r '.workflow_runs[].head_branch' | sort -u)
+          
+          # 获取有开放PR关联的分支
+          PR_BRANCHES=$(curl -s -H "Authorization: token ${{ github.token }}" \
+            "https://api.github.com/repos/${{ github.repository }}/pulls?state=open" \
+            | jq -r '.[].head.ref' | sort -u)
+          
+          # 合并并去重
+          ALL_ACTIVE_BRANCHES=$(echo -e "$RUNNING_BRANCHES\n$PR_BRANCHES" | sort -u | tr '\n' ' ')
+          
+          echo "active_branches=${ALL_ACTIVE_BRANCHES}" >> $GITHUB_OUTPUT
+          echo "Active branches: ${ALL_ACTIVE_BRANCHES}"
+
+      # 步骤3：清理旧工作流记录
+      - name: Cleanup old workflow runs
+        uses: Mattraks/delete-workflow-runs@v2
+        with:
+          token: ${{ github.token }}
+          retain_days: 2
+          keep_minimum_runs: 5  # 保留每个工作流至少5次运行记录
+
+      # 步骤4：清理非活跃分支
+      - name: Cleanup stale branches
+        run: |
+          # 配置Git身份
+          git config --global user.name "GitHub Actions"
+          git config --global user.email "actions@github.com"
+
+          # 获取所有远程分支
+          git fetch --prune
+          BRANCHES=$(git branch -r | grep -v 'HEAD' | sed 's/origin\///' | sort -u)
+
+          # 定义保护分支（可根据需要修改）
+          PROTECTED_BRANCHES="main master dev production staging"
+          ACTIVE_BRANCHES="${{ steps.active-branches.outputs.active_branches }}"
+
+          echo "Protected branches: $PROTECTED_BRANCHES"
+          echo "Active branches: $ACTIVE_BRANCHES"
+          echo "All remote branches:"
+          echo "$BRANCHES"
+
+          # 遍历并删除非活跃分支
+          for branch in $BRANCHES; do
+            if [[ ! " $PROTECTED_BRANCHES $ACTIVE_BRANCHES " =~ " $branch " ]]; then
+              # 先检查分支是否存在（避免重复删除报错）
+              if git show-ref --quiet "refs/remotes/origin/$branch"; then
+                echo "Deleting branch: $branch"
+                git push origin --delete "$branch" || echo "Failed to delete $branch (may be already deleted)"
+              else
+                echo "Branch $branch does not exist, skipping"
+              fi
+            else
+              echo "Skipping protected/active branch: $branch"
+            fi
+          done
+
+          echo "Branch cleanup completed"
