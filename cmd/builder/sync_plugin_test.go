@@ -99,7 +99,7 @@ func TestPackFilesTarGz(t *testing.T) {
 
 	tarPath := filepath.Join(dir, "plugin-v0.0.1.tar.gz")
 	if err := packFilesTarGz(tarPath, [][2]string{
-		{"plugin", f1},
+		{"main", f1},
 		{"config.yaml", f2},
 	}); err != nil {
 		t.Fatalf("打包失败: %v", err)
@@ -119,7 +119,7 @@ func TestPackFilesTarGz(t *testing.T) {
 	tr := tar.NewReader(gz)
 
 	want := map[string]string{
-		"plugin":      "#!/bin/sh\necho plugin\n",
+		"main":        "#!/bin/sh\necho plugin\n",
 		"config.yaml": pluginConfigFileContent,
 	}
 	for {
@@ -141,5 +141,92 @@ func TestPackFilesTarGz(t *testing.T) {
 	}
 	if len(want) != 0 {
 		t.Errorf("tar 缺少条目: %v", want)
+	}
+}
+
+func TestCollectDirTarEntries(t *testing.T) {
+	root := t.TempDir()
+	githubDir := filepath.Join(root, ".github", "workflows")
+	if err := os.MkdirAll(githubDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	clean := filepath.Join(githubDir, "clean.yaml")
+	push := filepath.Join(githubDir, "push.yaml")
+	if err := os.WriteFile(clean, []byte("clean\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(push, []byte("push\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := collectDirTarEntries(filepath.Join(root, ".github"), ".github")
+	if err != nil {
+		t.Fatalf("collectDirTarEntries: %v", err)
+	}
+	wantNames := []string{
+		".github/workflows/clean.yaml",
+		".github/workflows/push.yaml",
+	}
+	if len(got) != len(wantNames) {
+		t.Fatalf("entries=%d, want %d: %v", len(got), len(wantNames), got)
+	}
+	for i, name := range wantNames {
+		if got[i][0] != name {
+			t.Errorf("entry[%d].name=%q, want %q", i, got[i][0], name)
+		}
+	}
+
+	if _, err := collectDirTarEntries(filepath.Join(root, "missing"), ".github"); err == nil {
+		t.Fatal("missing dir should error")
+	}
+}
+
+func TestPluginPackEntries(t *testing.T) {
+	root := t.TempDir()
+	githubSrc := filepath.Join(root, "template", ".github", "workflows")
+	if err := os.MkdirAll(githubSrc, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	wf := filepath.Join(githubSrc, "push.yaml")
+	if err := os.WriteFile(wf, []byte("name: push\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	binaryPath := filepath.Join(root, "plugin")
+	configPath := filepath.Join(root, "config.yaml")
+	readmePath := filepath.Join(root, "README.md")
+	for _, p := range []string{binaryPath, configPath, readmePath} {
+		if err := os.WriteFile(p, []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	got, err := pluginPackEntries(filepath.Join(root, "template", ".github"), binaryPath, configPath, readmePath)
+	if err != nil {
+		t.Fatalf("pluginPackEntries: %v", err)
+	}
+	wantOrder := []string{
+		".github/workflows/push.yaml",
+		"README.md",
+		"config.yaml",
+		"main",
+	}
+	if len(got) != len(wantOrder) {
+		t.Fatalf("len=%d, want %d", len(got), len(wantOrder))
+	}
+	for i, name := range wantOrder {
+		if got[i][0] != name {
+			t.Errorf("order[%d]=%q, want %q", i, got[i][0], name)
+		}
+	}
+	if got[len(got)-1][1] != binaryPath {
+		t.Errorf("main src=%q, want %q", got[len(got)-1][1], binaryPath)
+	}
+
+	emptyDir := filepath.Join(root, "empty-github")
+	if err := os.MkdirAll(emptyDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pluginPackEntries(emptyDir, binaryPath, configPath, readmePath); err == nil {
+		t.Fatal("empty github dir should error")
 	}
 }
