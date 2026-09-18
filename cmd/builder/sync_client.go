@@ -192,9 +192,9 @@ func fetchRainbowRepo(ctx context.Context, repoURL, ref, dest string) error {
 	return nil
 }
 
-// readPixiuctlVersion 在 rainbow 源码目录执行 go run cmd/pixiuctl.go version。
+// readPixiuctlVersion 在 rainbow 源码目录执行 go run cmd/pixiuctl/main.go version。
 func readPixiuctlVersion(ctx context.Context, rainbowRoot string) (string, error) {
-	cmd := exec.CommandContext(ctx, "go", "run", "cmd/pixiuctl.go", "version")
+	cmd := exec.CommandContext(ctx, "go", "run", "cmd/pixiuctl/main.go", "version")
 	cmd.Dir = rainbowRoot
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -245,7 +245,7 @@ func buildPixiuctlBinary(ctx context.Context, rainbowRoot, outPath, goos, goarch
 	if err := os.MkdirAll(filepath.Dir(outPath), 0o755); err != nil {
 		return fmt.Errorf("创建输出目录失败 %s: %w", filepath.Dir(outPath), err)
 	}
-	cmd := exec.CommandContext(ctx, "go", "build", "-o", outPath, "cmd/pixiuctl.go")
+	cmd := exec.CommandContext(ctx, "go", "build", "-o", outPath, "./cmd/pixiuctl")
 	cmd.Dir = rainbowRoot
 	cmd.Env = append(os.Environ(),
 		"CGO_ENABLED=0",
