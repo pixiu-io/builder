@@ -142,14 +142,14 @@ addon_images:
     image: "ccr.ccs.tencentyun.com/pixiucloud/typha"
     tag: "v3.31.3"
   - name: metrics-server
-    image: "ccr.ccs.tencentyun.com/pixiucloud/metrics-server"
-    tag: "v0.6.4"
+    image: "registry.k8s.io/metrics-server/metrics-server"
+    tag: "v0.7.2"
   - name: nginx-ingress-controller
-    image: "ccr.ccs.tencentyun.com/pixiucloud/nginx-ingress-controller"
-    tag: "v1.2.0"
+    image: "registry.k8s.io/ingress-nginx/controller"
+    tag: "v1.15.1"
   - name: nginx-ingress-webhook
-    image: "ccr.ccs.tencentyun.com/pixiucloud/nginx-ingress-webhook"
-    tag: "v1.1.1"
+    image: "registry.k8s.io/ingress-nginx/kube-webhook-certgen"
+    tag: "v1.6.9"
 
 # ========== 平台服务镜像 ==========
 # 平台/服务端镜像清单：格式与 addon_images 一致。
