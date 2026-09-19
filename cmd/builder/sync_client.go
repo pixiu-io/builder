@@ -28,7 +28,7 @@ var (
 	syncClientRef     string
 	syncClientWorkDir string
 	syncClientOutDir  string
-	// gitRepoToken 访问 rainbow 私有仓库的 token（--repo-token；默认复用 --github-token）。
+	// gitRepoToken 访问 rainbow 私有仓库的 token（--hub-repo-token；默认复用 --github-token）。
 	// 两个 sync 命令共用该变量，各自注册同名 flag。
 	gitRepoToken string
 )
@@ -65,7 +65,9 @@ func newSyncClientCmd() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&syncClientRepoURL, "repo-url", defaultRainbowRepoURL, "rainbow 仓库 URL")
 	cmd.Flags().StringVar(&syncClientRef, "ref", defaultRainbowRef, "git 分支或 tag")
-	cmd.Flags().StringVar(&gitRepoToken, "repo-token", "", "访问 rainbow 仓库的 token（私有仓库克隆用；默认复用 --github-token）")
+	cmd.Flags().StringVar(&gitRepoToken, "hub-repo-token", "", "访问 rainbow 仓库的 token（私有仓库克隆用；默认复用 --github-token）")
+	cmd.Flags().StringVar(&gitRepoToken, "repo-token", "", "已弃用，请使用 --hub-repo-token")
+	_ = cmd.Flags().MarkHidden("repo-token")
 	cmd.Flags().StringVar(&syncClientWorkDir, "workdir", "./work/rainbow-src", "rainbow 源码工作目录")
 	cmd.Flags().StringVar(&syncClientOutDir, "out-dir", "./dist", "pixiuctl 二进制输出目录")
 	addGitHubFlags(cmd)
@@ -139,7 +141,7 @@ func runSyncClient(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-// authedRepoURL 为 https GitHub 仓库 URL 注入 rainbow 仓库访问 token（--repo-token，
+// authedRepoURL 为 https GitHub 仓库 URL 注入 rainbow 仓库访问 token（--hub-repo-token，
 // 默认复用 --github-token；私有仓库克隆需要认证）。
 // 非 GitHub URL、已含凭据、或未提供 token 时不做改写。
 func authedRepoURL(repoURL string) string {
