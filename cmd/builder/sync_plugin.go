@@ -74,7 +74,9 @@ func newSyncPluginCmd() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&syncPluginRepoURL, "repo-url", defaultRainbowRepoURL, "rainbow 仓库 URL")
 	cmd.Flags().StringVar(&syncPluginRef, "ref", defaultRainbowRef, "git 分支或 tag")
-	cmd.Flags().StringVar(&gitRepoToken, "repo-token", "", "访问 rainbow 仓库的 token（私有仓库克隆用；默认复用 --github-token）")
+	cmd.Flags().StringVar(&gitRepoToken, "hub-repo-token", "", "访问 rainbow 仓库的 token（私有仓库克隆用；默认复用 --github-token）")
+	cmd.Flags().StringVar(&gitRepoToken, "repo-token", "", "已弃用，请使用 --hub-repo-token")
+	_ = cmd.Flags().MarkHidden("repo-token")
 	cmd.Flags().StringVar(&syncPluginWorkDir, "workdir", "./work/rainbow-src", "rainbow 源码工作目录")
 	cmd.Flags().StringVar(&syncPluginOutDir, "out-dir", "./dist", "plugin 产物输出目录")
 	cmd.Flags().StringVar(&syncPluginOS, "os", "linux", "目标操作系统")

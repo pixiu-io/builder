@@ -15,7 +15,7 @@ func TestAuthedRepoURL(t *testing.T) {
 		{"", "", "https://github.com/caoyingjunz/rainbow.git", "https://github.com/caoyingjunz/rainbow.git"},
 		// 仅有 --github-token：注入它
 		{"tok", "", "https://github.com/caoyingjunz/rainbow.git", "https://x-access-token:tok@github.com/caoyingjunz/rainbow.git"},
-		// --repo-token 优先于 --github-token
+		// --hub-repo-token 优先于 --github-token
 		{"tok", "rtok", "https://github.com/caoyingjunz/rainbow.git", "https://x-access-token:rtok@github.com/caoyingjunz/rainbow.git"},
 		// 已含凭据：不改写
 		{"tok", "", "https://user:pass@github.com/caoyingjunz/rainbow.git", "https://user:pass@github.com/caoyingjunz/rainbow.git"},
