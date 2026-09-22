@@ -1,4 +1,4 @@
-name: sync plugin command1
+name: sync plugin command
 
 on:
   push:
